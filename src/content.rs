@@ -17,7 +17,7 @@ use silent::decode::{Decoder, Event};
 use silent::detect::{self, Facts, Kind};
 use silent::geometry::Screen;
 use silent::memory::{self, Key, View};
-use silent::office::{self, docx, odf, pptx};
+use silent::office::{self, doc, docx, odf, ppt, pptx};
 use silent::{hexdump, pretty, unpack};
 use smallvec::SmallVec;
 use unicode_width::UnicodeWidthChar;
@@ -419,6 +419,8 @@ fn document(
 ) -> Option<((i32, i32), Body)> {
     let iwork = ["apple", "iwork"].iter().any(|k| content_type.contains(k));
     let open = content_type.contains("opendocument");
+    // The binary formats of Office 97 to 2003.
+    let ole = office::is_ole_file(path);
     if iwork {
         let bytes = office::iwork_preview(path)?;
         let longest = screen.monitor.width.max(screen.monitor.height) as u32;
@@ -453,7 +455,7 @@ fn document(
             };
             Some((size, Body::Sheet(Box::new(sheet))))
         }
-        Kind::Presentation if !open => {
+        Kind::Presentation if !open && !ole => {
             let deck = pptx::open(path)?;
             let size = screen.fit_page((deck.size.0 as f64, deck.size.1 as f64));
             let index = match view {
@@ -470,7 +472,9 @@ fn document(
         }
         _ => {
             let document = match kind {
+                Kind::Presentation if ole => ppt::read(path)?,
                 Kind::Presentation => odf::read_slides(path)?,
+                _ if ole => doc::read(path)?,
                 _ if open => odf::read_text(path)?,
                 _ => docx::read(path)?,
             };

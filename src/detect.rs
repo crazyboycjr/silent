@@ -102,17 +102,19 @@ const BINARY: &[&str] = &[
 ];
 
 /// Office and iWork files by the start of their type, WPS Office's own
-/// types among them; legacy .doc and .ppt are not here and stay cards.
+/// types among them.
 const OFFICE: &[(&str, Kind)] = &[
     (
         "application/vnd.openxmlformats-officedocument.wordprocessingml",
         Kind::Document,
     ),
+    ("application/msword", Kind::Document),
     ("application/vnd.ms-word.", Kind::Document),
     ("application/vnd.oasis.opendocument.text", Kind::Document),
     ("application/vnd.apple.pages", Kind::Document),
     ("application/x-iwork-pages", Kind::Document),
     ("application/wps-office.do", Kind::Document),
+    ("application/wps-office.wps", Kind::Document),
     (
         "application/vnd.openxmlformats-officedocument.spreadsheetml",
         Kind::Spreadsheet,
@@ -129,7 +131,7 @@ const OFFICE: &[(&str, Kind)] = &[
         "application/vnd.openxmlformats-officedocument.presentationml",
         Kind::Presentation,
     ),
-    ("application/vnd.ms-powerpoint.", Kind::Presentation),
+    ("application/vnd.ms-powerpoint", Kind::Presentation),
     (
         "application/vnd.oasis.opendocument.presentation",
         Kind::Presentation,
@@ -140,17 +142,18 @@ const OFFICE: &[(&str, Kind)] = &[
 ];
 
 /// The kind of an Office or iWork file, when its first bytes are the zip
-/// it promises, or for a spreadsheet the OLE2 file or bare BIFF stream of
-/// xls; an Office lock file, a legacy .doc or a key named `.key` is not.
+/// it promises, or the OLE2 file of the binary formats (.doc, .xls, .ppt),
+/// or a bare BIFF stream of .xls; an Office lock file or a key named
+/// `.key` is not.
 fn office(content_type: &str, head: &[u8]) -> Option<Kind> {
     let kind = OFFICE
         .iter()
         .find(|(prefix, _)| content_type.starts_with(prefix))?
         .1;
     let zip = head.starts_with(b"PK\x03\x04");
-    let ole = head.starts_with(&[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
-    let xls = ole || crate::office::biff::is_biff(head);
-    (zip || (xls && kind == Kind::Spreadsheet)).then_some(kind)
+    let ole = crate::office::is_ole(head);
+    let biff = kind == Kind::Spreadsheet && crate::office::biff::is_biff(head);
+    (zip || ole || biff).then_some(kind)
 }
 
 /// Types better shown as a card than as their bytes: documents and fonts,
@@ -402,9 +405,21 @@ mod tests {
             classify("application/wps-office.xls", &bare_xls),
             Kind::Spreadsheet
         );
-        // Legacy Word and PowerPoint, an Office lock file, a PEM key named .key.
-        assert_eq!(classify("application/wps-office.doc", &ole), Kind::Other);
-        assert_eq!(classify("application/vnd.ms-powerpoint", &ole), Kind::Other);
+        // Legacy Word and PowerPoint, and WPS Writer's files in either form.
+        assert_eq!(classify("application/wps-office.doc", &ole), Kind::Document);
+        assert_eq!(classify("application/msword", &ole), Kind::Document);
+        assert_eq!(classify("application/wps-office.wps", &ole), Kind::Document);
+        assert_eq!(classify("application/wps-office.wps", zip), Kind::Document);
+        assert_eq!(
+            classify("application/vnd.ms-powerpoint", &ole),
+            Kind::Presentation
+        );
+        assert_eq!(
+            classify("application/wps-office.ppt", &ole),
+            Kind::Presentation
+        );
+        // A .doc that is really text, an Office lock file, a PEM key named .key.
+        assert_eq!(classify("application/msword", b"plain words\n"), Kind::Text);
         assert_eq!(
             classify("application/wps-office.pptx", b"\x03cjr      "),
             Kind::Text

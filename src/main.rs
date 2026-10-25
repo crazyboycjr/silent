@@ -158,8 +158,9 @@ fn probe(paths: &[String]) -> ExitCode {
 
 /// What the Office reader makes of a file: blocks, sheets or slides.
 fn describe_office(path: &std::path::Path, content_type: &str, kind: Kind) {
-    use silent::office::{self, Block, docx, odf, pptx, sheet};
+    use silent::office::{self, Block, doc, docx, odf, ppt, pptx, sheet};
     let open = content_type.contains("opendocument");
+    let ole = office::is_ole_file(path);
     if content_type.contains("apple") || content_type.contains("iwork") {
         let preview = office::iwork_preview(path);
         println!("  preview picture: {:?} bytes", preview.map(|p| p.len()));
@@ -177,7 +178,7 @@ fn describe_office(path: &std::path::Path, content_type: &str, kind: Kind) {
             ),
             None => println!("  unreadable"),
         },
-        Kind::Presentation if !open => {
+        Kind::Presentation if !open && !ole => {
             let Some(deck) = pptx::open(path) else {
                 println!("  unreadable");
                 return;
@@ -206,7 +207,9 @@ fn describe_office(path: &std::path::Path, content_type: &str, kind: Kind) {
         }
         _ => {
             let document = match kind {
+                Kind::Presentation if ole => ppt::read(path),
                 Kind::Presentation => odf::read_slides(path),
+                _ if ole => doc::read(path),
                 _ if open => odf::read_text(path),
                 _ => docx::read(path),
             };

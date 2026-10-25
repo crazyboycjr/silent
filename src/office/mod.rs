@@ -1,7 +1,8 @@
 //! Office documents read the way macOS Quick Look reads them: the package is
 //! opened and its XML parsed here, with no office suite, into small models
-//! that the window draws itself. Word processing (docx, odt), spreadsheets
-//! (xlsx, xls, ods, through calamine), presentations (pptx, odp) and the
+//! that the window draws itself. Word processing (docx, odt, and the old
+//! binary doc), spreadsheets (xlsx, xls, ods, through calamine),
+//! presentations (pptx, odp, and the old ppt as an outline) and the
 //! previews iWork packages carry.
 
 use std::collections::HashMap;
@@ -12,9 +13,11 @@ use std::path::Path;
 use roxmltree::Node;
 
 pub mod biff;
+pub mod doc;
 pub mod docx;
 pub mod odf;
 pub mod ole;
+pub mod ppt;
 pub mod pptx;
 pub mod sheet;
 
