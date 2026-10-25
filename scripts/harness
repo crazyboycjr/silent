@@ -381,6 +381,221 @@ with open(f"{root}/office/.~lock-deck.pptx", "wb") as out:
     out.write(b"\x03cjr" + b" " * 50)
 PY
 
+    # Word 97 and PowerPoint 97 files, written byte by byte: no office suite
+    # here writes them. Only what silent reads is in them.
+    python3 -I - "$f" <<'PY'
+import struct, sys
+
+root = sys.argv[1]
+END, FREE, FAT = 0xFFFFFFFE, 0xFFFFFFFF, 0xFFFFFFFD
+
+
+def ole(path, streams):
+    """A compound file with `streams`, each padded past the mini stream's cutoff."""
+    names = list(streams)
+    datas = [s.ljust(max(len(s), 4096), b"\0") for s in streams.values()]
+    datas = [d.ljust((len(d) + 511) // 512 * 512, b"\0") for d in datas]
+    dir_sectors = (len(names) + 1 + 3) // 4
+    used = dir_sectors + sum(len(d) // 512 for d in datas)
+    fat_sectors = 1
+    while fat_sectors * 128 < used + fat_sectors:
+        fat_sectors += 1
+    fat = [FAT] * fat_sectors
+    dir_start = len(fat)
+    fat += list(range(dir_start + 1, dir_start + dir_sectors)) + [END]
+    starts = []
+    for d in datas:
+        starts.append(len(fat))
+        fat += list(range(len(fat) + 1, len(fat) + len(d) // 512)) + [END]
+    fat += [FREE] * (fat_sectors * 128 - len(fat))
+
+    def entry(name, kind, child=FREE, right=FREE, start=END, size=0):
+        encoded = name.encode("utf-16-le") + b"\0\0"
+        return (encoded.ljust(64, b"\0") + struct.pack("<HBB", len(encoded), kind, 1)
+                + struct.pack("<III", FREE, right, child) + b"\0" * 36 + struct.pack("<IQ", start, size))
+
+    # The streams in the directory's order: by length, then by capitals.
+    order = sorted(range(len(names)), key=lambda i: (len(names[i]), names[i].upper()))
+    directory = entry("Root Entry", 5, child=order[0] + 1)
+    entries = {}
+    for k, i in enumerate(order):
+        right = order[k + 1] + 1 if k + 1 < len(order) else FREE
+        entries[i] = entry(names[i], 2, right=right, start=starts[i], size=len(streams[names[i]].ljust(4096, b"\0")))
+    for i in range(len(names)):
+        directory += entries[i]
+    directory = directory.ljust(dir_sectors * 512, b"\0")
+    difat = [n for n in range(fat_sectors)] + [FREE] * (109 - fat_sectors)
+    header = (bytes.fromhex("d0cf11e0a1b11ae1") + b"\0" * 16
+              + struct.pack("<HHHHH", 0x3E, 3, 0xFFFE, 9, 6) + b"\0" * 6
+              + struct.pack("<IIIIIIIII", 0, fat_sectors, dir_start, 0, 4096, END, 0, END, 0)
+              + struct.pack("<109I", *difat))
+    with open(path, "wb") as out:
+        out.write(header)
+        out.write(struct.pack("<%dI" % len(fat), *fat))
+        out.write(directory)
+        for d in datas:
+            out.write(d)
+
+
+def word_doc(path):
+    # Paragraphs: (style, alignment, in-table mark, runs of (text, bold, italic)).
+    title, heading, normal = 1, 2, 0
+    paras = [
+        (title, 1, None, [("Field Notes", False, False)]),
+        (normal, 0, None, [("This old Word file has ", False, False), ("bold", True, False),
+                           (" and ", False, False), ("italic", False, True), (" words in it.", False, False)]),
+        (heading, 0, None, [("Results", False, False)]),
+        (normal, 0, None, [("床前明月光，疑是地上霜。举头望明月，低头思故乡。", False, False)]),
+    ]
+    rows = [["Kind", "Read by", "Pages"], ["doc", "silent", "3"], ["ppt", "silent", "outline"]]
+    for row in rows:
+        for cell in row:
+            paras.append((normal, 0, "cell", [(cell, row is rows[0], False)]))
+        paras.append((normal, 0, "row", []))
+    for i in range(12):
+        paras.append((normal, 0, None, [("Paragraph %d of the old format, read through its piece table." % (i + 1), False, False)]))
+    text, runs, marks = "", [], []
+    for style, align, table, spans in paras:
+        for chunk, bold, italic in spans:
+            runs.append((len(text), len(text) + len(chunk), bold, italic))
+            text += chunk
+        marks.append((len(text), style, align, table))
+        text += "\x07" if table else "\r"
+    # The Latin head in one byte a character, the rest in UTF-16.
+    split = text.index("床")
+    head, tail = text[:split], text[split:]
+    word = bytearray(0x400)
+    head_at = len(word)
+    word += head.encode("cp1252")
+    tail_at = len(word)
+    word += tail.encode("utf-16-le")
+    fc = lambda cp: head_at + cp if cp < split else tail_at + 2 * (cp - split)
+    width = lambda cp: 1 if cp < split else 2
+
+    def page(entries):
+        """A formatted disk page: runs of bytes, each with its properties."""
+        out = bytearray(512)
+        free = 511
+        out[0:4] = struct.pack("<I", entries[0][0])
+        for r, (start, end, props, papx) in enumerate(entries):
+            out[4 * (r + 1):4 * (r + 2)] = struct.pack("<I", end)
+            if papx:
+                body = props + (b"\0" if len(props) % 2 else b"")
+                free = (free - 2 - len(body)) & ~1
+                out[free:free + 2 + len(body)] = bytes([0, len(body) // 2]) + body
+                out[4 * (len(entries) + 1) + 13 * r] = free // 2
+            elif props:
+                free = (free - 1 - len(props)) & ~1
+                out[free:free + 1 + len(props)] = bytes([len(props)]) + props
+                out[4 * (len(entries) + 1) + r] = free // 2
+        out[511] = len(entries)
+        return out
+
+    chpx = []
+    for start, end, bold, italic in runs:
+        sprms = (b"\x35\x08\x01" if bold else b"") + (b"\x36\x08\x01" if italic else b"")
+        chpx.append((fc(start), fc(end - 1) + width(end - 1), sprms, False))
+    papx, at = [], fc(0)
+    for cp, style, align, table in marks:
+        sprms = struct.pack("<H", style) + (b"\x03\x24" + bytes([align]) if align else b"")
+        if table:
+            sprms += b"\x16\x24\x01" + (b"\x17\x24\x01" if table == "row" else b"")
+            if table == "row":
+                edges = [0, 2600, 5200, 7800]
+                tdef = bytes([len(edges) - 1]) + struct.pack("<%dh" % len(edges), *edges)
+                sprms += b"\x08\xd6" + struct.pack("<H", len(tdef) + 1) + tdef
+        end = fc(cp) + width(cp)
+        papx.append((at, end, sprms, True))
+        at = end
+    def bin_table(entries):
+        """The pages for `entries`, laid at the end of the stream, and their bin table."""
+        while len(word) % 512:
+            word.append(0)
+        starts, numbers = [], []
+        for i in range(0, len(entries), 10):
+            starts.append(entries[i][0])
+            numbers.append(len(word) // 512)
+            word.extend(page(entries[i:i + 10]))
+        starts.append(entries[-1][1])
+        return struct.pack("<%dI" % len(starts), *starts) + struct.pack("<%dI" % len(numbers), *numbers)
+
+    chpx_table = bin_table(chpx)
+    papx_table = bin_table(papx)
+    sepx_at = len(word)
+    # A4, with 2.5 cm margins.
+    word += struct.pack("<h", 16) + struct.pack("<8H", 0xB01F, 11906, 0xB020, 16838, 0xB021, 1418, 0xB022, 1418)
+    table = bytearray()
+    places = {}
+
+    def put(index, data):
+        places[index] = (len(table), len(data))
+        table.extend(data)
+
+    # The style sheet: Normal, Title and heading 1, with the headings' looks.
+    def std(sti, name, chpx_sprms, base=0x0FFF):
+        out = struct.pack("<HHHHH", sti, 1 | base << 4, 2, 0, 0)
+        out += struct.pack("<H", len(name)) + name.encode("utf-16-le") + b"\0\0"
+        for upx in (struct.pack("<H", 0), chpx_sprms):
+            out += b"\0" * (len(out) % 2) + struct.pack("<H", len(upx)) + upx
+        return out
+    styles = [std(0, "Normal", struct.pack("<HH", 0x4A43, 21)),
+              std(62, "Title", struct.pack("<HH", 0x4A43, 52) + b"\x35\x08\x01", 0),
+              std(1, "heading 1", struct.pack("<HH", 0x4A43, 32) + b"\x35\x08\x01", 0)]
+    stsh = struct.pack("<HHH", 18, len(styles), 10) + b"\0" * 14
+    for s in styles:
+        stsh += struct.pack("<H", len(s)) + s
+    put(1, stsh)
+    put(6, struct.pack("<IIHIHI", 0, len(text), 0, sepx_at, 0, 0))
+    put(12, chpx_table)
+    put(13, papx_table)
+    plc = struct.pack("<III", 0, split, len(text))
+    plc += struct.pack("<HIH", 0, (head_at * 2) | 0x40000000, 0) + struct.pack("<HIH", 0, tail_at, 0)
+    put(33, b"\x02" + struct.pack("<I", len(plc)) + plc)
+    fib = bytearray(struct.pack("<HHHHHH", 0xA5EC, 0xC1, 0, 0x0409, 0, 0) + b"\0" * 20)
+    fib += struct.pack("<H", 14) + b"\0" * 28 + struct.pack("<H", 22)
+    fib += b"".join(struct.pack("<I", len(text) if i == 3 else 0) for i in range(22))
+    fib += struct.pack("<H", 93)
+    for i in range(93):
+        fib += struct.pack("<II", *places.get(i, (0, 0)))
+    word[0:len(fib)] = fib
+    ole(path, {"WordDocument": bytes(word), "0Table": bytes(table)})
+
+
+def record(kind, body, instance=0, container=False):
+    head = instance << 4 | (0xF if container else 0)
+    return struct.pack("<HHI", head, kind, len(body)) + body
+
+
+def power_point(path):
+    slides = [("A legacy deck", ["Read as an outline", "Titles, then the text"]),
+              ("What it keeps", ["Each slide's text", "In the order of the deck", "Without the drawings"]),
+              ("中文幻灯片", ["标题和正文", "按顺序显示"])]
+    deck = bytearray()
+    offsets = {}
+    for n, (title, body) in enumerate(slides):
+        boxes = record(0x0F9F, struct.pack("<I", 0)) + record(0x0FA0, title.encode("utf-16-le"))
+        texts = record(0xF00D, boxes, container=True)
+        boxes = record(0x0F9F, struct.pack("<I", 1)) + record(0x0FA0, "\r".join(body).encode("utf-16-le"))
+        texts += record(0xF00D, boxes, container=True)
+        offsets[2 + n] = len(deck)
+        deck += record(0x03EE, record(0x040C, record(0xF002, texts, container=True), container=True), container=True)
+    listing = b"".join(record(0x03F3, struct.pack("<IIiII", 2 + n, 0, 0, 256 + n, 0)) for n in range(len(slides)))
+    document = record(0x03E9, struct.pack("<ii", 5760, 4320)) + record(0x0FF0, listing, container=True)
+    offsets[1] = len(deck)
+    deck += record(0x03E8, document, container=True)
+    directory_at = len(deck)
+    ids = sorted(offsets)
+    deck += record(0x1772, struct.pack("<I", len(ids) << 20 | ids[0]) + b"".join(struct.pack("<I", offsets[i]) for i in ids))
+    edit_at = len(deck)
+    deck += record(0x0FF5, struct.pack("<IHBBIIIIHH", 0, 0, 0, 3, 0, directory_at, 1, len(ids) + 1, 1, 0))
+    user = record(0x0FF6, struct.pack("<IIIHHBBH", 20, 0xE391C05F, edit_at, 0, 0x03F4, 3, 0, 0))
+    ole(path, {"PowerPoint Document": bytes(deck), "Current User": user})
+
+
+word_doc(f"{root}/office/old.doc")
+power_point(f"{root}/office/old.ppt")
+PY
+
     # Everything else, binaries as hexdumps.
     head -c 300000 /dev/urandom > other/blob.bin
     cp /usr/bin/true other/program
