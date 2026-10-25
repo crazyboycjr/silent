@@ -165,4 +165,9 @@ impl Bus {
         self.conn.release_name(NAME)?;
         Ok(())
     }
+
+    /// Takes the name back when a call slipped in while it was being released.
+    pub fn reclaim(&self) -> zbus::Result<()> {
+        self.conn.request_name(NAME)
+    }
 }

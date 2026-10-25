@@ -59,7 +59,9 @@ fn probe(paths: &[String]) -> ExitCode {
             ms(started)
         );
         if facts.kind == Kind::Image {
-            let decoder = decode::start(uri, Some(screen), MemoryFormatSelection::all());
+            let decoder = decode::start(uri, Some(screen), MemoryFormatSelection::all(), |frame| {
+                frame
+            });
             while let Ok(event) = decoder.events.recv_blocking() {
                 match event {
                     Event::Size { width, height } => {

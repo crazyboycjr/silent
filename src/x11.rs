@@ -6,7 +6,9 @@ use std::error::Error;
 
 use x11rb::connection::Connection;
 use x11rb::protocol::randr::ConnectionExt as _;
-use x11rb::protocol::xproto::{AtomEnum, ConfigureWindowAux, ConnectionExt as _, PropMode};
+use x11rb::protocol::xproto::{
+    AtomEnum, ClientMessageEvent, ConfigureWindowAux, ConnectionExt as _, EventMask, PropMode,
+};
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
@@ -15,13 +17,65 @@ use crate::geometry::{Rect, Screen, monitor_at};
 pub struct X11 {
     conn: RustConnection,
     root: u32,
+    screen: usize,
 }
 
 impl X11 {
     pub fn connect() -> Result<Self, Box<dyn Error>> {
         let (conn, screen) = x11rb::connect(None)?;
         let root = conn.setup().roots[screen].root;
-        Ok(Self { conn, root })
+        Ok(Self { conn, root, screen })
+    }
+
+    fn atom(&self, name: &str) -> Option<u32> {
+        Some(
+            self.conn
+                .intern_atom(false, name.as_bytes())
+                .ok()?
+                .reply()
+                .ok()?
+                .atom,
+        )
+    }
+
+    /// Whether a compositor runs, so that transparent pixels show what is
+    /// behind the window rather than black.
+    pub fn compositing(&self) -> bool {
+        self.atom(&format!("_NET_WM_CM_S{}", self.screen))
+            .and_then(|atom| self.conn.get_selection_owner(atom).ok()?.reply().ok())
+            .is_some_and(|reply| reply.owner != x11rb::NONE)
+    }
+
+    /// Hands on the activation token Nautilus passed: the window carries it
+    /// for focus-stealing prevention, and the launch it began is completed.
+    pub fn complete_startup(&self, window: u32, token: &str) -> Result<(), Box<dyn Error>> {
+        if token.is_empty() {
+            return Ok(());
+        }
+        let utf8 = self.atom("UTF8_STRING").ok_or("no UTF8_STRING")?;
+        let startup_id = self.atom("_NET_STARTUP_ID").ok_or("no _NET_STARTUP_ID")?;
+        self.conn.change_property8(
+            PropMode::REPLACE,
+            window,
+            startup_id,
+            utf8,
+            token.as_bytes(),
+        )?;
+        let begin = self.atom("_NET_STARTUP_INFO_BEGIN").ok_or("no atom")?;
+        let more = self.atom("_NET_STARTUP_INFO").ok_or("no atom")?;
+        let escaped = token.replace('\\', "\\\\").replace('"', "\\\"");
+        let mut message = format!("remove: ID=\"{escaped}\"").into_bytes();
+        message.push(0);
+        // The startup-notification protocol sends text in 20-byte client messages.
+        for (i, chunk) in message.chunks(20).enumerate() {
+            let mut data = [0u8; 20];
+            data[..chunk.len()].copy_from_slice(chunk);
+            let event = ClientMessageEvent::new(8, window, if i == 0 { begin } else { more }, data);
+            self.conn
+                .send_event(false, self.root, EventMask::PROPERTY_CHANGE, event)?;
+        }
+        self.conn.flush()?;
+        Ok(())
     }
 
     /// The monitors, the primary first.
@@ -113,6 +167,16 @@ impl X11 {
             monitor,
             scale: self.desktop_scale(),
         }
+    }
+
+    /// Asks the window manager for no title bar and no frame.
+    pub fn undecorate(&self, window: u32) -> Result<(), Box<dyn Error>> {
+        let hints = self.atom("_MOTIF_WM_HINTS").ok_or("no _MOTIF_WM_HINTS")?;
+        // flags = decorations, functions = 0, decorations = none, input mode, status
+        self.conn
+            .change_property32(PropMode::REPLACE, window, hints, hints, &[2, 0, 0, 0, 0])?;
+        self.conn.flush()?;
+        Ok(())
     }
 
     pub fn set_transient_for(&self, window: u32, parent: u32) -> Result<(), Box<dyn Error>> {

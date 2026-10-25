@@ -22,24 +22,24 @@ pub struct Frame {
 }
 
 #[derive(Debug)]
-pub enum Event {
+pub enum Event<T> {
     /// The upright size, known before any pixels.
     Size {
         width: u32,
         height: u32,
     },
-    Frame(Frame),
+    Frame(T),
     Failed(String),
 }
 
 /// A running decode. Animations keep producing frames, paced by their
 /// delays, until this is dropped.
-pub struct Decoder {
-    pub events: async_channel::Receiver<Event>,
+pub struct Decoder<T> {
+    pub events: async_channel::Receiver<Event<T>>,
     cancellable: gio::Cancellable,
 }
 
-impl Drop for Decoder {
+impl<T> Drop for Decoder<T> {
     fn drop(&mut self) {
         self.cancellable.cancel();
     }
@@ -47,8 +47,18 @@ impl Drop for Decoder {
 
 /// Decodes the image at `uri`. Vector images are rendered at the size
 /// `screen` gives them; everything else arrives at its own resolution, in
-/// one of the `accepted` formats.
-pub fn start(uri: String, screen: Option<Screen>, accepted: MemoryFormatSelection) -> Decoder {
+/// one of the `accepted` formats. `prepare` turns each frame into what the
+/// UI shows, still on the decoder's thread.
+pub fn start<T, F>(
+    uri: String,
+    screen: Option<Screen>,
+    accepted: MemoryFormatSelection,
+    prepare: F,
+) -> Decoder<T>
+where
+    T: Send + 'static,
+    F: FnMut(Frame) -> T + Send + 'static,
+{
     let (sender, events) = async_channel::bounded(2);
     let cancellable = gio::Cancellable::new();
     let thread_cancellable = cancellable.clone();
@@ -56,7 +66,8 @@ pub fn start(uri: String, screen: Option<Screen>, accepted: MemoryFormatSelectio
         .name("decode".into())
         .spawn(move || {
             async_io::block_on(async {
-                let decoded = run(&uri, screen, accepted, thread_cancellable, &sender).await;
+                let decoded =
+                    run(&uri, screen, accepted, thread_cancellable, prepare, &sender).await;
                 if let Err(error) = decoded {
                     let _ = sender.send(Event::Failed(error.to_string())).await;
                 }
@@ -69,12 +80,13 @@ pub fn start(uri: String, screen: Option<Screen>, accepted: MemoryFormatSelectio
     }
 }
 
-async fn run(
+async fn run<T>(
     uri: &str,
     screen: Option<Screen>,
     accepted: MemoryFormatSelection,
     cancellable: gio::Cancellable,
-    sender: &async_channel::Sender<Event>,
+    mut prepare: impl FnMut(Frame) -> T,
+    sender: &async_channel::Sender<Event<T>>,
 ) -> Result<(), glycin::Error> {
     let mut loader = glycin::Loader::new(gio::File::for_uri(uri));
     loader
@@ -99,14 +111,14 @@ async fn run(
     let mut due = Instant::now();
     loop {
         let delay = frame.delay().map(playable);
-        let decoded = Frame {
+        let decoded = prepare(Frame {
             width: frame.width(),
             height: frame.height(),
             stride: frame.stride(),
             format: frame.memory_format(),
             pixels: frame.buf_bytes(),
             delay,
-        };
+        });
         if sender.send(Event::Frame(decoded)).await.is_err() {
             return Ok(());
         }
