@@ -9,6 +9,7 @@ use gpui_kit::*;
 use silent::format;
 
 use crate::content::Archive;
+use crate::icons;
 use crate::theme::Theme;
 
 /// gpui-component is set up only when an archive is shown, so that other
@@ -31,11 +32,13 @@ struct Node {
 }
 
 impl ArchivePane {
-    pub fn new(archive: Archive, cx: &mut Context<Self>) -> Self {
+    pub fn new(archive: Archive, window: &mut Window, cx: &mut Context<Self>) -> Self {
         if !cx.has_global::<ComponentsReady>() {
             gpui_kit::component::init(cx);
             cx.set_global(ComponentsReady);
         }
+        // The rows' hover and selection follow the desktop's light or dark.
+        gpui_kit::component::Theme::change(window.appearance(), Some(window), cx);
         let mut root = Node::default();
         for entry in &archive.entries {
             let mut node = &mut root;
@@ -105,11 +108,13 @@ impl Render for ArchivePane {
         let sizes = self.sizes.clone();
         let rows = tree(&self.tree, move |ix, entry, _, _, _| {
             let item = entry.item();
-            let marker = match (entry.is_folder(), entry.is_expanded()) {
+            let (folder, open) = (entry.is_folder(), entry.is_expanded());
+            let marker = match (folder, open) {
                 (true, true) => "▾",
                 (true, false) => "▸",
                 _ => "",
             };
+            let (icon, color) = icons::for_entry(&item.label, folder, open);
             let size = sizes
                 .get(&item.id)
                 .map(|s| format::size(*s))
@@ -129,10 +134,19 @@ impl Render for ArchivePane {
                             .child(marker),
                     )
                     .child(
+                        svg()
+                            .path(icon)
+                            .flex_none()
+                            .size(px(16.))
+                            .mr(px(8.))
+                            .text_color(color),
+                    )
+                    .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .truncate()
+                            .text_color(theme.text)
                             .child(item.label.clone()),
                     )
                     .child(

@@ -1,6 +1,7 @@
 mod app;
 mod archive;
 mod content;
+mod icons;
 mod lines;
 mod media;
 mod pdf;

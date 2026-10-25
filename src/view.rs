@@ -149,7 +149,9 @@ impl Preview {
             Body::Pdf(pdf) => Pane::Pdf(cx.new(|_| PdfPane::new(pdf, window))),
             Body::Text(text) => Pane::Lines(cx.new(|_| LinesPane::new(Doc::Text(text)))),
             Body::Hex(hex) => Pane::Lines(cx.new(|_| LinesPane::new(Doc::Hex(hex)))),
-            Body::Archive(archive) => Pane::Archive(cx.new(|cx| ArchivePane::new(archive, cx))),
+            Body::Archive(archive) => {
+                Pane::Archive(cx.new(|cx| ArchivePane::new(archive, window, cx)))
+            }
             body => {
                 self.loaded.body = body;
                 Pane::None

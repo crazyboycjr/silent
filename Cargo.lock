@@ -6900,6 +6900,7 @@ dependencies = [
  "gio",
  "glycin",
  "gpui-kit",
+ "gpui-kit-assets",
  "gpui-pdf",
  "gpui-video-player",
  "gstreamer",

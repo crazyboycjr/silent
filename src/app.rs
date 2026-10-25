@@ -11,6 +11,7 @@ use silent::geometry::{Rect, Screen};
 use silent::x11::{self, X11};
 
 use crate::content::{self, Loaded};
+use crate::icons::Icons;
 use crate::trace;
 use crate::view::Preview;
 
@@ -92,7 +93,9 @@ pub fn run(bus: Option<Bus>, requests: async_channel::Receiver<Request>, first: 
     }
     // The controller leaves on its own terms: after a delayed Rename, and
     // after the calls that were on their way when the name was given up.
-    let app = gpui_kit::application().with_quit_mode(QuitMode::Explicit);
+    let app = gpui_kit::application()
+        .with_quit_mode(QuitMode::Explicit)
+        .with_assets(Icons);
     trace::mark("toolkit");
     app.run(move |cx| {
         let forward = input.clone();
