@@ -9,15 +9,47 @@ publish = false
 [dependencies]
 async-channel = "2.5"
 async-io = "2.6"
+compress-tools = "0.16"
+encoding_rs = "0.8"
 fast_image_resize = "6.1"
 futures-lite = "2.6"
 gio = "0.22"
 glycin = "4.0"
-gpui-kit = { version = "0.8", default-features = false }
-image = { version = "0.25", default-features = false }
+gpui-kit = { version = "0.8", default-features = false, features = [
+    "component",
+    "tree-sitter",
+    "tree-sitter-bash",
+    "tree-sitter-c",
+    "tree-sitter-cmake",
+    "tree-sitter-cpp",
+    "tree-sitter-css",
+    "tree-sitter-diff",
+    "tree-sitter-go",
+    "tree-sitter-html",
+    "tree-sitter-java",
+    "tree-sitter-javascript",
+    "tree-sitter-lua",
+    "tree-sitter-make",
+    "tree-sitter-markdown",
+    "tree-sitter-python",
+    "tree-sitter-rust",
+    "tree-sitter-sql",
+    "tree-sitter-toml",
+    "tree-sitter-tsx",
+    "tree-sitter-typescript",
+    "tree-sitter-yaml",
+] }
+gpui-pdf = "0.6.1"
+gpui-video-player = { version = "0.1.3", default-features = false, features = ["gpui-pre"] }
+gstreamer = "0.25"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+lofty = "0.25"
 raw-window-handle = "0.6"
+ropey = "=2.0.0-beta.1"
 smallvec = "1"
+url = "2"
 x11rb = { version = "0.14", features = ["randr"] }
+yuv = "0.8"
 zbus = { version = "5.15", default-features = false, features = ["async-io", "blocking-api"] }
 
 [profile.release]

@@ -1,5 +1,9 @@
 mod app;
+mod archive;
+mod code;
 mod content;
+mod media;
+mod pdf;
 mod picture;
 mod theme;
 mod trace;

@@ -10,7 +10,11 @@ use silent::detect::Kind;
 use silent::format;
 
 use crate::app::{Input, Intent};
+use crate::archive::ArchivePane;
+use crate::code::TextPane;
 use crate::content::{Body, Loaded, Totals};
+use crate::media::{AudioPane, VideoPane};
+use crate::pdf::PdfPane;
 use crate::theme::{Theme, accent};
 use crate::trace;
 
@@ -23,6 +27,8 @@ pub struct Preview {
     loaded: Loaded,
     image: Option<Arc<RenderImage>>,
     totals: Option<Totals>,
+    pane: Pane,
+    _pane_changes: Option<Subscription>,
     /// Keeps the decoder or the folder walk feeding this view.
     feed: Option<Task<()>>,
     strip: Strip,
@@ -32,6 +38,29 @@ pub struct Preview {
     input: async_channel::Sender<Input>,
     traced: bool,
     _appearance: Subscription,
+}
+
+/// Kinds with state of their own get a view of their own.
+enum Pane {
+    None,
+    Video(Entity<VideoPane>),
+    Audio(Entity<AudioPane>),
+    Pdf(Entity<PdfPane>),
+    Text(Entity<TextPane>),
+    Archive(Entity<ArchivePane>),
+}
+
+impl Pane {
+    fn view(&self) -> Option<AnyView> {
+        Some(match self {
+            Pane::None => return None,
+            Pane::Video(v) => v.clone().into(),
+            Pane::Audio(v) => v.clone().into(),
+            Pane::Pdf(v) => v.clone().into(),
+            Pane::Text(v) => v.clone().into(),
+            Pane::Archive(v) => v.clone().into(),
+        })
+    }
 }
 
 #[derive(Default)]
@@ -56,6 +85,8 @@ impl Preview {
             loaded,
             image: None,
             totals: None,
+            pane: Pane::None,
+            _pane_changes: None,
             feed: None,
             strip: Strip::default(),
             hide: None,
@@ -79,9 +110,30 @@ impl Preview {
     fn attach(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.feed = None;
         self.totals = None;
+        self.pane = Pane::None;
+        self._pane_changes = None;
         if let Some(old) = self.image.take() {
             cx.drop_image(old, Some(window));
         }
+        let name: SharedString = self.loaded.facts.name.clone().into();
+        self.pane = match std::mem::replace(&mut self.loaded.body, Body::Info) {
+            Body::Video(video) => Pane::Video(cx.new(|cx| VideoPane::new(video, window, cx))),
+            Body::Audio(audio) => Pane::Audio(cx.new(|cx| AudioPane::new(audio, name, window, cx))),
+            Body::Pdf(pdf) => Pane::Pdf(cx.new(|_| PdfPane::new(pdf, window))),
+            Body::Text(text) => Pane::Text(cx.new(|_| TextPane::new(*text))),
+            Body::Archive(archive) => Pane::Archive(cx.new(|cx| ArchivePane::new(archive, cx))),
+            body => {
+                self.loaded.body = body;
+                Pane::None
+            }
+        };
+        // The strip shows the playing position and the page in view.
+        self._pane_changes = match &self.pane {
+            Pane::Video(v) => Some(cx.observe(v, |_, _, cx| cx.notify())),
+            Pane::Audio(v) => Some(cx.observe(v, |_, _, cx| cx.notify())),
+            Pane::Pdf(v) => Some(cx.observe(v, |_, _, cx| cx.notify())),
+            _ => None,
+        };
         let mut image = None;
         match &mut self.loaded.body {
             Body::Image(picture) => {
@@ -123,14 +175,61 @@ impl Preview {
                     }
                 }));
             }
-            Body::Info => {}
+            _ => {}
         }
         self.image = image;
         cx.notify();
     }
 
-    fn ready(&self) -> bool {
-        !matches!(self.loaded.body, Body::Image(_)) || self.image.is_some()
+    fn ready(&self, cx: &App) -> bool {
+        match &self.pane {
+            Pane::Video(video) => video.read(cx).ready(),
+            Pane::None => !matches!(self.loaded.body, Body::Image(_)) || self.image.is_some(),
+            _ => true,
+        }
+    }
+
+    /// Keys for whatever the window shows: play and seek media, page through
+    /// documents.
+    fn pane_key(&self, key: &str, window: &Window, cx: &App) -> bool {
+        match (&self.pane, key) {
+            (Pane::Video(v), _) => {
+                let v = v.read(cx);
+                match key {
+                    "k" => v.toggle_pause(),
+                    "j" => v.seek(false),
+                    "l" => v.seek(true),
+                    "m" => v.toggle_mute(),
+                    _ => return false,
+                }
+            }
+            (Pane::Audio(a), _) => {
+                let a = a.read(cx);
+                match key {
+                    "k" => a.toggle_pause(),
+                    "j" => a.seek(false),
+                    "l" => a.seek(true),
+                    "m" => a.toggle_mute(),
+                    _ => return false,
+                }
+            }
+            (Pane::Pdf(p), "pagedown" | "pageup") => {
+                p.read(cx).scroll_by_page(window, key == "pagedown")
+            }
+            (Pane::Text(t), "pagedown" | "pageup") => {
+                t.read(cx).scroll_by_page(window, key == "pagedown")
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn toggle_pause(&self, cx: &App) {
+        match &self.pane {
+            Pane::Video(v) => v.read(cx).toggle_pause(),
+            Pane::Audio(a) => a.read(cx).toggle_pause(),
+            _ => {}
+        }
     }
 
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -151,6 +250,7 @@ impl Preview {
                 window.toggle_fullscreen();
                 None
             }
+            key if self.pane_key(key, window, cx) => None,
             _ => return,
         };
         cx.stop_propagation();
@@ -175,9 +275,35 @@ impl Preview {
         }
     }
 
-    fn strip_text(&self) -> String {
+    fn strip_text(&self, window: &Window, cx: &App) -> String {
         let facts = &self.loaded.facts;
-        let mut parts = vec![facts.name.clone()];
+        let mut parts = vec![facts.name.clone(), format::size(facts.size)];
+        match &self.pane {
+            Pane::Video(v) => parts.push(v.read(cx).status()),
+            Pane::Audio(a) => parts.push(a.read(cx).status()),
+            Pane::Pdf(p) => {
+                let p = p.read(cx);
+                parts.push(format!(
+                    "page {} of {}",
+                    p.current_page(window),
+                    p.page_count()
+                ));
+            }
+            Pane::Text(t) => {
+                let t = t.read(cx);
+                parts.push(format::count(t.line_count() as u64, "line", "lines"));
+                parts.extend(t.language().map(str::to_owned));
+                if t.truncated() {
+                    parts.push("the first 2 MB".into());
+                }
+            }
+            Pane::Archive(a) => parts.push(a.read(cx).summary()),
+            Pane::None => {}
+        }
+        if !matches!(self.pane, Pane::None) {
+            return parts.join(" · ");
+        }
+        parts.truncate(1);
         match &self.loaded.body {
             Body::Image(picture) => {
                 parts.push(format::size(facts.size));
@@ -191,7 +317,7 @@ impl Preview {
                     parts.push(format::size(totals.bytes));
                 }
             }
-            Body::Info => {
+            _ => {
                 parts.push(format::size(facts.size));
                 parts.push(self.loaded.description.clone());
             }
@@ -199,7 +325,7 @@ impl Preview {
         parts.join(" · ")
     }
 
-    fn strip(&self, theme: Theme, radius: Pixels) -> AnyElement {
+    fn strip(&self, theme: Theme, radius: Pixels, window: &Window, cx: &App) -> AnyElement {
         let strip = div()
             .absolute()
             .left_0()
@@ -216,7 +342,7 @@ impl Preview {
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis_middle()
-                    .child(self.strip_text()),
+                    .child(self.strip_text(window, cx)),
             );
         if self.strip.epoch == 0 {
             return strip.opacity(0.).into_any_element();
@@ -332,11 +458,17 @@ impl Render for Preview {
         } else {
             px(0.)
         };
-        if !self.traced && self.ready() {
+        if !self.traced && self.ready(cx) {
             self.traced = true;
             window.on_next_frame(|_, _| trace::mark("first frame"));
         }
         let body = match (&self.loaded.body, &self.image) {
+            _ if let Some(pane) = self.pane.view() => div()
+                .size_full()
+                .rounded(radius)
+                .overflow_hidden()
+                .child(pane)
+                .into_any_element(),
             (Body::Image(_), Some(image)) => img(ImageSource::Render(image.clone()))
                 .size_full()
                 .object_fit(ObjectFit::Contain)
@@ -345,8 +477,9 @@ impl Render for Preview {
             (Body::Image(_), None) => div().size_full().into_any_element(),
             _ => self.card(theme).rounded(radius).into_any_element(),
         };
-        let backdrop = match self.loaded.body {
-            Body::Image(_) => theme.backdrop,
+        let backdrop = match (&self.pane, &self.loaded.body) {
+            (Pane::Video(_), _) => rgb(0x000000).into(),
+            (Pane::None, Body::Image(_)) => theme.backdrop,
             _ => theme.surface,
         };
         div()
@@ -367,8 +500,9 @@ impl Render for Preview {
                     this.set_strip(false, cx);
                 }
             }))
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_pause(cx)))
             .child(body)
-            .child(self.strip(theme, radius))
+            .child(self.strip(theme, radius, window, cx))
     }
 }
 
