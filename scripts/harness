@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# Test harness: fixtures, a private X display and session bus, and calls the
+# way Nautilus makes them. Nothing here touches the real display or bus.
+#
+#   harness fixtures                 make the test files
+#   harness display                  start Xvfb (3840x2160, Xft.dpi 163), print its DISPLAY
+#   harness bus BINARY -- CMD...     run CMD on a private session bus where
+#                                    org.gnome.NautilusPreviewer activates BINARY
+#   harness show FILE [CLOSE]        ShowFile, as Nautilus calls it (inside `bus`)
+#   harness close                    Close (inside `bus`)
+#   harness shot NAME                screenshot of the test display
+set -euo pipefail
+
+SCRATCH=${SILENT_SCRATCH:-$HOME/.cache/claude-scratch/silent}
+FIXTURES=${SILENT_FIXTURES:-$SCRATCH/fixtures}
+NAME=org.gnome.NautilusPreviewer
+OBJECT=/org/gnome/NautilusPreviewer
+IFACE=org.gnome.NautilusPreviewer2
+# Every heavy step runs capped: an endless filter graph once filled RAM.
+HEAVY=(systemd-run --user --scope -q -p MemoryMax=4G -p MemorySwapMax=0 nice -n 19 taskset -c 1-15)
+
+die() { echo "harness: $*" >&2; exit 1; }
+
+fixtures() {
+    local f=$FIXTURES
+    mkdir -p "$f"/{images,video,audio,docs,text,archives,folder,other}
+    cd "$f"
+    local ff=("${HEAVY[@]}" ffmpeg -nostdin -hide_banner -loglevel error -y)
+    local mk=("${HEAVY[@]}" magick)
+
+    # Photos: smooth colour fields with grain compress like real photos.
+    "${ff[@]}" -f lavfi -i "gradients=s=4032x3024:n=6:seed=7:d=1" -vf "noise=alls=12:allf=t" \
+        -frames:v 1 -q:v 3 images/photo-4032x3024.jpg
+    cp images/photo-4032x3024.jpg images/portrait-exif6.jpg
+    exiftool -q -overwrite_original -Orientation#=6 -n images/portrait-exif6.jpg
+    "${ff[@]}" -f lavfi -i "gradients=s=3840x2160:n=4:seed=3:d=1" -vf "noise=alls=6:allf=t" \
+        -frames:v 1 images/uhd-3840x2160.png
+    "${ff[@]}" -f lavfi -i "testsrc2=s=1920x1080:d=1" -frames:v 1 -q:v 2 images/fhd-1920x1080.jpg
+    "${ff[@]}" -f lavfi -i "smptehdbars=s=1024x768:d=1" -frames:v 1 images/xga-1024x768.png
+    "${ff[@]}" -f lavfi -i "mandelbrot=s=640x480" -frames:v 1 -q:v 2 images/vga-640x480.jpg
+    "${ff[@]}" -f lavfi -i "testsrc=s=300x200:d=1" -frames:v 1 images/small-300x200.png
+    "${ff[@]}" -f lavfi -i "gradients=s=8000x1500:n=3:seed=11:d=1" -frames:v 1 -q:v 3 images/panorama-8000x1500.jpg
+    "${ff[@]}" -f lavfi -i "testsrc2=s=1080x6000:d=1" -frames:v 1 images/tall-1080x6000.png
+    "${mk[@]}" -size 16x16 xc:none -fill '#d9643a' -draw 'rectangle 3,3 12,12' \
+        -fill '#f6e7c8' -draw 'point 6,6 point 9,6 point 6,9 point 7,10 point 8,10 point 9,9' images/icon-16.png
+    "${mk[@]}" images/icon-16.png -filter point -resize 400% images/icon-64.png
+    "${mk[@]}" -size 900x600 radial-gradient:'#e8a87c'-none images/transparent.png
+    "${mk[@]}" images/fhd-1920x1080.jpg -quality 60 images/photo.heic
+    "${mk[@]}" images/fhd-1920x1080.jpg -quality 60 images/photo.avif
+    "${mk[@]}" images/fhd-1920x1080.jpg -quality 80 images/photo.jxl
+    "${mk[@]}" images/fhd-1920x1080.jpg -quality 80 images/photo.webp
+    "${ff[@]}" -f lavfi -i "testsrc=s=480x360:r=12:d=3" -vf "split[a][b];[a]palettegen[p];[b][p]paletteuse" \
+        -loop 0 images/animated.gif
+    "${ff[@]}" -f lavfi -i "testsrc=s=480x360:r=12:d=3" -loop 0 -c:v libwebp_anim images/animated.webp
+    "${ff[@]}" -f lavfi -i "testsrc=s=320x240:r=10:d=2" -plays 0 -f apng images/animated.png
+    cat > images/vector.svg <<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="120" viewBox="0 0 160 120">
+  <rect width="160" height="120" fill="#f6efe3"/>
+  <circle cx="58" cy="60" r="34" fill="#d9643a"/>
+  <rect x="84" y="30" width="52" height="60" rx="8" fill="#5b7f6b"/>
+  <text x="80" y="112" font-family="sans-serif" font-size="11" text-anchor="middle" fill="#3b2f25">silent</text>
+</svg>
+SVG
+
+    # Video: 1080p60 and 4K60 for the frame-rate checks, a small webm, a portrait clip.
+    "${ff[@]}" -f lavfi -i "testsrc2=s=1920x1080:r=60:d=10" -f lavfi -i "sine=f=440:d=10" \
+        -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -shortest video/clip-1080p60.mp4
+    "${ff[@]}" -f lavfi -i "testsrc2=s=3840x2160:r=60:d=10" \
+        -c:v libx264 -preset ultrafast -pix_fmt yuv420p video/clip-4k60.mp4
+    "${ff[@]}" -f lavfi -i "testsrc=s=1280x720:r=30:d=6" -f lavfi -i "sine=f=330:d=6" \
+        -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -c:a libopus -shortest video/clip-720p.webm
+    "${ff[@]}" -f lavfi -i "testsrc2=s=1080x1920:r=30:d=4" \
+        -c:v libx264 -preset veryfast -pix_fmt yuv420p video/portrait-1080x1920.mp4
+
+    # Audio: tags and a cover, and one without either.
+    "${mk[@]}" -size 600x600 gradient:'#e8a87c'-'#5b7f6b' audio/cover.jpg
+    "${ff[@]}" -f lavfi -i "sine=f=262:d=20" -i audio/cover.jpg -map 0 -map 1 -c:a libmp3lame -q:a 4 \
+        -c:v copy -id3v2_version 3 -disposition:v attached_pic \
+        -metadata title="Quiet Morning" -metadata artist="The Placeholders" -metadata album="Fixtures" \
+        audio/song.mp3
+    "${ff[@]}" -f lavfi -i "sine=f=392:d=20" -i audio/cover.jpg -map 0 -map 1 -c:a flac \
+        -c:v copy -disposition:v attached_pic \
+        -metadata title="長い午後" -metadata artist="示例乐队" -metadata album="样本" audio/song.flac
+    "${ff[@]}" -f lavfi -i "sine=f=523:d=8" -c:a libvorbis audio/tone.ogg
+    rm audio/cover.jpg
+
+    # Documents: real typeset PDFs and a scanned-looking one.
+    cp /usr/share/doc/graphviz/dotguide.pdf docs/dotguide.pdf
+    cp /usr/share/doc/ghostscript/GS9_Color_Management.pdf docs/color-management.pdf
+    "${mk[@]}" images/fhd-1920x1080.jpg images/xga-1024x768.png images/vga-640x480.jpg docs/pictures.pdf
+
+    # Text and code.
+    cp "$(dirname "$0")/../src/geometry.rs" text/geometry.rs
+    printf 'import sys\n\n\ndef main():\n    print("hello", sys.argv[1:])\n\n\nif __name__ == "__main__":\n    main()\n' > text/script.py
+    printf '{\n  "name": "silent",\n  "formats": ["image", "video", "pdf"],\n  "fast": true\n}\n' > text/data.json
+    printf 'Notes without an extension.\nSecond line.\n' > text/README
+    (yes 'The quick brown fox jumps over the lazy dog, again and again and again.' || true) | head -c 5000000 > text/long.txt
+    printf '静夜思\n床前明月光，疑是地上霜。\n举头望明月，低头思故乡。\n' | iconv -f UTF-8 -t GB18030 > text/chinese-gb18030.txt
+
+    # Archives.
+    mkdir -p folder/project/{src,docs,assets}
+    cp text/geometry.rs text/script.py folder/project/src/
+    cp text/data.json text/README folder/project/
+    cp docs/pictures.pdf folder/project/docs/
+    cp images/small-300x200.png images/icon-64.png folder/project/assets/
+    (cd folder && "${HEAVY[@]}" zip -qr ../archives/project.zip project && "${HEAVY[@]}" tar czf ../archives/project.tar.gz project)
+    "${HEAVY[@]}" tar czf archives/many-files.tar.gz -C /usr/share/icons hicolor
+    gzip -kc text/long.txt > archives/long.txt.gz
+
+    # Everything else.
+    head -c 300000 /dev/urandom > other/blob.bin
+    cp /usr/bin/true other/program
+    cp "$(fc-match -f '%{file}' 'DejaVu Sans')" other/font.ttf 2>/dev/null || true
+    echo "fixtures in $f:"
+    find "$f" -type f | sort | sed "s|$f/|  |"
+}
+
+display() {
+    local n=42
+    while [[ -e /tmp/.X11-unix/X$n || -e /tmp/.X$n-lock ]]; do n=$((n + 1)); done
+    # -noreset: otherwise the server forgets the resources when xrdb disconnects.
+    Xvfb ":$n" -screen 0 3840x2160x24 -nolisten tcp -noreset >"$SCRATCH/xvfb-$n.log" 2>&1 &
+    for _ in $(seq 50); do [[ -e /tmp/.X11-unix/X$n ]] && break; sleep 0.1; done
+    echo "Xft.dpi: 163" | DISPLAY=":$n" xrdb -nocpp -merge
+    echo ":$n"
+}
+
+bus() {
+    local binary=$1; shift
+    [[ ${1:-} == -- ]] && shift
+    [[ ${DISPLAY:-} == :0* ]] && die "DISPLAY is the real display; start a test one with 'harness display'"
+    local dir; dir=$(mktemp -d "$SCRATCH/bus.XXXXXX")
+    mkdir -p "$dir/services"
+    printf '[D-BUS Service]\nName=%s\nExec=%s\n' "$NAME" "$binary" > "$dir/services/$NAME.service"
+    cat > "$dir/session.conf" <<CONF
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <listen>unix:tmpdir=$dir</listen>
+  <auth>EXTERNAL</auth>
+  <servicedir>$dir/services</servicedir>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+CONF
+    dbus-run-session --config-file="$dir/session.conf" -- "$@"
+}
+
+show() {
+    local uri; uri=$(python3 -I -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve().as_uri())' "$1")
+    gdbus call --session --dest $NAME --object-path $OBJECT --method $IFACE.ShowFile \
+        "$uri" "${SILENT_PARENT:-x11:0}" "${2:-false}" ''
+}
+
+close() {
+    gdbus call --session --dest $NAME --object-path $OBJECT --method $IFACE.Close
+}
+
+shot() {
+    [[ ${DISPLAY:-} == :0* || -z ${DISPLAY:-} ]] && die "no test display"
+    import -display "$DISPLAY" -window root "$SCRATCH/$1.png"
+    echo "$SCRATCH/$1.png"
+}
+
+cmd=${1:-}; shift || true
+case $cmd in
+    fixtures | display | bus | show | close | shot) "$cmd" "$@" ;;
+    *) sed -n '2,13p' "$0"; exit 2 ;;
+esac
