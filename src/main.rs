@@ -1,13 +1,17 @@
 mod app;
 mod archive;
 mod content;
+mod docview;
+mod grid;
 mod icons;
 mod lines;
 mod media;
+mod paged;
 mod pdf;
 mod pdftext;
 mod picture;
 mod scrub;
+mod slides;
 mod theme;
 mod trace;
 mod view;
@@ -110,6 +114,14 @@ fn probe(paths: &[String]) -> ExitCode {
             facts.size,
             ms(started)
         );
+        if matches!(
+            facts.kind,
+            Kind::Document | Kind::Spreadsheet | Kind::Presentation
+        ) {
+            describe_office(&path, &facts.content_type, facts.kind);
+            println!("  read in {:.1} ms", ms(started));
+            continue;
+        }
         if facts.kind != Kind::Image {
             continue;
         }
@@ -141,6 +153,81 @@ fn probe(paths: &[String]) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// What the Office reader makes of a file: blocks, sheets or slides.
+fn describe_office(path: &std::path::Path, content_type: &str, kind: Kind) {
+    use silent::office::{self, Block, docx, odf, pptx, sheet};
+    let open = content_type.contains("opendocument");
+    if content_type.contains("apple") || content_type.contains("iwork") {
+        let preview = office::iwork_preview(path);
+        println!("  preview picture: {:?} bytes", preview.map(|p| p.len()));
+        return;
+    }
+    match kind {
+        Kind::Spreadsheet => match sheet::open(path) {
+            Some((names, grid)) => println!(
+                "  sheets {names:?}; the first: {} × {} used, {} rows read from {:?}",
+                grid.size.0,
+                grid.size.1,
+                grid.cells.len(),
+                grid.origin
+            ),
+            None => println!("  unreadable"),
+        },
+        Kind::Presentation if !open => {
+            let Some(deck) = pptx::open(path) else {
+                println!("  unreadable");
+                return;
+            };
+            println!("  {} slides of {:?} pt", deck.slides.len(), deck.size);
+            for i in 0..deck.slides.len().min(3) {
+                let Some(slide) = pptx::slide(path, &deck, i) else {
+                    continue;
+                };
+                println!("  slide {}: {} items", i + 1, slide.items.len());
+                for item in &slide.items {
+                    let what = match &item.kind {
+                        pptx::Kind::Shape { text: Some(t), .. } => t
+                            .paragraphs
+                            .iter()
+                            .map(|p| p.spans.iter().map(|s| s.text.as_str()).collect::<String>())
+                            .collect::<Vec<_>>()
+                            .join(" / "),
+                        pptx::Kind::Shape { .. } => "shape".into(),
+                        pptx::Kind::Picture(data) => format!("picture of {} bytes", data.len()),
+                        pptx::Kind::Table { rows, .. } => format!("table of {} rows", rows.len()),
+                    };
+                    println!("    {:?}: {what}", item.rect);
+                }
+            }
+        }
+        _ => {
+            let document = match kind {
+                Kind::Presentation => odf::read_slides(path),
+                _ if open => odf::read_text(path),
+                _ => docx::read(path),
+            };
+            let Some(document) = document else {
+                println!("  unreadable");
+                return;
+            };
+            println!(
+                "  page {:?} pt, {} blocks",
+                document.page,
+                document.blocks.len()
+            );
+            for block in document.blocks.iter().take(12) {
+                match block {
+                    Block::Paragraph(p) => {
+                        println!("    {:?} {:?} {}", p.role, p.marker, p.text())
+                    }
+                    Block::Table(t) => println!("    table of {} rows", t.rows.len()),
+                    Block::Image(i) => println!("    picture {:?} pt", i.size),
+                }
+            }
+        }
+    }
 }
 
 fn ms(since: Instant) -> f64 {

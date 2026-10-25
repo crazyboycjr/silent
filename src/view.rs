@@ -13,9 +13,12 @@ use silent::resume::{self, Key};
 use crate::app::{Input, Intent};
 use crate::archive::ArchivePane;
 use crate::content::{Body, Loaded, Totals};
+use crate::docview::DocPane;
+use crate::grid::SheetPane;
 use crate::lines::{Doc, LinesPane};
 use crate::media::{AudioPane, VideoPane};
 use crate::pdf::PdfPane;
+use crate::slides::SlidesPane;
 use crate::theme::{Theme, accent};
 use crate::trace;
 
@@ -50,6 +53,9 @@ enum Pane {
     Pdf(Entity<PdfPane>),
     Lines(Entity<LinesPane>),
     Archive(Entity<ArchivePane>),
+    Doc(Entity<DocPane>),
+    Sheet(Entity<SheetPane>),
+    Slides(Entity<SlidesPane>),
 }
 
 impl Pane {
@@ -61,6 +67,9 @@ impl Pane {
             Pane::Pdf(v) => v.clone().into(),
             Pane::Lines(v) => v.clone().into(),
             Pane::Archive(v) => v.clone().into(),
+            Pane::Doc(v) => v.clone().into(),
+            Pane::Sheet(v) => v.clone().into(),
+            Pane::Slides(v) => v.clone().into(),
         })
     }
 }
@@ -149,6 +158,9 @@ impl Preview {
             Body::Pdf(pdf) => Pane::Pdf(cx.new(|_| PdfPane::new(pdf, window))),
             Body::Text(text) => Pane::Lines(cx.new(|_| LinesPane::new(Doc::Text(text)))),
             Body::Hex(hex) => Pane::Lines(cx.new(|_| LinesPane::new(Doc::Hex(hex)))),
+            Body::Document(doc) => Pane::Doc(cx.new(|_| DocPane::new(*doc))),
+            Body::Sheet(sheet) => Pane::Sheet(cx.new(|_| SheetPane::new(*sheet))),
+            Body::Deck(deck) => Pane::Slides(cx.new(|_| SlidesPane::new(*deck, window))),
             Body::Archive(archive) => {
                 Pane::Archive(cx.new(|cx| ArchivePane::new(archive, window, cx)))
             }
@@ -162,6 +174,8 @@ impl Preview {
             Pane::Video(v) => Some(cx.observe(v, |_, _, cx| cx.notify())),
             Pane::Audio(v) => Some(cx.observe(v, |_, _, cx| cx.notify())),
             Pane::Pdf(v) => Some(cx.observe(v, |_, _, cx| cx.notify())),
+            Pane::Sheet(v) => Some(cx.observe(v, |_, _, cx| cx.notify())),
+            Pane::Slides(v) => Some(cx.observe(v, |_, _, cx| cx.notify())),
             _ => None,
         };
         self.shift = false;
@@ -192,6 +206,7 @@ impl Preview {
                     }
                 }));
             }
+            Body::Still(still) => image = Some(still.image.clone()),
             Body::Folder(folder) => {
                 let totals = folder.totals.clone();
                 self.feed = Some(cx.spawn(async move |this, cx| {
@@ -251,6 +266,17 @@ impl Preview {
             Pane::Lines(t) if matches!(key, "pagedown" | "pageup") => {
                 t.update(cx, |t, cx| t.scroll_by_page(key == "pagedown", cx));
             }
+            Pane::Doc(d) if matches!(key, "pagedown" | "pageup") => {
+                d.read(cx).scroll_by_page(window, key == "pagedown");
+                d.update(cx, |_, cx| cx.notify());
+            }
+            Pane::Sheet(s) if matches!(key, "pagedown" | "pageup") => {
+                s.update(cx, |s, cx| s.scroll_by_page(key == "pagedown", cx));
+            }
+            Pane::Slides(s) if matches!(key, "pagedown" | "pageup") => {
+                s.read(cx).scroll_by_page(window, key == "pagedown");
+                s.update(cx, |_, cx| cx.notify());
+            }
             _ => return false,
         }
         true
@@ -268,6 +294,22 @@ impl Preview {
             (Pane::Pdf(p), "home" | "end") => p.update(cx, |p, cx| p.go_to_end(key == "end", cx)),
             (Pane::Lines(t), "home" | "end") => {
                 t.update(cx, |t, cx| t.scroll_to_end(key == "end", cx));
+            }
+            (Pane::Doc(d), "home" | "end") => {
+                d.read(cx).scroll_to_end(key == "end");
+                d.update(cx, |_, cx| cx.notify());
+            }
+            (Pane::Sheet(s), "home" | "end") => {
+                s.update(cx, |s, cx| s.scroll_to_end(key == "end", cx));
+            }
+            (Pane::Sheet(s), "left" | "right") => {
+                s.update(cx, |s, cx| s.step_sheet(key == "right", cx));
+            }
+            (Pane::Slides(s), "up" | "down") => {
+                s.update(cx, |s, cx| s.step_slide(key == "down", cx));
+            }
+            (Pane::Slides(s), "home" | "end") => {
+                s.update(cx, |s, cx| s.go_to_end(key == "end", cx));
             }
             _ => return false,
         }
@@ -345,6 +387,7 @@ impl Preview {
             Pane::Video(v) => v.update(cx, |v, cx| v.set_shift(held, cx)),
             Pane::Pdf(p) => p.update(cx, |p, cx| p.set_shift(held, cx)),
             Pane::Lines(t) => t.update(cx, |t, cx| t.set_shift(held, cx)),
+            Pane::Slides(s) => s.update(cx, |s, cx| s.set_shift(held, cx)),
             _ => {}
         }
         cx.notify();
@@ -402,6 +445,16 @@ impl Preview {
                 parts.extend(t.read(cx).summary());
             }
             Pane::Archive(a) => parts.push(a.read(cx).summary()),
+            Pane::Doc(_) => parts.push(self.loaded.description.clone()),
+            Pane::Sheet(s) => parts.push(s.read(cx).summary()),
+            Pane::Slides(s) => {
+                let s = s.read(cx);
+                parts.push(format!(
+                    "slide {} of {}",
+                    s.current_slide(),
+                    s.slide_count()
+                ));
+            }
             Pane::None => {}
         }
         if !matches!(self.pane, Pane::None) {
@@ -412,6 +465,11 @@ impl Preview {
             Body::Image(picture) => {
                 parts.push(format::size(facts.size));
                 parts.push(format!("{} × {}", picture.natural.0, picture.natural.1));
+            }
+            Body::Still(_) => {
+                parts.push(format::size(facts.size));
+                parts.push(self.loaded.description.clone());
+                parts.push("its preview picture".into());
             }
             Body::Folder(folder) => {
                 if let Some(items) = folder.items {
@@ -430,11 +488,16 @@ impl Preview {
     }
 
     fn strip(&self, theme: Theme, radius: Pixels, cx: &App) -> AnyElement {
+        // Above a workbook's sheet tabs, which are clicked where it would be.
+        let lift = match &self.pane {
+            Pane::Sheet(s) if s.read(cx).has_tabs() => px(crate::grid::TABS),
+            _ => px(0.),
+        };
         let strip = div()
             .absolute()
             .left_0()
             .right_0()
-            .bottom_0()
+            .bottom(lift)
             .px(px(14.))
             .py(px(7.))
             .rounded_b(radius)
@@ -574,17 +637,19 @@ impl Render for Preview {
                 .overflow_hidden()
                 .child(pane)
                 .into_any_element(),
-            (Body::Image(_), Some(image)) => img(ImageSource::Render(image.clone()))
-                .size_full()
-                .object_fit(ObjectFit::Contain)
-                .rounded(radius)
-                .into_any_element(),
+            (Body::Image(_) | Body::Still(_), Some(image)) => {
+                img(ImageSource::Render(image.clone()))
+                    .size_full()
+                    .object_fit(ObjectFit::Contain)
+                    .rounded(radius)
+                    .into_any_element()
+            }
             (Body::Image(_), None) => div().size_full().into_any_element(),
             _ => self.card(theme).rounded(radius).into_any_element(),
         };
         let backdrop = match (&self.pane, &self.loaded.body) {
             (Pane::Video(_), _) => rgb(0x000000).into(),
-            (Pane::None, Body::Image(_)) => theme.backdrop,
+            (Pane::None, Body::Image(_) | Body::Still(_)) => theme.backdrop,
             _ => theme.surface,
         };
         div()

@@ -1,5 +1,6 @@
 //! Loading what a preview shows, off the UI thread.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::ops::Range;
@@ -15,6 +16,7 @@ use gstreamer::prelude::*;
 use silent::decode::{Decoder, Event};
 use silent::detect::{self, Facts, Kind};
 use silent::geometry::Screen;
+use silent::office::{self, docx, odf, pptx};
 use silent::resume::{self, Key};
 use silent::{hexdump, pretty, unpack};
 use smallvec::SmallVec;
@@ -47,6 +49,8 @@ pub struct Packed {
 
 pub enum Body {
     Image(Picture),
+    /// A picture decoded here, such as the preview an iWork file carries.
+    Still(Still),
     Folder(Folder),
     Video(Video),
     Audio(Audio),
@@ -54,7 +58,35 @@ pub enum Body {
     Text(Box<Text>),
     Hex(Hex),
     Archive(Archive),
+    Document(Box<office::Document>),
+    Sheet(Box<Sheet>),
+    Deck(Box<Deck>),
     Info,
+}
+
+pub struct Still {
+    pub image: Arc<RenderImage>,
+}
+
+pub struct Sheet {
+    pub path: PathBuf,
+    pub names: Vec<String>,
+    pub grid: office::sheet::Grid,
+}
+
+pub struct Deck {
+    pub path: PathBuf,
+    pub deck: office::pptx::Deck,
+    /// The first slide, read before the window opens.
+    pub first: Option<Slide>,
+}
+
+/// A slide with its pictures decoded.
+pub struct Slide {
+    pub slide: office::pptx::Slide,
+    /// Pictures by the index of their item.
+    pub pictures: HashMap<usize, Arc<RenderImage>>,
+    pub background: Option<Arc<RenderImage>>,
 }
 
 pub struct Picture {
@@ -211,6 +243,12 @@ pub fn load(uri: &str, screen: Screen, wait_for_pixels: bool) -> Loaded {
             }
             None => return loaded,
         },
+        (kind @ (Kind::Document | Kind::Spreadsheet | Kind::Presentation), Some(path)) => {
+            match document(kind, &path, &loaded.facts.content_type, screen) {
+                Some(shown) => shown,
+                None => return loaded,
+            }
+        }
         _ => return loaded,
     };
     loaded.size = size;
@@ -329,14 +367,109 @@ pub fn clock(position: Duration) -> gst::ClockTime {
 /// Cover art is small and comes from inside the file, so it is decoded here
 /// rather than in a sandboxed loader.
 fn cover(bytes: &[u8]) -> Option<Arc<RenderImage>> {
-    let mut rgba = image::load_from_memory(bytes).ok()?.into_rgba8();
+    decode_still(bytes, u32::MAX).map(|(image, _)| image)
+}
+
+/// A JPEG or PNG from inside a file, shrunk to at most `longest` pixels on
+/// its long side, and its own size.
+pub fn decode_still(bytes: &[u8], longest: u32) -> Option<(Arc<RenderImage>, (u32, u32))> {
+    let decoded = image::load_from_memory(bytes).ok()?;
+    let natural = (decoded.width(), decoded.height());
+    let decoded = if natural.0.max(natural.1) > longest {
+        decoded.thumbnail(longest, longest)
+    } else {
+        decoded
+    };
+    let mut rgba = decoded.into_rgba8();
     for pixel in rgba.pixels_mut() {
         pixel.0.swap(0, 2);
     }
-    Some(Arc::new(RenderImage::new(SmallVec::from_elem(
-        image::Frame::new(rgba),
-        1,
-    ))))
+    let image = RenderImage::new(SmallVec::from_elem(image::Frame::new(rgba), 1));
+    Some((Arc::new(image), natural))
+}
+
+/// Office and iWork files. iWork's own formats are not read: the preview
+/// picture they carry is shown, as Quick Look does.
+fn document(
+    kind: Kind,
+    path: &Path,
+    content_type: &str,
+    screen: Screen,
+) -> Option<((i32, i32), Body)> {
+    let iwork = ["apple", "iwork"].iter().any(|k| content_type.contains(k));
+    let open = content_type.contains("opendocument");
+    if iwork {
+        let bytes = office::iwork_preview(path)?;
+        let longest = screen.monitor.width.max(screen.monitor.height) as u32;
+        let (image, natural) = decode_still(&bytes, longest)?;
+        let fit = screen.fit_media(natural);
+        return Some(((fit.width, fit.height), Body::Still(Still { image })));
+    }
+    match kind {
+        Kind::Spreadsheet => {
+            let (names, grid) = office::sheet::open(path)?;
+            let width: f64 = grid
+                .widths
+                .iter()
+                .map(|w| (*w).clamp(4, 40) as f64 * 7.4 + 18.)
+                .sum();
+            let rows = grid.cells.len().clamp(8, 28) as f64;
+            let size = screen.card((width + 60.).clamp(560., 1400.), rows * 24. + 70.);
+            let sheet = Sheet {
+                path: path.to_owned(),
+                names,
+                grid,
+            };
+            Some((size, Body::Sheet(Box::new(sheet))))
+        }
+        Kind::Presentation if !open => {
+            let deck = pptx::open(path)?;
+            let size = screen.fit_page((deck.size.0 as f64, deck.size.1 as f64));
+            let first = render_slide(path, &deck, 0, size.0 as u32);
+            let deck = Deck {
+                path: path.to_owned(),
+                deck,
+                first,
+            };
+            Some((size, Body::Deck(Box::new(deck))))
+        }
+        _ => {
+            let document = match kind {
+                Kind::Presentation => odf::read_slides(path)?,
+                _ if open => odf::read_text(path)?,
+                _ => docx::read(path)?,
+            };
+            let (w, h) = document.page;
+            Some((
+                screen.fit_page((w as f64, h as f64)),
+                Body::Document(Box::new(document)),
+            ))
+        }
+    }
+}
+
+/// Reads a slide and decodes its pictures for a slide `width` pixels wide.
+pub fn render_slide(path: &Path, deck: &pptx::Deck, index: usize, width: u32) -> Option<Slide> {
+    let slide = pptx::slide(path, deck, index)?;
+    let scale = width as f32 / deck.size.0.max(1.);
+    let mut pictures = HashMap::new();
+    for (i, item) in slide.items.iter().enumerate() {
+        if let pptx::Kind::Picture(data) = &item.kind {
+            let longest = (item.rect.w.max(item.rect.h) * scale).ceil() as u32;
+            if let Some((image, _)) = decode_still(data, longest.max(16) * 2) {
+                pictures.insert(i, image);
+            }
+        }
+    }
+    let background = match &slide.background {
+        pptx::Fill::Image(data) => decode_still(data, width.max(16)).map(|(image, _)| image),
+        _ => None,
+    };
+    Some(Slide {
+        slide,
+        pictures,
+        background,
+    })
 }
 
 fn pdf(path: &Path, screen: Screen) -> Option<((i32, i32), Pdf)> {

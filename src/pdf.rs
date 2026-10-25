@@ -8,20 +8,19 @@ use std::sync::Arc;
 use gpui_kit::*;
 
 use crate::content::Pdf;
+use crate::paged::{GAP, Pages};
 use crate::pdftext::{Area, PageText};
 use crate::scrub::{self, Scrubbed, Scrubber};
 use crate::theme::Theme;
 
-const GAP: f32 = 10.;
 /// Pages kept rendered on each side of those in view.
 const MARGIN: usize = 2;
 
 pub struct PdfPane {
     document: Arc<gpui_pdf::Document>,
-    pages: Vec<(f32, f32)>,
+    pages: Pages,
     rendered: HashMap<usize, Arc<RenderImage>>,
     pending: HashSet<usize>,
-    scroll: ScrollHandle,
     /// The device width pages were last rendered at.
     width: f32,
     scrubber: Scrubber,
@@ -49,10 +48,9 @@ impl PdfPane {
         }
         Self {
             document: pdf.document,
-            pages: pdf.pages,
+            pages: Pages::new(pdf.pages),
             rendered,
             pending: HashSet::new(),
-            scroll: ScrollHandle::new(),
             width,
             scrubber: Scrubber::default(),
             texts: HashMap::new(),
@@ -61,75 +59,26 @@ impl PdfPane {
     }
 
     pub fn page_count(&self) -> usize {
-        self.pages.len()
-    }
-
-    /// Where each page starts and how tall it is, at the view's width.
-    fn layout(&self) -> impl Iterator<Item = (f32, f32)> + '_ {
-        let width = f32::from(self.scroll.bounds().size.width).max(1.);
-        self.pages.iter().scan(0., move |y, &(w, h)| {
-            let height = h * width / w;
-            let top = *y;
-            *y += height + GAP;
-            Some((top, height))
-        })
-    }
-
-    fn view_top(&self) -> f32 {
-        -f32::from(self.scroll.offset().y)
-    }
-
-    /// The page at the top of the view, counted from zero.
-    fn page_at_top(&self) -> usize {
-        let top = self.view_top();
-        self.layout()
-            .position(|(start, height)| start + height + GAP > top + 1.)
-            .unwrap_or(self.pages.len().saturating_sub(1))
+        self.pages.count()
     }
 
     /// The page at the top of the view, counted from one.
     pub fn current_page(&self) -> usize {
-        self.page_at_top() + 1
+        self.pages.at_top() + 1
     }
 
     pub fn scroll_by_page(&self, window: &Window, down: bool) {
-        let height = f32::from(window.viewport_size().height) * 0.9;
-        let top = self.view_top() + if down { height } else { -height };
-        self.scroll_to(top);
+        self.pages.scroll_by_page(window, down);
     }
 
-    fn scroll_to(&self, top: f32) {
-        let max = f32::from(self.scroll.max_offset().y);
-        let mut offset = self.scroll.offset();
-        offset.y = px(-top.clamp(0., max.max(0.)));
-        self.scroll.set_offset(offset);
-    }
-
-    pub fn go_to_page(&mut self, page: usize, cx: &mut Context<Self>) {
-        let page = page.min(self.pages.len().saturating_sub(1));
-        if let Some((top, _)) = self.layout().nth(page) {
-            self.scroll_to(top);
-        }
+    pub fn step_page(&mut self, down: bool, cx: &mut Context<Self>) {
+        self.pages.step(down);
         cx.notify();
     }
 
-    /// The next page's top, or this page's when the view is below it.
-    pub fn step_page(&mut self, down: bool, cx: &mut Context<Self>) {
-        let page = self.page_at_top();
-        let start = self.layout().nth(page).map_or(0., |(top, _)| top);
-        let target = if down {
-            page + 1
-        } else if self.view_top() > start + 1. {
-            page
-        } else {
-            page.saturating_sub(1)
-        };
-        self.go_to_page(target, cx);
-    }
-
     pub fn go_to_end(&mut self, end: bool, cx: &mut Context<Self>) {
-        let page = if end { self.pages.len() } else { 0 };
-        self.go_to_page(page, cx);
+        self.pages.go_to(if end { self.pages.count() } else { 0 });
+        cx.notify();
     }
 
     pub fn set_shift(&mut self, held: bool, cx: &mut Context<Self>) {
@@ -141,15 +90,16 @@ impl PdfPane {
 
     /// The page under a window position, and where on it, from 0 to 1.
     fn point_on_page(&self, position: Point<Pixels>) -> Option<(usize, (f32, f32))> {
-        let bounds = self.scroll.bounds();
+        let bounds = self.pages.scroll.bounds();
         let width = f32::from(bounds.size.width);
-        let y = f32::from(position.y - bounds.top()) + self.view_top();
+        let y = f32::from(position.y - bounds.top()) + self.pages.view_top();
         let x = f32::from(position.x - bounds.left()) / width.max(1.);
         let (page, (top, height)) = self
+            .pages
             .layout()
             .enumerate()
             .find(|(_, (top, height))| y < top + height + GAP / 2.)
-            .or_else(|| self.layout().enumerate().last())?;
+            .or_else(|| self.pages.layout().enumerate().last())?;
         Some((page, (x.clamp(0., 1.), ((y - top) / height).clamp(0., 1.))))
     }
 
@@ -186,7 +136,7 @@ impl PdfPane {
         if !self.selecting.as_ref().is_some_and(|d| d.held) {
             return;
         }
-        let bounds = self.scroll.bounds();
+        let bounds = self.pages.scroll.bounds();
         let beyond = if position.y < bounds.top() {
             position.y - bounds.top()
         } else if position.y > bounds.bottom() {
@@ -195,7 +145,8 @@ impl PdfPane {
             px(0.)
         };
         if beyond != px(0.) {
-            self.scroll_to(self.view_top() + f32::from(beyond) * 0.5);
+            self.pages
+                .scroll_to(self.pages.view_top() + f32::from(beyond) * 0.5);
         }
         let Some(drag) = &self.selecting else {
             return;
@@ -252,22 +203,10 @@ impl PdfPane {
                 cx.drop_image(image, Some(window));
             }
         }
-        let top = self.view_top();
-        let bottom = top + f32::from(viewport.height);
-        let mut y = 0.;
-        let (mut first, mut last) = (usize::MAX, 0);
-        for (i, &(w, h)) in self.pages.iter().enumerate() {
-            let next = y + h * width / w;
-            if next >= top && y <= bottom {
-                first = first.min(i);
-                last = i;
-            }
-            y = next + GAP;
-        }
-        if first == usize::MAX {
+        let Some(view) = self.pages.in_view(width, f32::from(viewport.height)) else {
             return;
-        }
-        let keep = first.saturating_sub(MARGIN)..(last + MARGIN + 1).min(self.pages.len());
+        };
+        let keep = view.start.saturating_sub(MARGIN)..(view.end + MARGIN).min(self.pages.count());
         let far: Vec<usize> = self
             .rendered
             .keys()
@@ -284,7 +223,7 @@ impl PdfPane {
                 continue;
             }
             let document = self.document.clone();
-            let scale = device_width / self.pages[i].0;
+            let scale = device_width / self.pages.sizes[i].0;
             let wanted = self.width;
             cx.spawn_in(window, async move |this, cx| {
                 let image = cx
@@ -312,8 +251,9 @@ impl Scrubbed for PdfPane {
     }
 
     fn scrub_to(&mut self, fraction: f32, _: &mut Window, cx: &mut Context<Self>) {
-        let page = (fraction * self.pages.len() as f32) as usize;
-        self.go_to_page(page, cx);
+        self.pages
+            .go_to((fraction * self.pages.count() as f32) as usize);
+        cx.notify();
     }
 }
 
@@ -327,7 +267,7 @@ impl Render for PdfPane {
             .as_ref()
             .map(|d| d.page)
             .zip(self.selection());
-        let pages = self.pages.iter().enumerate().map(|(i, &(w, h))| {
+        let pages = self.pages.sizes.iter().enumerate().map(|(i, &(w, h))| {
             let height = h * width / w;
             let mut page = div()
                 .relative()
@@ -375,14 +315,8 @@ impl Render for PdfPane {
         )
         .absolute();
         let scrubber = self.scrubber.shown().then(|| {
-            let max = f32::from(self.scroll.max_offset().y);
-            let fraction = if max > 0. {
-                (self.view_top() / max).clamp(0., 1.)
-            } else {
-                0.
-            };
             let label = format!("page {} of {}", self.current_page(), self.page_count());
-            scrub::track(&self.scrubber, fraction, label, theme, cx)
+            scrub::track(&self.scrubber, self.pages.fraction(), label, theme, cx)
         });
         div()
             .size_full()
@@ -392,7 +326,7 @@ impl Render for PdfPane {
                     .id("pages")
                     .size_full()
                     .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
+                    .track_scroll(&self.pages.scroll)
                     .on_scroll_wheel(cx.listener(|_, _: &ScrollWheelEvent, _, cx| cx.notify()))
                     .on_mouse_down(
                         MouseButton::Left,
