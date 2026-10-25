@@ -101,8 +101,11 @@ const CARDS: &[&str] = &[
     "application/msword",
     "application/vnd.ms-excel",
     "application/vnd.ms-powerpoint",
+    "application/vnd.ms-word",
     "application/vnd.openxmlformats-officedocument",
     "application/vnd.oasis.opendocument",
+    // WPS Office registers its own types for Office files, docx and all.
+    "application/wps-office",
     "application/vnd.apple",
     "application/x-iwork",
     "application/epub+zip",
@@ -272,7 +275,7 @@ mod tests {
     fn types_map_to_previews() {
         let elf = b"\x7fELF\x02\x01\x01\0";
         let code = b"fn main() {}\n";
-        let cases: [(&str, &[u8], Kind); 21] = [
+        let cases: [(&str, &[u8], Kind); 22] = [
             ("image/jpeg", elf, Kind::Image),
             ("image/svg+xml", code, Kind::Image),
             ("video/mp4", elf, Kind::Video),
@@ -296,6 +299,7 @@ mod tests {
                 elf,
                 Kind::Other,
             ),
+            ("application/wps-office.docx", elf, Kind::Other),
             ("application/epub+zip", elf, Kind::Other),
             ("font/ttf", elf, Kind::Other),
         ];
