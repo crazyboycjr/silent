@@ -2,6 +2,7 @@
 
 use std::fs::File;
 use std::io::{self, Read};
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -16,6 +17,10 @@ pub enum Kind {
     Pdf,
     Text,
     Archive,
+    /// One file squeezed by gzip, xz and the like, shown as what is inside.
+    Compressed,
+    /// Shown as `hexdump -C` shows it.
+    Binary,
     Folder,
     Other,
 }
@@ -59,10 +64,53 @@ const ARCHIVES: &[&str] = &[
     "application/vnd.ms-cab-compressed",
     "application/x-java-archive",
     "application/vnd.android.package-archive",
+];
+
+/// Single files compressed on their own; libarchive undoes all of these.
+const COMPRESSED: &[&str] = &[
     "application/gzip",
     "application/x-bzip2",
+    "application/x-bzip",
     "application/x-xz",
     "application/zstd",
+    "application/x-lz4",
+    "application/x-lzma",
+    "application/x-lzip",
+    "application/x-compress",
+];
+
+/// Machine code and other formats that are binary whatever their first bytes say.
+const BINARY: &[&str] = &[
+    "application/x-executable",
+    "application/x-pie-executable",
+    "application/x-sharedlib",
+    "application/x-object",
+    "application/x-core",
+    "application/x-dosexec",
+    "application/x-msdownload",
+    "application/vnd.microsoft.portable-executable",
+    "application/x-mach-binary",
+    "application/x-java",
+    "application/wasm",
+    "application/vnd.sqlite3",
+];
+
+/// Types better shown as a card than as their bytes: documents and fonts,
+/// until they get previews of their own.
+const CARDS: &[&str] = &[
+    "application/msword",
+    "application/vnd.ms-excel",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument",
+    "application/vnd.oasis.opendocument",
+    "application/vnd.apple",
+    "application/x-iwork",
+    "application/epub+zip",
+    "application/x-mobipocket-ebook",
+    "application/vnd.amazon",
+    "application/x-font",
+    "application/vnd.ms-fontobject",
+    "font/",
 ];
 
 /// Looks at the file behind `uri`. Local files are read directly, which
@@ -80,13 +128,26 @@ fn probe_path(uri: &str, path: PathBuf) -> io::Result<Facts> {
         || path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
     );
-    let (content_type, kind) = if metadata.is_dir() {
+    let file_type = metadata.file_type();
+    let (content_type, kind) = if file_type.is_dir() {
         ("inode/directory".to_owned(), Kind::Folder)
-    } else {
+    } else if file_type.is_file() {
         let head = read_head(&path)?;
         let (content_type, _) = gio::content_type_guess(Some(&path), head.as_slice());
         let kind = classify(&content_type, &head);
         (content_type.into(), kind)
+    } else {
+        // Opening a pipe would wait for a writer; devices and sockets are no better.
+        let special = if file_type.is_fifo() {
+            "inode/fifo"
+        } else if file_type.is_socket() {
+            "inode/socket"
+        } else if file_type.is_char_device() {
+            "inode/chardevice"
+        } else {
+            "inode/blockdevice"
+        };
+        (special.to_owned(), Kind::Other)
     };
     Ok(Facts {
         uri: uri.to_owned(),
@@ -135,16 +196,23 @@ fn read_head(path: &Path) -> io::Result<Vec<u8>> {
     Ok(head)
 }
 
+/// How a file of `content_type` whose first bytes are `head` is previewed.
+/// `head` is empty when the bytes are unknown, as for remote files.
 pub fn classify(content_type: &str, head: &[u8]) -> Kind {
     let is_a = |supertype: &str| gio::content_type_is_a(content_type, supertype);
+    let listed = |list: &[&str]| {
+        list.iter()
+            .any(|listed| gio::content_type_equals(content_type, listed))
+    };
     let major = content_type.split('/').next().unwrap_or_default();
     if content_type == "inode/directory" {
         Kind::Folder
-    } else if ARCHIVES
-        .iter()
-        .any(|archive| gio::content_type_equals(content_type, archive))
-    {
+    } else if major == "inode" {
+        Kind::Other
+    } else if listed(ARCHIVES) {
         Kind::Archive
+    } else if listed(COMPRESSED) {
+        Kind::Compressed
     } else if is_a("application/pdf") {
         Kind::Pdf
     } else if major == "image" {
@@ -153,22 +221,47 @@ pub fn classify(content_type: &str, head: &[u8]) -> Kind {
         Kind::Video
     } else if major == "audio" || content_type == "application/ogg" {
         Kind::Audio
-    } else if is_a("text/plain") || looks_like_text(head) {
+    } else if listed(BINARY) {
+        Kind::Binary
+    } else if (is_a("text/plain") && !has_nul(head)) || looks_like_text(head) {
         Kind::Text
-    } else {
+    } else if CARDS.iter().any(|card| content_type.starts_with(card)) || head.is_empty() {
         Kind::Other
+    } else {
+        Kind::Binary
     }
 }
 
-/// Text without a type of its own: no NUL bytes, and UTF-8 save for a
-/// character cut off at the end of the sample.
-fn looks_like_text(head: &[u8]) -> bool {
-    !head.is_empty()
-        && !head.contains(&0)
-        && match std::str::from_utf8(head) {
-            Ok(_) => true,
-            Err(e) => e.error_len().is_none(),
-        }
+fn has_nul(head: &[u8]) -> bool {
+    !utf16_bom(head) && head.contains(&0)
+}
+
+fn utf16_bom(head: &[u8]) -> bool {
+    head.starts_with(&[0xff, 0xfe]) || head.starts_with(&[0xfe, 0xff])
+}
+
+/// Text without a type of its own: UTF-16 with its byte-order mark, or no
+/// NUL bytes and valid as UTF-8 or as GB18030 (which covers GBK), save for
+/// a character cut off at the end of the sample.
+pub fn looks_like_text(head: &[u8]) -> bool {
+    if head.is_empty() {
+        return false;
+    }
+    if utf16_bom(head) {
+        return true;
+    }
+    if head.contains(&0) {
+        return false;
+    }
+    match std::str::from_utf8(head) {
+        Ok(_) => true,
+        Err(e) if e.error_len().is_none() => true,
+        Err(_) => (0..4.min(head.len())).any(|cut| {
+            encoding_rs::GB18030
+                .decode_without_bom_handling_and_without_replacement(&head[..head.len() - cut])
+                .is_some()
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -177,41 +270,59 @@ mod tests {
 
     #[test]
     fn types_map_to_previews() {
-        let cases = [
-            ("image/jpeg", Kind::Image),
-            ("image/svg+xml", Kind::Image),
-            ("video/mp4", Kind::Video),
-            ("audio/flac", Kind::Audio),
-            ("application/pdf", Kind::Pdf),
-            ("text/x-rust", Kind::Text),
-            ("application/json", Kind::Text),
-            ("application/x-shellscript", Kind::Text),
-            ("application/zip", Kind::Archive),
-            ("application/x-compressed-tar", Kind::Archive),
-            ("inode/directory", Kind::Folder),
-            ("application/x-executable", Kind::Other),
+        let elf = b"\x7fELF\x02\x01\x01\0";
+        let code = b"fn main() {}\n";
+        let cases: [(&str, &[u8], Kind); 21] = [
+            ("image/jpeg", elf, Kind::Image),
+            ("image/svg+xml", code, Kind::Image),
+            ("video/mp4", elf, Kind::Video),
+            ("audio/flac", elf, Kind::Audio),
+            ("application/pdf", elf, Kind::Pdf),
+            ("text/x-rust", code, Kind::Text),
+            ("application/json", code, Kind::Text),
+            ("application/x-shellscript", code, Kind::Text),
+            ("application/zip", elf, Kind::Archive),
+            ("application/x-compressed-tar", elf, Kind::Archive),
+            ("application/gzip", elf, Kind::Compressed),
+            ("application/zstd", elf, Kind::Compressed),
+            ("application/x-xz", elf, Kind::Compressed),
+            ("inode/directory", &[], Kind::Folder),
+            ("inode/fifo", &[], Kind::Other),
+            ("application/x-executable", elf, Kind::Binary),
+            ("application/x-sharedlib", elf, Kind::Binary),
+            ("application/octet-stream", elf, Kind::Binary),
             (
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                elf,
                 Kind::Other,
             ),
-            ("application/epub+zip", Kind::Other),
+            ("application/epub+zip", elf, Kind::Other),
+            ("font/ttf", elf, Kind::Other),
         ];
-        for (content_type, kind) in cases {
-            assert_eq!(classify(content_type, &[]), kind, "{content_type}");
+        for (content_type, head, kind) in cases {
+            assert_eq!(classify(content_type, head), kind, "{content_type}");
         }
+        assert_eq!(classify("application/octet-stream", &[]), Kind::Other);
     }
 
     #[test]
-    fn untyped_text_is_recognised_by_its_bytes() {
+    fn untyped_bytes_are_text_or_binary() {
         let octets = "application/octet-stream";
         assert_eq!(classify(octets, "plain words\n".as_bytes()), Kind::Text);
         assert_eq!(classify(octets, "中文 ".as_bytes()), Kind::Text);
         // A multi-byte character cut by the sample's end.
         assert_eq!(classify(octets, &"文字".as_bytes()[..4]), Kind::Text);
-        assert_eq!(classify(octets, b"ELF\0\x02\x01"), Kind::Other);
+        // 静夜思 in GB18030, and the same cut in the middle of a character.
+        let gbk = [0xbe, 0xb2, 0xd2, 0xb9, 0xcb, 0xbc, 0x0a];
+        assert_eq!(classify(octets, &gbk), Kind::Text);
+        assert_eq!(classify(octets, &gbk[..5]), Kind::Text);
+        assert_eq!(classify(octets, &[0xff, 0xfe, 0x41, 0x00]), Kind::Text);
+        assert_eq!(classify(octets, b"ELF\0\x02\x01"), Kind::Binary);
         assert_eq!(
-            classify(octets, &[0xff, 0xfe, 0x41, 0x80, 0x80]),
-            Kind::Other
+            classify(octets, &[0x41, 0xff, 0x80, 0x80, 0x41]),
+            Kind::Binary
         );
+        // Typed as text by its name, but full of NUL bytes.
+        assert_eq!(classify("text/plain", b"a\0b\0c\0"), Kind::Binary);
     }
 }

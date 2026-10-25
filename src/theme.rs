@@ -13,6 +13,8 @@ pub struct Theme {
     pub muted: Hsla,
     pub strip: Hsla,
     pub strip_text: Hsla,
+    /// Behind selected text.
+    pub selection: Hsla,
 }
 
 impl Theme {
@@ -25,6 +27,7 @@ impl Theme {
                 muted: rgb(0xa5998b).into(),
                 strip: rgba(0x0f0c0ac0).into(),
                 strip_text: rgb(0xf3ebdf).into(),
+                selection: rgba(0x9a6a3f8c).into(),
             },
             _ => Self {
                 surface: rgb(0xf6f1e9).into(),
@@ -33,9 +36,15 @@ impl Theme {
                 muted: rgb(0x85786b).into(),
                 strip: rgba(0x1d1813b8).into(),
                 strip_text: rgb(0xf8f2e9).into(),
+                selection: rgba(0xe8b07a80).into(),
             },
         }
     }
+}
+
+/// The warm amber of played time and of the scrubbers' thumbs.
+pub fn progress() -> Hsla {
+    rgb(0xe39a63).into()
 }
 
 /// The colour a kind of file is drawn in on its card.
@@ -46,7 +55,8 @@ pub fn accent(kind: Kind) -> Hsla {
         Kind::Audio => 0xa35d7e,
         Kind::Pdf => 0xb8443a,
         Kind::Text => 0x5f8063,
-        Kind::Archive => 0x9a7340,
+        Kind::Archive | Kind::Compressed => 0x9a7340,
+        Kind::Binary => 0x7a6a5c,
         Kind::Folder => 0xd4a24c,
         Kind::Other => 0x8b7e70,
     })

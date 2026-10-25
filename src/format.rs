@@ -24,7 +24,8 @@ pub fn count(n: u64, one: &str, many: &str) -> String {
     format!("{} {}", grouped(n), if n == 1 { one } else { many })
 }
 
-fn grouped(n: u64) -> String {
+/// `1,234,567`.
+pub fn grouped(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, digit) in digits.chars().enumerate() {
