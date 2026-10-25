@@ -19,7 +19,8 @@ screen, at a size you can see. It takes the place of GNOME's sushi.
   at the size they are shown. Video and music play and carry on where you
   left them, PDFs scroll, code is highlighted, Chinese text in GBK reads
   right, binaries read as `hexdump -C`, a `.json.gz` opens as laid-out JSON,
-  archives open as a tree, folders show how much they weigh.
+  Word, Excel and PowerPoint files open without an office suite, archives
+  open as a tree, folders show how much they weigh.
 
 ## Formats
 
@@ -32,11 +33,17 @@ screen, at a size you can see. It takes the place of GNOME's sushi.
 | Text and code | Highlighted, with line numbers; long lines scroll sideways instead of wrapping; select with the mouse and copy; UTF-8, UTF-16 and GB18030 (GBK) text; minified JSON laid out; the first 2 MB of large files |
 | Binary files | As `hexdump -C` prints them, read from a memory map, so a dump of gigabytes opens at once; select and copy as text |
 | Compressed files | gzip, xz, zstd, bzip2, lz4 and lzma files show what is inside: text and code as above, a tar as its listing, anything else as a hexdump; the strip gives both sizes when the format records them |
+| Word documents | docx and odt as a column on a page: headings, paragraphs with their bold, italic, underline and colour, bulleted and numbered lists, tables and pictures |
+| Spreadsheets | xlsx, xls and ods as a grid with column letters and row numbers, numbers and dates formatted, a tab for each sheet; the first 5,000 rows |
+| Presentations | pptx as its slides in a scroll, with text, pictures, tables and shapes where the deck puts them and what they inherit from the layout and master; odp as its thumbnail and text; Shift shows a slide scrubber |
+| Keynote, Pages, Numbers | The preview picture the file carries, as Quick Look shows it |
 | Archives | The entries as a tree with file-type icons and their sizes, and the total unpacked; zip, tar (gz, bz2, xz, zstd), 7z, rar, ISO and more |
 | Folders | A card with the item count and the total size, counted in the background |
-| Everything else | A card with the type, size and modification date |
+| Everything else | A card with the type, size and modification date; old .doc and .ppt files too |
 
-Office documents, rendered Markdown and HTML, and fonts come later.
+The Office files are read the way macOS Quick Look reads them: silent opens
+the package and parses its XML itself, with no office suite, and draws the
+result natively. Rendered Markdown and HTML, and fonts, come later.
 
 A video or a sound that you leave, by moving to another file or closing the
 preview, starts again where you left it if you come back within the hour,
@@ -56,11 +63,11 @@ small file in `$XDG_RUNTIME_DIR/silent`, gone at the next boot.
 | K or a click | Pause or play video and audio |
 | J, L | Back or forward ten seconds |
 | M | Mute |
-| Shift, held | A seek bar on a video, a page scrubber on a PDF, a scrubber on text; click or drag on them |
-| Shift+← , Shift+→ | Back or forward five seconds |
-| Shift+↑ , Shift+↓ | The previous or next page of a PDF |
-| Shift+Home, Shift+End | The first or last page; the start or end of text |
-| Page Up, Page Down | Scroll a document or text |
+| Shift, held | A seek bar on a video, a scrubber on a PDF, slides or text; click or drag on them |
+| Shift+← , Shift+→ | Back or forward five seconds; the previous or next sheet of a spreadsheet |
+| Shift+↑ , Shift+↓ | The previous or next page of a PDF, or slide |
+| Shift+Home, Shift+End | The first or last page or slide; the start or end of text, a document or a sheet |
+| Page Up, Page Down | Scroll a document, a sheet or text |
 | Shift with the wheel | Scroll sideways |
 | Drag, double-click, triple-click | Select text, a word, a line; the selection is also the primary selection |
 | Ctrl+A, Ctrl+C | Select all, copy |

@@ -16,6 +16,7 @@
 set -euo pipefail
 
 SCRATCH=${SILENT_SCRATCH:-$HOME/.cache/claude-scratch/silent}
+REPO=$(cd "$(dirname "$0")/.." && pwd)
 FIXTURES=${SILENT_FIXTURES:-$SCRATCH/fixtures}
 NAME=org.gnome.NautilusPreviewer
 OBJECT=/org/gnome/NautilusPreviewer
@@ -27,7 +28,7 @@ die() { echo "harness: $*" >&2; exit 1; }
 
 fixtures() {
     local f=$FIXTURES
-    mkdir -p "$f"/{images,video,audio,docs,text,archives,compressed,folder,other}
+    mkdir -p "$f"/{images,video,audio,docs,office,text,archives,compressed,folder,other}
     cd "$f"
     local ff=("${HEAVY[@]}" ffmpeg -nostdin -hide_banner -loglevel error -y)
     local mk=("${HEAVY[@]}" magick)
@@ -94,7 +95,7 @@ SVG
     "${mk[@]}" images/fhd-1920x1080.jpg images/xga-1024x768.png images/vga-640x480.jpg docs/pictures.pdf
 
     # Text and code.
-    cp "$(dirname "$0")/../src/geometry.rs" text/geometry.rs
+    cp "$REPO/src/geometry.rs" text/geometry.rs
     printf 'import sys\n\n\ndef main():\n    print("hello", sys.argv[1:])\n\n\nif __name__ == "__main__":\n    main()\n' > text/script.py
     printf '{\n  "name": "silent",\n  "formats": ["image", "video", "pdf"],\n  "fast": true\n}\n' > text/data.json
     printf 'Notes without an extension.\nSecond line.\n' > text/README
@@ -102,7 +103,7 @@ SVG
     printf '静夜思\n床前明月光，疑是地上霜。\n举头望明月，低头思故乡。\n' | iconv -f UTF-8 -t GB18030 > text/chinese-gb18030.txt
     printf '静夜思\n床前明月光，疑是地上霜。\n' | iconv -f UTF-8 -t GB18030 > text/chinese-gbk-noext
     printf 'package main\n\nimport "fmt"\n\nfunc main() {\n\tfor i := 0; i < 3; i++ {\n\t\tfmt.Println("tab\tinside", i)\n\t}\n}\n' > text/tabs.go
-    for _ in $(seq 220); do cat "$(dirname "$0")/../src/geometry.rs"; done > text/big.rs
+    for _ in $(seq 220); do cat "$REPO/src/geometry.rs"; done > text/big.rs
     python3 -I - "$f" <<'PY'
 import json, random, sys
 random.seed(7)
@@ -141,6 +142,244 @@ PY
     lz4 -qc --content-size text/data.min.json > compressed/data.min.json.lz4
     cp archives/project.tar.gz compressed/project-tar.gz
     gzip -c /usr/bin/true > compressed/program.gz
+
+    # Office, OpenDocument and iWork files, from python-docx, openpyxl, python-pptx,
+    # xlwt and odfpy in a venv of the harness's own. iWork packages are made as
+    # what a previewer reads of them: preview pictures in a zip.
+    local venv=$SCRATCH/venv
+    if [[ ! -x $venv/bin/python ]]; then
+        python3 -m venv "$venv"
+        "${HEAVY[@]}" "$venv/bin/pip" install -q python-docx openpyxl python-pptx odfpy Pillow xlwt
+    fi
+    "${HEAVY[@]}" "$venv/bin/python" -I - "$f" <<'PY'
+import datetime, io, random, sys, zipfile
+from PIL import Image, ImageDraw
+
+root = sys.argv[1]
+random.seed(11)
+
+
+def picture(w, h, label, colors=("#e8a87c", "#5b7f6b")):
+    im = Image.new("RGB", (w, h), colors[0])
+    d = ImageDraw.Draw(im)
+    for i in range(0, w, 40):
+        d.line([(i, 0), (i + h, h)], fill=colors[1], width=8)
+    d.rectangle([w // 8, h // 3, w * 7 // 8, h * 2 // 3], fill="#f6efe3")
+    d.text((w // 8 + 20, h // 2 - 10), label, fill="#3b2f25")
+    out = io.BytesIO()
+    im.save(out, "PNG")
+    out.seek(0)
+    return out
+
+
+# docx: headings, styled runs, lists, a table, a picture, Chinese.
+from docx import Document
+from docx.shared import Inches, Pt, RGBColor
+
+doc = Document()
+doc.add_heading("Quarterly Notes", 0)
+p = doc.add_paragraph("This report has ")
+p.add_run("bold").bold = True
+p.add_run(", ")
+p.add_run("italic").italic = True
+p.add_run(", ")
+p.add_run("underlined").underline = True
+p.add_run(" and ")
+r = p.add_run("struck")
+r.font.strike = True
+p.add_run(" words, and a ")
+r = p.add_run("red phrase")
+r.font.color.rgb = RGBColor(0xC0, 0x30, 0x20)
+p.add_run(" in one paragraph that is long enough to wrap across the column more than once.")
+doc.add_heading("Findings", 1)
+for text in ["Cold starts stay under a quarter second", "Arrow keys browse in Nautilus", "Documents parse without Office"]:
+    doc.add_paragraph(text, style="List Bullet")
+doc.add_paragraph("A nested point", style="List Bullet 2")
+doc.add_heading("Steps", 2)
+for text in ["Open the file", "Press Space", "Read"]:
+    doc.add_paragraph(text, style="List Number")
+doc.add_heading("Table", 2)
+table = doc.add_table(rows=1, cols=4)
+table.style = "Table Grid"
+for cell, text in zip(table.rows[0].cells, ["Format", "Parser", "Pages", "Notes"]):
+    cell.text = text
+for row in [("docx", "own", "1", "headings, lists"), ("xlsx", "calamine", "3", "sheets"), ("pptx", "own", "5", "slides")]:
+    cells = table.add_row().cells
+    for cell, text in zip(cells, row):
+        cell.text = text
+doc.add_heading("Picture", 2)
+doc.add_picture(picture(800, 450, "figure one"), width=Inches(4.5))
+doc.add_paragraph("床前明月光，疑是地上霜。举头望明月，低头思故乡。这一段中文用来检查换行和字体回退。")
+for i in range(30):
+    doc.add_paragraph(f"Paragraph {i + 1}. " + "Lorem ipsum dolor sit amet, consectetur adipiscing elit. " * 3)
+doc.save(f"{root}/office/report.docx")
+
+# xlsx: three sheets, numbers, dates, booleans, text, a wide sheet.
+from openpyxl import Workbook
+
+wb = Workbook()
+ws = wb.active
+ws.title = "Sales"
+ws.append(["Region", "Units", "Price", "Revenue", "Date", "Shipped", "Note"])
+regions = ["North", "South", "East", "West"]
+for i in range(1, 200):
+    units = random.randint(1, 500)
+    price = round(random.uniform(1, 99), 2)
+    ws.append([regions[i % 4], units, price, round(units * price, 2), datetime.date(2026, 1, 1) + datetime.timedelta(days=i), i % 3 == 0, "ok" if i % 5 else "late delivery, call back"])
+wide = wb.create_sheet("Wide")
+for r in range(1, 301):
+    wide.append([r * c for c in range(1, 61)])
+cn = wb.create_sheet("中文")
+cn.append(["名字", "城市", "分数"])
+for name, city, score in [("张三", "上海", 91.5), ("李四", "北京", 88), ("王五", "西雅图", 79.25)]:
+    cn.append([name, city, score])
+wb.save(f"{root}/office/sales.xlsx")
+
+# xls through xlwt.
+import xlwt
+
+book = xlwt.Workbook()
+sheet = book.add_sheet("Old")
+for c, text in enumerate(["Item", "Count", "Ratio"]):
+    sheet.write(0, c, text)
+for r in range(1, 20):
+    sheet.write(r, 0, f"item {r}")
+    sheet.write(r, 1, r * 7)
+    sheet.write(r, 2, r / 7)
+book.save(f"{root}/office/legacy.xls")
+
+# pptx: title, bullets, a picture, a table, a filled shape.
+from pptx import Presentation
+from pptx.dml.color import RGBColor as PRGB
+from pptx.util import Inches as PI, Pt as PPt
+
+prs = Presentation()
+prs.slide_width, prs.slide_height = PI(13.333), PI(7.5)
+s = prs.slides.add_slide(prs.slide_layouts[0])
+s.shapes.title.text = "silent, a previewer"
+s.placeholders[1].text = "Borderless · minimal · fast"
+s = prs.slides.add_slide(prs.slide_layouts[1])
+s.shapes.title.text = "What it shows"
+body = s.placeholders[1].text_frame
+body.text = "Pictures, video and sound"
+for text, level in [("PDF pages and text", 0), ("selectable and copyable", 1), ("Office documents", 0), ("Word, Excel, PowerPoint", 1), ("Keynote previews", 1)]:
+    para = body.add_paragraph()
+    para.text = text
+    para.level = level
+s = prs.slides.add_slide(prs.slide_layouts[5])
+s.shapes.title.text = "A picture"
+s.shapes.add_picture(picture(1200, 675, "slide picture"), PI(1), PI(1.8), width=PI(7))
+box = s.shapes.add_textbox(PI(8.5), PI(2.5), PI(4), PI(2))
+box.text_frame.text = "Pictures sit where the deck put them."
+box.text_frame.word_wrap = True
+s = prs.slides.add_slide(prs.slide_layouts[5])
+s.shapes.title.text = "A table and a shape"
+shape = s.shapes.add_table(4, 3, PI(0.8), PI(1.8), PI(7), PI(3)).table
+for r, row in enumerate([("Kind", "Shown as", "Speed"), ("docx", "column", "fast"), ("xlsx", "grid", "fast"), ("pptx", "slides", "fast")]):
+    for c, text in enumerate(row):
+        shape.cell(r, c).text = text
+rect = s.shapes.add_shape(1, PI(8.6), PI(2), PI(3.8), PI(2.4))
+rect.fill.solid()
+rect.fill.fore_color.rgb = PRGB(0xD9, 0x64, 0x3A)
+rect.text_frame.text = "A filled shape with text"
+prs.save(f"{root}/office/deck.pptx")
+
+# ODF: text, a sheet, and slides with a thumbnail.
+from odf.opendocument import OpenDocumentPresentation, OpenDocumentSpreadsheet, OpenDocumentText
+from odf.style import GraphicProperties, MasterPage, PageLayout, PageLayoutProperties, Style, TextProperties
+from odf.table import Table, TableCell, TableColumn, TableRow
+from odf.text import H, List, ListItem, P, Span
+from odf.draw import Frame, Page, TextBox
+
+odt = OpenDocumentText()
+bold = Style(name="Bold", family="text")
+bold.addElement(TextProperties(fontweight="bold"))
+odt.automaticstyles.addElement(bold)
+odt.text.addElement(H(outlinelevel=1, text="Meeting notes"))
+p = P(text="The plan has a ")
+p.addElement(Span(stylename=bold, text="bold decision"))
+p.addText(" and the rest is plain text that wraps when the column is narrow enough.")
+odt.text.addElement(p)
+odt.text.addElement(H(outlinelevel=2, text="Actions"))
+lst = List()
+for text in ["Write the parser", "Draw the column", "Ship it"]:
+    item = ListItem()
+    item.addElement(P(text=text))
+    lst.addElement(item)
+odt.text.addElement(lst)
+t = Table(name="T")
+t.addElement(TableColumn(numbercolumnsrepeated=2))
+for row in [("Who", "What"), ("cjr", "review"), ("agent", "build")]:
+    tr = TableRow()
+    for text in row:
+        tc = TableCell()
+        tc.addElement(P(text=text))
+        tr.addElement(tc)
+    t.addElement(tr)
+odt.text.addElement(t)
+odt.save(f"{root}/office/notes.odt")
+
+ods = OpenDocumentSpreadsheet()
+t = Table(name="Budget")
+for row in [("Item", "Cost"), ("Coffee", 12.5), ("Books", 80), ("Rent", 1500)]:
+    tr = TableRow()
+    for value in row:
+        if isinstance(value, str):
+            tc = TableCell(valuetype="string")
+            tc.addElement(P(text=value))
+        else:
+            tc = TableCell(valuetype="float", value=value)
+            tc.addElement(P(text=str(value)))
+        tr.addElement(tc)
+    t.addElement(tr)
+ods.spreadsheet.addElement(t)
+ods.save(f"{root}/office/budget.ods")
+
+odp = OpenDocumentPresentation()
+layout = PageLayout(name="Wide")
+layout.addElement(PageLayoutProperties(pagewidth="28cm", pageheight="15.75cm", printorientation="landscape"))
+odp.automaticstyles.addElement(layout)
+master = MasterPage(name="Default", pagelayoutname=layout)
+odp.masterstyles.addElement(master)
+for n, (title, lines) in enumerate([("Overview", ["One previewer", "Many formats"]), ("Details", ["Thumbnails come from the file", "Text comes from content.xml"])], 1):
+    page = Page(name=f"page{n}", masterpagename=master)
+    frame = Frame(width="24cm", height="3cm", x="2cm", y="1cm")
+    box = TextBox()
+    box.addElement(P(text=title))
+    frame.addElement(box)
+    page.addElement(frame)
+    frame = Frame(width="24cm", height="9cm", x="2cm", y="5cm")
+    box = TextBox()
+    for line in lines:
+        box.addElement(P(text=line))
+    frame.addElement(box)
+    page.addElement(frame)
+    odp.presentation.addElement(page)
+odp.save(f"{root}/office/slides.odp")
+with zipfile.ZipFile(f"{root}/office/slides.odp", "a") as z:
+    z.writestr("Thumbnails/thumbnail.png", picture(256, 144, "Overview").getvalue())
+
+
+# iWork packages: what matters to a previewer is preview.jpg and its smaller siblings.
+def iwork(path, label, size):
+    with zipfile.ZipFile(path, "w") as z:
+        for name, scale in [("preview.jpg", 1), ("preview-web.jpg", 2), ("preview-micro.jpg", 8)]:
+            im = Image.open(picture(size[0] // scale, size[1] // scale, label)).convert("RGB")
+            out = io.BytesIO()
+            im.save(out, "JPEG", quality=85)
+            z.writestr(name, out.getvalue())
+        z.writestr("Index/Document.iwa", b"\x00" * 64)
+        z.writestr("Metadata/Properties.plist", b"<plist/>")
+
+
+iwork(f"{root}/office/talk.key", "keynote preview", (1920, 1080))
+iwork(f"{root}/office/letter.pages", "pages preview", (1240, 1754))
+iwork(f"{root}/office/numbers.numbers", "numbers preview", (1600, 1000))
+
+# An Office lock file: named like a deck, but not one.
+with open(f"{root}/office/.~lock-deck.pptx", "wb") as out:
+    out.write(b"\x03cjr" + b" " * 50)
+PY
 
     # Everything else, binaries as hexdumps.
     head -c 300000 /dev/urandom > other/blob.bin
@@ -186,7 +425,9 @@ bus() {
   </policy>
 </busconfig>
 CONF
-    dbus-run-session --config-file="$dir/session.conf" -- "$@"
+    # Video and sound play into a fakesink: no real audio sink is good enough.
+    GST_PLUGIN_FEATURE_RANK=${GST_PLUGIN_FEATURE_RANK:-pulsesink:0,pipewiresink:0,alsasink:0,osssink:0,oss4sink:0,jackaudiosink:0,openalsink:0} \
+        dbus-run-session --config-file="$dir/session.conf" -- "$@"
 }
 
 show() {
