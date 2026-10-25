@@ -16,19 +16,24 @@ screen, at a size you can see. It takes the place of GNOME's sushi.
   glycin loaders read (JPEG, PNG, WebP, AVIF, HEIC, JPEG XL, SVG, TIFF, GIF
   and animated GIF, WebP and APNG among them), upright as the camera meant,
   sharp at any size: tiny icons grow pixel for pixel, vector images are drawn
-  at the size they are shown. Folders show how many items they hold and how
-  much they weigh. Everything else gets a card with its type, size and date.
+  at the size they are shown. Video and music play, PDFs scroll, code is
+  highlighted, Chinese text in GBK reads right, archives open as a tree,
+  folders show how much they weigh.
 
 ## Formats
 
 | Kind | Shown as |
 | --- | --- |
 | Images | The picture at its own aspect, as large as the screen allows; animations play |
+| Video | Plays at its own aspect, with sound; hardware decoding when GStreamer has it |
+| Audio | A card with the cover art, title, artist and album, playing |
+| PDF | The pages in a scroll, shaped by the first page, rendered as they come into view |
+| Text and code | Highlighted, with line numbers; UTF-8, UTF-16 and GB18030 (GBK) text; the first 2 MB of large files |
+| Archives | The entries as a tree with their sizes, and the total unpacked; zip, tar (gz, bz2, xz, zstd), 7z, rar, ISO and more |
 | Folders | A card with the item count and the total size, counted in the background |
 | Everything else | A card with the type, size and modification date |
 
-Video, audio, PDF, text and code, and archives come next; Office documents,
-Markdown and HTML, and fonts later.
+Office documents, rendered Markdown and HTML, and fonts come later.
 
 ## Keys
 
@@ -40,6 +45,10 @@ Markdown and HTML, and fonts later.
 | F2 | Rename in Nautilus |
 | Delete | Move to the trash |
 | F | Fullscreen |
+| K or a click | Pause or play video and audio |
+| J, L | Back or forward ten seconds |
+| M | Mute |
+| Page Up, Page Down | Scroll a document or text |
 
 ## Install
 
@@ -55,9 +64,9 @@ service `org.gnome.NautilusPreviewer`, which is what Nautilus calls. The
 package replaces sushi; pacman offers to remove it. Nautilus starts silent on
 the next Space, with no restart.
 
-silent needs X11, a Vulkan driver, and glycin's image loaders with
-bubblewrap. Its windows have the class `silent`; window managers that tile
-should float it, for example in xmonad:
+silent needs X11, a Vulkan driver, glycin's image loaders with bubblewrap,
+and GStreamer for video and audio. Its windows have the class `silent`;
+window managers that tile should float it, for example in xmonad:
 `className =? "silent" --> doCenterFloat`.
 
 ## Going back to sushi

@@ -6,7 +6,10 @@ pkgdesc='A borderless, fast file previewer for Nautilus (replaces sushi)'
 arch=('x86_64')
 license=('unknown')
 depends=('glycin' 'bubblewrap' 'vulkan-icd-loader' 'fontconfig' 'freetype2' 'glib2'
-         'libxcb' 'libxkbcommon' 'libxkbcommon-x11' 'libseccomp' 'gcc-libs' 'glibc')
+         'libxcb' 'libxkbcommon' 'libxkbcommon-x11' 'libseccomp' 'gcc-libs' 'glibc'
+         'gstreamer' 'gst-plugins-base' 'gst-plugins-good' 'libarchive' 'openssl')
+optdepends=('gst-libav: more video and audio formats'
+            'gst-plugins-bad: more video formats and hardware decoding')
 makedepends=('cargo')
 provides=('sushi')
 conflicts=('sushi')
