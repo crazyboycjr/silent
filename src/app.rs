@@ -303,9 +303,10 @@ impl Controller {
 
     fn close(&mut self, cx: &mut AsyncApp) {
         if let Some(open) = self.window.take() {
-            let _ = open
-                .handle
-                .update(cx, |_, window, _| window.remove_window());
+            let _ = open.handle.update(cx, |view, window, cx| {
+                view.leave(cx);
+                window.remove_window();
+            });
         }
         self.shown = None;
         self.generation += 1;

@@ -8,11 +8,12 @@ use silent::dbus::Direction;
 use silent::decode::Event;
 use silent::detect::Kind;
 use silent::format;
+use silent::resume::{self, Key};
 
 use crate::app::{Input, Intent};
 use crate::archive::ArchivePane;
-use crate::code::TextPane;
 use crate::content::{Body, Loaded, Totals};
+use crate::lines::{Doc, LinesPane};
 use crate::media::{AudioPane, VideoPane};
 use crate::pdf::PdfPane;
 use crate::theme::{Theme, accent};
@@ -35,6 +36,7 @@ pub struct Preview {
     hide: Option<Task<()>>,
     focus: FocusHandle,
     rounded: bool,
+    shift: bool,
     input: async_channel::Sender<Input>,
     traced: bool,
     _appearance: Subscription,
@@ -46,7 +48,7 @@ enum Pane {
     Video(Entity<VideoPane>),
     Audio(Entity<AudioPane>),
     Pdf(Entity<PdfPane>),
-    Text(Entity<TextPane>),
+    Lines(Entity<LinesPane>),
     Archive(Entity<ArchivePane>),
 }
 
@@ -57,7 +59,7 @@ impl Pane {
             Pane::Video(v) => v.clone().into(),
             Pane::Audio(v) => v.clone().into(),
             Pane::Pdf(v) => v.clone().into(),
-            Pane::Text(v) => v.clone().into(),
+            Pane::Lines(v) => v.clone().into(),
             Pane::Archive(v) => v.clone().into(),
         })
     }
@@ -92,6 +94,7 @@ impl Preview {
             hide: None,
             focus,
             rounded,
+            shift: false,
             input,
             traced: false,
             _appearance: appearance,
@@ -102,9 +105,33 @@ impl Preview {
 
     /// Swaps in new content, as when arrow keys move Nautilus's selection.
     pub fn show(&mut self, loaded: Loaded, window: &mut Window, cx: &mut Context<Self>) {
+        self.leave(cx);
         self.loaded = loaded;
         self.traced = false;
         self.attach(window, cx);
+    }
+
+    /// Remembers where a video or a sound was left, for coming back to it.
+    pub fn leave(&self, cx: &App) {
+        let (position, duration) = match &self.pane {
+            Pane::Video(v) => {
+                let v = v.read(cx);
+                (v.position(), v.duration())
+            }
+            Pane::Audio(a) => {
+                let a = a.read(cx);
+                (a.position(), a.duration())
+            }
+            _ => return,
+        };
+        let facts = &self.loaded.facts;
+        if let Some(key) = facts
+            .path
+            .as_deref()
+            .and_then(|path| Key::new(path, facts.size, facts.modified))
+        {
+            resume::remember(&key, position, duration);
+        }
     }
 
     fn attach(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -120,7 +147,8 @@ impl Preview {
             Body::Video(video) => Pane::Video(cx.new(|cx| VideoPane::new(video, window, cx))),
             Body::Audio(audio) => Pane::Audio(cx.new(|cx| AudioPane::new(audio, name, window, cx))),
             Body::Pdf(pdf) => Pane::Pdf(cx.new(|_| PdfPane::new(pdf, window))),
-            Body::Text(text) => Pane::Text(cx.new(|_| TextPane::new(*text))),
+            Body::Text(text) => Pane::Lines(cx.new(|_| LinesPane::new(Doc::Text(text)))),
+            Body::Hex(hex) => Pane::Lines(cx.new(|_| LinesPane::new(Doc::Hex(hex)))),
             Body::Archive(archive) => Pane::Archive(cx.new(|cx| ArchivePane::new(archive, cx))),
             body => {
                 self.loaded.body = body;
@@ -134,6 +162,7 @@ impl Preview {
             Pane::Pdf(v) => Some(cx.observe(v, |_, _, cx| cx.notify())),
             _ => None,
         };
+        self.shift = false;
         let mut image = None;
         match &mut self.loaded.body {
             Body::Image(picture) => {
@@ -191,9 +220,9 @@ impl Preview {
 
     /// Keys for whatever the window shows: play and seek media, page through
     /// documents.
-    fn pane_key(&self, key: &str, window: &Window, cx: &App) -> bool {
-        match (&self.pane, key) {
-            (Pane::Video(v), _) => {
+    fn pane_key(&self, key: &str, window: &Window, cx: &mut App) -> bool {
+        match &self.pane {
+            Pane::Video(v) => {
                 let v = v.read(cx);
                 match key {
                     "k" => v.toggle_pause(),
@@ -203,7 +232,7 @@ impl Preview {
                     _ => return false,
                 }
             }
-            (Pane::Audio(a), _) => {
+            Pane::Audio(a) => {
                 let a = a.read(cx);
                 match key {
                     "k" => a.toggle_pause(),
@@ -213,12 +242,42 @@ impl Preview {
                     _ => return false,
                 }
             }
-            (Pane::Pdf(p), "pagedown" | "pageup") => {
-                p.read(cx).scroll_by_page(window, key == "pagedown")
+            Pane::Pdf(p) if matches!(key, "pagedown" | "pageup") => {
+                p.read(cx).scroll_by_page(window, key == "pagedown");
+                p.update(cx, |_, cx| cx.notify());
             }
-            (Pane::Text(t), "pagedown" | "pageup") => {
-                t.read(cx).scroll_by_page(window, key == "pagedown")
+            Pane::Lines(t) if matches!(key, "pagedown" | "pageup") => {
+                t.update(cx, |t, cx| t.scroll_by_page(key == "pagedown", cx));
             }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Shift with a key: seek five seconds, step through pages, jump to the
+    /// start or the end.
+    fn shift_key(&self, key: &str, cx: &mut App) -> bool {
+        match (&self.pane, key) {
+            (Pane::Video(v), "left" | "right") => {
+                v.update(cx, |v, cx| v.step(key == "right", cx));
+            }
+            (Pane::Audio(a), "left" | "right") => a.read(cx).step(key == "right"),
+            (Pane::Pdf(p), "up" | "down") => p.update(cx, |p, cx| p.step_page(key == "down", cx)),
+            (Pane::Pdf(p), "home" | "end") => p.update(cx, |p, cx| p.go_to_end(key == "end", cx)),
+            (Pane::Lines(t), "home" | "end") => {
+                t.update(cx, |t, cx| t.scroll_to_end(key == "end", cx));
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Ctrl with a key: select all and copy.
+    fn control_key(&self, key: &str, cx: &mut App) -> bool {
+        match (&self.pane, key) {
+            (Pane::Lines(t), "a") => t.update(cx, |t, cx| t.select_all(cx)),
+            (Pane::Lines(t), "c") => t.update(cx, |t, cx| t.copy(cx)),
+            (Pane::Pdf(p), "c") => p.update(cx, |p, cx| p.copy(cx)),
             _ => return false,
         }
         true
@@ -234,10 +293,25 @@ impl Preview {
 
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
-        if keystroke.modifiers.modified() {
+        let modifiers = keystroke.modifiers;
+        let key = keystroke.key.as_str();
+        let handled = if modifiers.control && !(modifiers.shift || modifiers.alt) {
+            self.control_key(key, cx)
+        } else if only_shift(modifiers) {
+            self.shift_key(key, cx)
+        } else {
+            false
+        };
+        if handled {
+            cx.stop_propagation();
             return;
         }
-        let intent = match keystroke.key.as_str() {
+        // Shift may still be down from looking at the seek bar or the scrubber.
+        let closing = matches!(key, "space" | "escape") && only_shift(modifiers);
+        if modifiers.modified() && !closing {
+            return;
+        }
+        let intent = match key {
             "space" | "escape" if !event.is_held => Some(Intent::Close),
             "up" => Some(Intent::Select(Direction::Up)),
             "down" => Some(Intent::Select(Direction::Down)),
@@ -259,7 +333,29 @@ impl Preview {
         }
     }
 
-    fn pointer_moved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Shift alone shows the seek bar or the scrubber, for as long as it is held.
+    fn set_shift(&mut self, held: bool, cx: &mut Context<Self>) {
+        if self.shift == held {
+            return;
+        }
+        self.shift = held;
+        match &self.pane {
+            Pane::Video(v) => v.update(cx, |v, cx| v.set_shift(held, cx)),
+            Pane::Pdf(p) => p.update(cx, |p, cx| p.set_shift(held, cx)),
+            Pane::Lines(t) => t.update(cx, |t, cx| t.set_shift(held, cx)),
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    fn pointer_moved(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Modifier changes reach only the window with the keyboard focus.
+        self.set_shift(only_shift(event.modifiers), cx);
         self.set_strip(true, cx);
         self.hide = Some(cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(STRIP_LINGER).await;
@@ -275,27 +371,33 @@ impl Preview {
         }
     }
 
-    fn strip_text(&self, window: &Window, cx: &App) -> String {
+    /// `38.6 MB`, or `38.6 MB, 158.4 MB unpacked` for a compressed file.
+    fn sizes(&self) -> String {
+        let size = format::size(self.loaded.facts.size);
+        match &self.loaded.packed {
+            Some(packed) => match packed.unpacked {
+                Some(unpacked) => format!("{size}, {} unpacked", format::size(unpacked)),
+                None => format!("{size} packed"),
+            },
+            None => size,
+        }
+    }
+
+    fn strip_text(&self, cx: &App) -> String {
         let facts = &self.loaded.facts;
-        let mut parts = vec![facts.name.clone(), format::size(facts.size)];
+        let mut parts = vec![facts.name.clone(), self.sizes()];
         match &self.pane {
             Pane::Video(v) => parts.push(v.read(cx).status()),
             Pane::Audio(a) => parts.push(a.read(cx).status()),
             Pane::Pdf(p) => {
                 let p = p.read(cx);
-                parts.push(format!(
-                    "page {} of {}",
-                    p.current_page(window),
-                    p.page_count()
-                ));
+                parts.push(format!("page {} of {}", p.current_page(), p.page_count()));
             }
-            Pane::Text(t) => {
-                let t = t.read(cx);
-                parts.push(format::count(t.line_count() as u64, "line", "lines"));
-                parts.extend(t.language().map(str::to_owned));
-                if t.truncated() {
-                    parts.push("the first 2 MB".into());
+            Pane::Lines(t) => {
+                if facts.kind == Kind::Binary {
+                    parts.push(self.loaded.description.clone());
                 }
+                parts.extend(t.read(cx).summary());
             }
             Pane::Archive(a) => parts.push(a.read(cx).summary()),
             Pane::None => {}
@@ -325,7 +427,7 @@ impl Preview {
         parts.join(" · ")
     }
 
-    fn strip(&self, theme: Theme, radius: Pixels, window: &Window, cx: &App) -> AnyElement {
+    fn strip(&self, theme: Theme, radius: Pixels, cx: &App) -> AnyElement {
         let strip = div()
             .absolute()
             .left_0()
@@ -342,9 +444,10 @@ impl Preview {
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis_middle()
-                    .child(self.strip_text(window, cx)),
+                    .child(self.strip_text(cx)),
             );
-        if self.strip.epoch == 0 {
+        let bar = matches!(&self.pane, Pane::Video(v) if v.read(cx).bar_shown());
+        if self.strip.epoch == 0 || bar {
             return strip.opacity(0.).into_any_element();
         }
         let shown = self.strip.shown;
@@ -491,9 +594,10 @@ impl Render for Preview {
             .bg(backdrop)
             .rounded(radius)
             .on_key_down(cx.listener(Self::key))
-            .on_mouse_move(
-                cx.listener(|this, _: &MouseMoveEvent, window, cx| this.pointer_moved(window, cx)),
-            )
+            .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, cx| {
+                this.set_shift(only_shift(event.modifiers), cx);
+            }))
+            .on_mouse_move(cx.listener(Self::pointer_moved))
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 if !hovered {
                     this.hide = None;
@@ -502,8 +606,12 @@ impl Render for Preview {
             }))
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_pause(cx)))
             .child(body)
-            .child(self.strip(theme, radius, window, cx))
+            .child(self.strip(theme, radius, cx))
     }
+}
+
+fn only_shift(m: Modifiers) -> bool {
+    m.shift && !(m.control || m.alt || m.platform)
 }
 
 /// A page with the file's extension on it, in the colour of its kind.

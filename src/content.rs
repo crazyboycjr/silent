@@ -11,10 +11,14 @@ use gpui_kit::RenderImage;
 use gpui_kit::component::highlighter::{Language, SyntaxHighlighter};
 use gpui_video_player::{Video, VideoOptions};
 use gstreamer as gst;
+use gstreamer::prelude::*;
 use silent::decode::{Decoder, Event};
 use silent::detect::{self, Facts, Kind};
 use silent::geometry::Screen;
+use silent::resume::{self, Key};
+use silent::{hexdump, pretty, unpack};
 use smallvec::SmallVec;
+use unicode_width::UnicodeWidthChar;
 
 use crate::picture::{self, Prepared};
 
@@ -22,7 +26,9 @@ use crate::picture::{self, Prepared};
 const CARD: (f64, f64) = (600.0, 340.0);
 const AUDIO_CARD: (f64, f64) = (640.0, 300.0);
 /// Text beyond this is not read; the head is shown.
-const TEXT_LIMIT: usize = 2 << 20;
+pub const TEXT_LIMIT: usize = 2 << 20;
+/// Columns a tab stretches to.
+pub const TAB: usize = 4;
 
 pub struct Loaded {
     pub facts: Facts,
@@ -30,7 +36,13 @@ pub struct Loaded {
     pub description: String,
     /// Window size in root-window pixels.
     pub size: (i32, i32),
+    /// For a compressed file, what is known about the data inside.
+    pub packed: Option<Packed>,
     pub body: Body,
+}
+
+pub struct Packed {
+    pub unpacked: Option<u64>,
 }
 
 pub enum Body {
@@ -40,6 +52,7 @@ pub enum Body {
     Audio(Audio),
     Pdf(Pdf),
     Text(Box<Text>),
+    Hex(Hex),
     Archive(Archive),
     Info,
 }
@@ -90,6 +103,34 @@ pub struct Text {
     pub language: Option<&'static str>,
     /// Only the head of the file was read.
     pub truncated: bool,
+    /// Columns of the widest line, tabs and wide characters counted.
+    pub widest: usize,
+    /// Laid out from minified JSON.
+    pub pretty: bool,
+}
+
+/// Bytes shown as `hexdump -C` shows them.
+pub struct Hex {
+    pub bytes: Bytes,
+    /// Only the head of the data is here.
+    pub truncated: bool,
+}
+
+pub enum Bytes {
+    /// A file mapped into memory, so that only the pages in view are read.
+    Mapped(memmap2::Mmap),
+    Owned(Vec<u8>),
+}
+
+impl std::ops::Deref for Bytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Bytes::Mapped(map) => map,
+            Bytes::Owned(bytes) => bytes,
+        }
+    }
 }
 
 pub struct Archive {
@@ -116,18 +157,23 @@ pub fn load(uri: &str, screen: Screen, wait_for_pixels: bool) -> Loaded {
     let description = gio::content_type_get_description(&facts.content_type).into();
     let mut loaded = Loaded {
         size: screen.card(CARD.0, CARD.1),
+        packed: None,
         body: Body::Info,
         facts,
         description,
     };
     let path = loaded.facts.path.clone();
+    let resume = path
+        .as_deref()
+        .and_then(|p| Key::new(p, loaded.facts.size, loaded.facts.modified))
+        .and_then(|key| resume::recall(&key));
     let (size, body) = match (loaded.facts.kind, path) {
         (Kind::Image, _) => match image(&loaded.facts.uri, screen, wait_for_pixels) {
             Some((size, picture)) => (size, Body::Image(picture)),
             None => return loaded,
         },
         (Kind::Folder, path) => (loaded.size, Body::Folder(folder(path))),
-        (Kind::Video, _) => match video(&loaded.facts.uri) {
+        (Kind::Video, _) => match video(&loaded.facts.uri, resume) {
             Some(video) => {
                 let (w, h) = video.size();
                 let fit = screen.fit_media((w.max(1) as u32, h.max(1) as u32));
@@ -135,7 +181,7 @@ pub fn load(uri: &str, screen: Screen, wait_for_pixels: bool) -> Loaded {
             }
             None => return loaded,
         },
-        (Kind::Audio, Some(path)) => match audio(&loaded.facts.uri, &path) {
+        (Kind::Audio, Some(path)) => match audio(&loaded.facts.uri, &path, resume) {
             Some(audio) => (screen.card(AUDIO_CARD.0, AUDIO_CARD.1), Body::Audio(audio)),
             None => return loaded,
         },
@@ -143,23 +189,25 @@ pub fn load(uri: &str, screen: Screen, wait_for_pixels: bool) -> Loaded {
             Some((size, pdf)) => (size, Body::Pdf(pdf)),
             None => return loaded,
         },
-        (Kind::Text, Some(path)) => match text(&path, &loaded.facts.content_type) {
-            Some(text) => {
-                let rows = text.lines.len().clamp(8, 44) as f64;
-                (
-                    screen.card(860.0, rows * 21.0 + 40.0),
-                    Body::Text(Box::new(text)),
-                )
+        (Kind::Text, Some(path)) => match read_head(&path) {
+            Some((bytes, truncated)) => {
+                let text = text(bytes, truncated, &path, &loaded.facts.content_type);
+                (text_size(&text, screen), Body::Text(Box::new(text)))
             }
             None => return loaded,
         },
+        (Kind::Binary, Some(path)) => match mapped(&path) {
+            Some(hex) => (hex_size(&hex, screen), Body::Hex(hex)),
+            None => return loaded,
+        },
         (Kind::Archive, Some(path)) => match archive(&path) {
-            Some(archive) => {
-                let rows = archive.entries.len().clamp(6, 26) as f64;
-                (
-                    screen.card(720.0, rows * 30.0 + 96.0),
-                    Body::Archive(archive),
-                )
+            Some(archive) => (archive_size(&archive, screen), Body::Archive(archive)),
+            None => return loaded,
+        },
+        (Kind::Compressed, Some(path)) => match compressed(&path, &loaded.facts.name, screen) {
+            Some((size, body, packed)) => {
+                loaded.packed = packed;
+                (size, body)
             }
             None => return loaded,
         },
@@ -184,6 +232,7 @@ fn missing(uri: &str, error: &str, screen: Screen) -> Loaded {
         },
         description: error.to_owned(),
         size: screen.card(CARD.0, CARD.1),
+        packed: None,
         body: Body::Info,
     }
 }
@@ -214,8 +263,9 @@ fn image(uri: &str, screen: Screen, wait_for_pixels: bool) -> Option<((i32, i32)
 }
 
 /// Opening a video prerolls its pipeline, which takes a few hundred
-/// milliseconds; that wait happens here, not on the UI thread.
-fn video(uri: &str) -> Option<Video> {
+/// milliseconds; that wait, and the seek to where it was left, happen here,
+/// not on the UI thread.
+fn video(uri: &str, resume: Option<Duration>) -> Option<Video> {
     let url = url::Url::parse(uri).ok()?;
     let options = VideoOptions {
         frame_buffer_capacity: Some(0),
@@ -223,10 +273,21 @@ fn video(uri: &str) -> Option<Video> {
         // Unset counts as 0, a rate GStreamer rejects.
         speed: Some(1.0),
     };
-    Video::new_with_options(&url, options).ok()
+    let video = Video::new_with_options(&url, options).ok()?;
+    if let Some(position) = resume {
+        // The keyframe before the position: a little earlier, at once.
+        let pipeline = video.pipeline();
+        let flags = gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT | gst::SeekFlags::SNAP_BEFORE;
+        if pipeline.seek_simple(flags, clock(position)).is_ok() {
+            let _ = pipeline.state(gst::ClockTime::from_mseconds(500));
+            // The frame from before the seek is not shown.
+            video.take_frame_ready();
+        }
+    }
+    Some(video)
 }
 
-fn audio(uri: &str, path: &Path) -> Option<Audio> {
+fn audio(uri: &str, path: &Path, resume: Option<Duration>) -> Option<Audio> {
     use lofty::prelude::*;
     gst::init().ok()?;
     let mute_video = gst::ElementFactory::make("fakesink").build().ok()?;
@@ -235,6 +296,12 @@ fn audio(uri: &str, path: &Path) -> Option<Audio> {
         .property("video-sink", &mute_video)
         .build()
         .ok()?;
+    if let Some(position) = resume {
+        let _ = playbin.set_state(gst::State::Paused);
+        let _ = playbin.state(gst::ClockTime::from_mseconds(500));
+        let flags = gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE;
+        let _ = playbin.seek_simple(flags, clock(position));
+    }
     let tagged = lofty::read_from_path(path).ok();
     let tag = tagged
         .as_ref()
@@ -253,6 +320,10 @@ fn audio(uri: &str, path: &Path) -> Option<Audio> {
         cover,
         playbin,
     })
+}
+
+pub fn clock(position: Duration) -> gst::ClockTime {
+    gst::ClockTime::from_nseconds(position.as_nanos() as u64)
 }
 
 /// Cover art is small and comes from inside the file, so it is decoded here
@@ -285,7 +356,8 @@ fn pdf(path: &Path, screen: Screen) -> Option<((i32, i32), Pdf)> {
     ))
 }
 
-fn text(path: &Path, content_type: &str) -> Option<Text> {
+/// The first [`TEXT_LIMIT`] bytes, and whether there were more.
+fn read_head(path: &Path) -> Option<(Vec<u8>, bool)> {
     let mut bytes = Vec::new();
     File::open(path)
         .ok()?
@@ -293,9 +365,23 @@ fn text(path: &Path, content_type: &str) -> Option<Text> {
         .read_to_end(&mut bytes)
         .ok()?;
     let truncated = bytes.len() > TEXT_LIMIT;
-    let mut text = decode_text(&bytes[..bytes.len().min(TEXT_LIMIT)]);
+    bytes.truncate(TEXT_LIMIT);
+    Some((bytes, truncated))
+}
+
+/// `name` gives the language; for a compressed file it is the inner name.
+fn text(bytes: Vec<u8>, mut truncated: bool, name: &Path, content_type: &str) -> Text {
+    let mut text = decode_text(&bytes);
+    drop(bytes);
     if truncated && let Some(end) = text.rfind('\n') {
         text.truncate(end);
+    }
+    let language = language(name, content_type);
+    let pretty = language == Some("json") && pretty::minified(&text);
+    if pretty {
+        let (laid_out, cut) = pretty::json(&text, TEXT_LIMIT);
+        text = laid_out;
+        truncated |= cut;
     }
     let mut lines = Vec::new();
     let mut start = 0;
@@ -311,19 +397,38 @@ fn text(path: &Path, content_type: &str) -> Option<Text> {
     if start < text.len() || lines.is_empty() {
         lines.push(start..text.len());
     }
-    let language = language(path, content_type);
+    let widest = lines
+        .iter()
+        .map(|line| columns(&text[line.clone()]))
+        .max()
+        .unwrap_or(0);
     let highlighter = language.map(|language| {
         let mut highlighter = SyntaxHighlighter::new(language);
         highlighter.update(None, &ropey::Rope::from_str(&text), None);
         highlighter
     });
-    Some(Text {
+    Text {
         text,
         lines,
         highlighter,
         language,
         truncated,
+        widest,
+        pretty,
+    }
+}
+
+/// How many columns `line` takes, tabs stretched to the next stop.
+pub fn columns(line: &str) -> usize {
+    line.chars().fold(0, |column, c| match c {
+        '\t' => (column / TAB + 1) * TAB,
+        c => column + c.width().unwrap_or(0),
     })
+}
+
+fn text_size(text: &Text, screen: Screen) -> (i32, i32) {
+    let rows = text.lines.len().clamp(8, 44) as f64;
+    screen.card(860.0, rows * 21.0 + 40.0)
 }
 
 /// UTF-8 when it is valid, the encoding a byte-order mark names, and
@@ -366,6 +471,7 @@ fn language(path: &Path, content_type: &str) -> Option<&'static str> {
             "mk" => Some("make"),
             "patch" => Some("diff"),
             "htm" | "xhtml" => Some("html"),
+            "jsonl" | "ndjson" | "geojson" => Some("json"),
             ext => by_name(ext),
         })
         .or(match file_name {
@@ -380,6 +486,59 @@ fn language(path: &Path, content_type: &str) -> Option<&'static str> {
             "application/json" => Some("json"),
             _ => None,
         })
+}
+
+/// Maps the file, so that a dump of gigabytes opens at once.
+fn mapped(path: &Path) -> Option<Hex> {
+    let file = File::open(path).ok()?;
+    // Safety: the map is only read. A file truncated while it is shown would
+    // fault the read, as it would for any program that maps files.
+    let map = unsafe { memmap2::Mmap::map(&file) }.ok()?;
+    Some(Hex {
+        bytes: Bytes::Mapped(map),
+        truncated: false,
+    })
+}
+
+fn hex_size(hex: &Hex, screen: Screen) -> (i32, i32) {
+    let rows = hexdump::line_count(hex.bytes.len() as u64).clamp(8, 44) as f64;
+    let digits = hexdump::offset_digits(hex.bytes.len() as u64) as f64;
+    screen.card(600.0 + digits * 7.6, rows * 21.0 + 40.0)
+}
+
+/// What is inside a compressed file: text, a tar's listing, or the bytes.
+fn compressed(
+    path: &Path,
+    name: &str,
+    screen: Screen,
+) -> Option<((i32, i32), Body, Option<Packed>)> {
+    let head = unpack::head(path, TEXT_LIMIT + 1).ok()?;
+    if head.bytes.get(257..262) == Some(b"ustar") {
+        let archive = archive(path)?;
+        return Some((archive_size(&archive, screen), Body::Archive(archive), None));
+    }
+    let unpacked = if head.complete {
+        Some(head.bytes.len() as u64)
+    } else {
+        unpack::recorded_size(path).filter(|&size| size > head.bytes.len() as u64)
+    };
+    let packed = Some(Packed { unpacked });
+    let inner = unpack::inner_name(name);
+    let sample = &head.bytes[..head.bytes.len().min(4096)];
+    let (content_type, _) = gio::content_type_guess(Some(inner), sample);
+    let is_text = detect::classify(&content_type, sample) == Kind::Text;
+    let truncated = !head.complete || head.bytes.len() > TEXT_LIMIT;
+    let mut bytes = head.bytes;
+    bytes.truncate(TEXT_LIMIT);
+    if is_text {
+        let text = text(bytes, truncated, Path::new(inner), &content_type);
+        return Some((text_size(&text, screen), Body::Text(Box::new(text)), packed));
+    }
+    let hex = Hex {
+        bytes: Bytes::Owned(bytes),
+        truncated,
+    };
+    Some((hex_size(&hex, screen), Body::Hex(hex), packed))
 }
 
 fn archive(path: &Path) -> Option<Archive> {
@@ -403,6 +562,11 @@ fn archive(path: &Path) -> Option<Archive> {
         });
     }
     Some(archive)
+}
+
+fn archive_size(archive: &Archive, screen: Screen) -> (i32, i32) {
+    let rows = archive.entries.len().clamp(6, 26) as f64;
+    screen.card(720.0, rows * 30.0 + 96.0)
 }
 
 fn decode_name(bytes: &[u8]) -> compress_tools::Result<String> {

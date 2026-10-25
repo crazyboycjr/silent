@@ -1,5 +1,7 @@
 //! Video and audio, with silent's own minimal controls.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,10 +13,12 @@ use silent::format;
 use smallvec::SmallVec;
 use yuv::{YuvBiPlanarImage, YuvConversionMode, YuvRange, YuvStandardMatrix, yuv_nv12_to_bgra};
 
-use crate::content::Audio;
-use crate::theme::{Theme, accent};
+use crate::content::{Audio, clock};
+use crate::theme::{Theme, accent, progress};
 
 const SEEK: Duration = Duration::from_secs(10);
+/// What Shift with an arrow key skips.
+const STEP: Duration = Duration::from_secs(5);
 
 /// A playing video. Frames are converted on a thread of their own, only
 /// when the player has a new one, so the UI thread only swaps images.
@@ -22,6 +26,16 @@ pub struct VideoPane {
     video: Video,
     frame: Option<Arc<RenderImage>>,
     _feed: Task<()>,
+    bar: Bar,
+}
+
+/// The seek bar over the bottom of a video, shown while Shift is held.
+#[derive(Default)]
+struct Bar {
+    held: bool,
+    /// Where a drag on the bar has got to.
+    dragging: Option<Duration>,
+    track: Rc<Cell<Bounds<Pixels>>>,
 }
 
 impl VideoPane {
@@ -49,6 +63,7 @@ impl VideoPane {
             video,
             frame: None,
             _feed: feed,
+            bar: Bar::default(),
         }
     }
 
@@ -70,11 +85,38 @@ impl VideoPane {
         let _ = self.video.seek(target, false);
     }
 
+    /// Five seconds back or on, to the frame.
+    pub fn step(&self, forward: bool, cx: &mut Context<Self>) {
+        let position = self.video.position();
+        let target = if forward {
+            (position + STEP).min(self.video.duration())
+        } else {
+            position.saturating_sub(STEP)
+        };
+        let _ = self.video.seek(target, true);
+        cx.notify();
+    }
+
+    pub fn position(&self) -> Duration {
+        self.video.position()
+    }
+
+    pub fn duration(&self) -> Option<Duration> {
+        Some(self.video.duration()).filter(|d| !d.is_zero())
+    }
+
+    pub fn set_shift(&mut self, held: bool, cx: &mut Context<Self>) {
+        if self.bar.held != held {
+            self.bar.held = held;
+            cx.notify();
+        }
+    }
+
     /// `0:12 / 0:42`, and whether it is paused or muted.
     pub fn status(&self) -> String {
         status(
             self.video.position(),
-            Some(self.video.duration()),
+            self.duration(),
             self.video.paused(),
             self.video.muted(),
         )
@@ -83,16 +125,157 @@ impl VideoPane {
     pub fn ready(&self) -> bool {
         self.frame.is_some()
     }
+
+    pub fn bar_shown(&self) -> bool {
+        self.bar.held || self.bar.dragging.is_some()
+    }
+
+    /// The time under `x` on the bar's track.
+    fn time_at(&self, x: Pixels) -> Duration {
+        let track = self.bar.track.get();
+        let fraction = if track.size.width > px(0.) {
+            ((x - track.left()) / track.size.width).clamp(0., 1.)
+        } else {
+            0.
+        };
+        self.video.duration().mul_f32(fraction)
+    }
+
+    fn drag_to(&mut self, x: Pixels, cx: &mut Context<Self>) {
+        let target = self.time_at(x);
+        self.bar.dragging = Some(target);
+        let _ = self.video.seek(target, false);
+        cx.notify();
+    }
+
+    fn drop_at(&mut self, cx: &mut Context<Self>) {
+        if let Some(target) = self.bar.dragging.take() {
+            let _ = self.video.seek(target, true);
+            cx.notify();
+        }
+    }
+
+    fn bar(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let theme = Theme::of(WindowAppearance::Dark);
+        let duration = self.video.duration();
+        let position = self.bar.dragging.unwrap_or_else(|| self.video.position());
+        let fraction = if duration.is_zero() {
+            0.
+        } else {
+            (position.as_secs_f32() / duration.as_secs_f32()).clamp(0., 1.)
+        };
+        let track = self.bar.track.clone();
+        let view = cx.entity().downgrade();
+        let follow = canvas(
+            move |bounds, _, _| track.set(bounds),
+            move |_, _, window, _| {
+                // Listened to on every frame: a quick click can be released
+                // before the frame after its press is drawn.
+                let moved = view.clone();
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Bubble {
+                        let _ = moved.update(cx, |this, cx| {
+                            if this.bar.dragging.is_some() {
+                                this.drag_to(event.position.x, cx);
+                            }
+                        });
+                    }
+                });
+                let released = view.clone();
+                window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Bubble && event.button == MouseButton::Left {
+                        let _ = released.update(cx, |this, cx| this.drop_at(cx));
+                    }
+                });
+            },
+        )
+        .absolute()
+        .size_full();
+        let time = |t: Duration| {
+            div()
+                .flex_none()
+                .min_w(px(44.))
+                .text_size(px(13.))
+                .text_color(theme.strip_text)
+                .child(format::duration(t))
+        };
+        div()
+            .id("seek-bar")
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .h(px(44.))
+            .px(px(16.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(12.))
+            .bg(theme.strip)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                    // The whole bar keeps clicks from pausing; only the track seeks.
+                    cx.stop_propagation();
+                    let track = this.bar.track.get();
+                    let x = event.position.x;
+                    if x > track.left() - px(12.) && x < track.right() + px(12.) {
+                        this.drag_to(x, cx);
+                    }
+                }),
+            )
+            .child(time(position))
+            .child(
+                div()
+                    .flex_1()
+                    .h(px(24.))
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .cursor(CursorStyle::PointingHand)
+                    .child(follow)
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(4.))
+                            .rounded(px(2.))
+                            .bg(theme.strip_text.opacity(0.28))
+                            .child(
+                                div()
+                                    .h_full()
+                                    .w(relative(fraction))
+                                    .rounded(px(2.))
+                                    .bg(progress()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left(relative(fraction))
+                            .ml(px(-6.))
+                            .size(px(12.))
+                            .rounded(px(6.))
+                            .bg(theme.strip_text),
+                    ),
+            )
+            .child(time(duration).flex().justify_end())
+    }
 }
 
 impl Render for VideoPane {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let frame = self.frame.clone().map(|image| {
             img(ImageSource::Render(image))
                 .size_full()
                 .object_fit(ObjectFit::Contain)
         });
-        div().size_full().bg(rgb(0x000000)).children(frame)
+        let bar = self.bar_shown().then(|| self.bar(cx));
+        div()
+            .size_full()
+            .relative()
+            .bg(rgb(0x000000))
+            .children(frame)
+            .children(bar)
     }
 }
 
@@ -202,14 +385,14 @@ impl AudioPane {
         self.audio.playbin.current_state() == gst::State::Playing
     }
 
-    fn position(&self) -> Duration {
+    pub fn position(&self) -> Duration {
         self.audio
             .playbin
             .query_position::<gst::ClockTime>()
             .map_or(Duration::ZERO, |t| Duration::from_nanos(t.nseconds()))
     }
 
-    fn duration(&self) -> Option<Duration> {
+    pub fn duration(&self) -> Option<Duration> {
         self.audio
             .playbin
             .query_duration::<gst::ClockTime>()
@@ -235,17 +418,25 @@ impl AudioPane {
     }
 
     pub fn seek(&self, forward: bool) {
+        self.skip(SEEK, forward, gst::SeekFlags::KEY_UNIT);
+    }
+
+    pub fn step(&self, forward: bool) {
+        self.skip(STEP, forward, gst::SeekFlags::ACCURATE);
+    }
+
+    fn skip(&self, by: Duration, forward: bool, how: gst::SeekFlags) {
         let position = self.position();
         let target = if forward {
-            position + SEEK
+            position + by
         } else {
-            position.saturating_sub(SEEK)
+            position.saturating_sub(by)
         };
         let target = self.duration().map_or(target, |d| target.min(d));
-        let _ = self.audio.playbin.seek_simple(
-            gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
-            gst::ClockTime::from_nseconds(target.as_nanos() as u64),
-        );
+        let _ = self
+            .audio
+            .playbin
+            .seek_simple(gst::SeekFlags::FLUSH | how, clock(target));
     }
 
     pub fn status(&self) -> String {

@@ -1,10 +1,12 @@
 mod app;
 mod archive;
-mod code;
 mod content;
+mod lines;
 mod media;
 mod pdf;
+mod pdftext;
 mod picture;
+mod scrub;
 mod theme;
 mod trace;
 mod view;
