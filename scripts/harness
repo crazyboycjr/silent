@@ -27,7 +27,7 @@ die() { echo "harness: $*" >&2; exit 1; }
 
 fixtures() {
     local f=$FIXTURES
-    mkdir -p "$f"/{images,video,audio,docs,text,archives,folder,other}
+    mkdir -p "$f"/{images,video,audio,docs,text,archives,compressed,folder,other}
     cd "$f"
     local ff=("${HEAVY[@]}" ffmpeg -nostdin -hide_banner -loglevel error -y)
     local mk=("${HEAVY[@]}" magick)
@@ -100,6 +100,28 @@ SVG
     printf 'Notes without an extension.\nSecond line.\n' > text/README
     (yes 'The quick brown fox jumps over the lazy dog, again and again and again.' || true) | head -c 5000000 > text/long.txt
     printf '静夜思\n床前明月光，疑是地上霜。\n举头望明月，低头思故乡。\n' | iconv -f UTF-8 -t GB18030 > text/chinese-gb18030.txt
+    printf '静夜思\n床前明月光，疑是地上霜。\n' | iconv -f UTF-8 -t GB18030 > text/chinese-gbk-noext
+    printf 'package main\n\nimport "fmt"\n\nfunc main() {\n\tfor i := 0; i < 3; i++ {\n\t\tfmt.Println("tab\tinside", i)\n\t}\n}\n' > text/tabs.go
+    for _ in $(seq 220); do cat "$(dirname "$0")/../src/geometry.rs"; done > text/big.rs
+    python3 -I - "$f" <<'PY'
+import json, random, sys
+random.seed(7)
+root = sys.argv[1]
+stages = ["Gone Fission Hydroplant", "Sockeye Station", "Spawning Grounds", "Marooner's Bay"]
+def record(i):
+    return {"id": f"{i:08x}-5aea-488a-967d-6f5a6c236579", "url": f"https://stat.ink/@player/salmon3/{i}",
+            "stage": {"key": "stage%d" % (i % 4), "name": {"en_US": stages[i % 4], "ja_JP": "ステージ"}},
+            "danger_rate": random.randint(60, 333), "clear_waves": random.randint(0, 3),
+            "waves": [{"wave": w, "golden_quota": 20 + w, "golden_delivered": random.randint(10, 40)} for w in range(1, 4)],
+            "players": [{"name": f"p{j}", "weapons": ["splattershot", "jet squelcher"], "rescue": random.randint(0, 5)} for j in range(4)]}
+with open(f"{root}/text/data.min.json", "w") as out:
+    json.dump({"records": [record(i) for i in range(40)]}, out, separators=(",", ":"))
+with open(f"{root}/compressed/statink.json", "w") as out:
+    for i in range(6000):
+        out.write(json.dumps(record(i), separators=(",", ":"), ensure_ascii=False) + "\n")
+with open(f"{root}/text/minified.js", "w") as out:
+    out.write(";".join(f"function f{i}(a,b){{return a*{i}+b}}" for i in range(12000)) + "\n")
+PY
 
     # Archives.
     mkdir -p folder/project/{src,docs,assets}
@@ -109,11 +131,24 @@ SVG
     cp images/small-300x200.png images/icon-64.png folder/project/assets/
     (cd folder && "${HEAVY[@]}" zip -qr ../archives/project.zip project && "${HEAVY[@]}" tar czf ../archives/project.tar.gz project)
     "${HEAVY[@]}" tar czf archives/many-files.tar.gz -C /usr/share/icons hicolor
-    gzip -kc text/long.txt > archives/long.txt.gz
 
-    # Everything else.
+    # Single compressed files: text, JSON Lines, a tar without .tar in its name, a program.
+    gzip -kc text/long.txt > compressed/long.txt.gz
+    "${HEAVY[@]}" gzip -9f compressed/statink.json
+    xz -kc text/long.txt > compressed/long.txt.xz
+    zstd -qc text/big.rs > compressed/big.rs.zst
+    bzip2 -kc text/geometry.rs > compressed/geometry.rs.bz2
+    lz4 -qc --content-size text/data.min.json > compressed/data.min.json.lz4
+    cp archives/project.tar.gz compressed/project-tar.gz
+    gzip -c /usr/bin/true > compressed/program.gz
+
+    # Everything else, binaries as hexdumps.
     head -c 300000 /dev/urandom > other/blob.bin
     cp /usr/bin/true other/program
+    # Sparse: five gigabytes that take a megabyte of disk.
+    head -c 1000000 /dev/urandom > other/disk-5g.img
+    truncate -s 5G other/disk-5g.img
+    printf 'the end' >> other/disk-5g.img
     cp "$(fc-match -f '%{file}' 'DejaVu Sans')" other/font.ttf 2>/dev/null || true
     echo "fixtures in $f:"
     find "$f" -type f | sort | sed "s|$f/|  |"
