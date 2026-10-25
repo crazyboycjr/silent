@@ -425,7 +425,14 @@ bus() {
   </policy>
 </busconfig>
 CONF
+    # A runtime directory of its own: what silent remembers stays out of the
+    # user's, and no audio server is found there.
+    mkdir -m 700 "$dir/runtime"
     # Video and sound play into a fakesink: no real audio sink is good enough.
+    # Drawing stays on the CPU (lavapipe, Mesa's EGL): the GPU may be training.
+    XDG_RUNTIME_DIR=$dir/runtime \
+    VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json \
+    __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json \
     GST_PLUGIN_FEATURE_RANK=${GST_PLUGIN_FEATURE_RANK:-pulsesink:0,pipewiresink:0,alsasink:0,osssink:0,oss4sink:0,jackaudiosink:0,openalsink:0} \
         dbus-run-session --config-file="$dir/session.conf" -- "$@"
 }
