@@ -33,17 +33,17 @@ screen, at a size you can see. It takes the place of GNOME's sushi.
 | Text and code | Highlighted, with line numbers; a minimap at the right while it scrolls; long lines scroll sideways instead of wrapping; select with the mouse and copy; UTF-8, UTF-16 and GB18030 (GBK) text; minified JSON laid out; the first 2 MB of large files |
 | Binary files | As `hexdump -C` prints them, read from a memory map, so a dump of gigabytes opens at once, minimap and all; select and copy as text |
 | Compressed files | gzip, xz, zstd, bzip2, lz4 and lzma files show what is inside: text and code as above, a tar as its listing, anything else as a hexdump; the strip gives both sizes when the format records them |
-| Word documents | docx and odt as a column on a page: headings, paragraphs with their bold, italic, underline and colour, bulleted and numbered lists, tables and pictures |
+| Word documents | docx, odt and the older doc of Word 97 to 2003 (and WPS Writer's wps) as a column on a page: headings, paragraphs with their bold, italic, underline and colour, bulleted and numbered lists, tables, and the pictures of docx and odt |
 | Spreadsheets | xlsx, xls and ods as a grid with column letters and row numbers, numbers and dates formatted, a tab for each worksheet, opening on the one that was in front; a click puts a cell cursor down, and the strip shows its cell in full; chart and hidden sheets get no tab; old .xls written as a bare BIFF stream too; the first 5,000 rows |
-| Presentations | pptx as its slides in a scroll, with text, pictures, tables and shapes where the deck puts them and what they inherit from the layout and master, and a rail of the slides drawn small while it scrolls; odp as its thumbnail and text |
+| Presentations | pptx as its slides in a scroll, with text, pictures, tables and shapes where the deck puts them and what they inherit from the layout and master, and a rail of the slides drawn small while it scrolls; odp as its thumbnail and text; the older ppt as an outline of each slide's title and text |
 | Keynote, Pages, Numbers | The preview picture the file carries, as Quick Look shows it |
 | Archives | The entries as a tree with file-type icons and their sizes, and the total unpacked; zip, tar (gz, bz2, xz, zstd), 7z, rar, ISO and more |
 | Folders | A card with the item count and the total size, counted in the background |
-| Everything else | A card with the type, size and modification date; old .doc and .ppt files too |
+| Everything else | A card with the type, size and modification date |
 
 The Office files are read the way macOS Quick Look reads them: silent opens
-the package and parses its XML itself, with no office suite, and draws the
-result natively. Rendered Markdown and HTML, and fonts, come later.
+the package and parses its XML itself, or the binary streams of the formats
+of Office 97 to 2003, with no office suite, and draws the result natively. Rendered Markdown and HTML, and fonts, come later.
 
 A file you leave, by moving to another or closing the preview, comes back
 as you left it if you return within the hour: video and sound play on from
