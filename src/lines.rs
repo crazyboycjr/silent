@@ -1,22 +1,28 @@
 //! Text, code and hexdumps. Only the lines in view are shaped and drawn,
 //! straight from their source, so a 2 MB file or a dump of gigabytes opens
-//! at once. Long lines scroll sideways rather than wrap, and text can be
-//! selected with the mouse and copied.
+//! at once. Long lines scroll sideways rather than wrap, text can be
+//! selected with the mouse and copied, and a minimap at the right edge
+//! shows the lines around the view in their highlighting colours.
 
 use std::borrow::Cow;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::highlighter::HighlightTheme;
 use gpui_kit::*;
+use silent::memory::View;
+use silent::vim::Motion;
 use silent::{format, hexdump};
 use smallvec::SmallVec;
+use unicode_width::UnicodeWidthChar;
 
 use crate::content::{Hex, TAB, Text, columns};
-use crate::scrub::{self, Scrubbed, Scrubber};
-use crate::theme::Theme;
+use crate::overview::{self, Geometry, Mode, Overview, Overviewed};
+use crate::theme::{Theme, progress};
 
 const FONT_SIZE: f32 = 12.5;
 const LINE_HEIGHT: f32 = 20.;
@@ -27,6 +33,16 @@ const PAD_SIDE: f32 = 18.;
 const SHOWN: usize = 4000;
 /// A copy of a hexdump stops after this many lines (about 20 MB of text).
 const COPY_LINES: usize = 1 << 18;
+/// Columns that h, l and the arrows move sideways.
+const STEP: f32 = 4.;
+/// The minimap: the columns drawn, and its margin.
+const MINI_COLUMNS: usize = 90;
+const MINI_PAD: f32 = 8.;
+/// Lines spanning more bytes than this are highlighted one by one for the
+/// minimap, each only as far as it is drawn.
+const MINI_SPAN: usize = 64 << 10;
+/// How long a line jumped to stays lit.
+const FLASH: Duration = Duration::from_millis(1200);
 
 pub enum Doc {
     Text(Box<Text>),
@@ -167,6 +183,92 @@ impl Shown {
     }
 }
 
+/// A line as the minimap draws it: runs of columns with ink, and their colours.
+type Ink = SmallVec<[(u16, u16, Hsla); 8]>;
+
+/// The minimap's grid in logical pixels, each a whole number of device
+/// pixels so that every line is drawn alike: lines about 2 pixels apart
+/// with a device pixel between them, columns about 1 pixel wide.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Pitch {
+    line: f64,
+    column: f32,
+    ink: f32,
+    scale: f32,
+}
+
+impl Pitch {
+    fn at(scale: f32) -> Self {
+        let line = (2. * scale).round().max(2.);
+        Self {
+            line: f64::from(line / scale),
+            column: (scale.round().max(1.)) / scale,
+            ink: (line - 1.) / scale,
+            scale,
+        }
+    }
+
+    fn width(self) -> f32 {
+        MINI_COLUMNS as f32 * self.column + 2. * MINI_PAD
+    }
+
+    /// `y` moved onto the device pixel grid.
+    fn snap(self, y: f64) -> f32 {
+        (y * f64::from(self.scale)).round() as f32 / self.scale
+    }
+}
+
+/// The minimap's lines around the view, kept while the view stays near.
+#[derive(Default)]
+struct Mini {
+    first: usize,
+    lines: VecDeque<Ink>,
+    dark: bool,
+}
+
+impl Mini {
+    fn get(&self, ix: usize) -> Option<&Ink> {
+        self.lines.get(ix.checked_sub(self.first)?)
+    }
+
+    /// Makes sure lines `range` are here, making only those that are not.
+    fn fill(&mut self, range: Range<usize>, dark: bool, make: impl Fn(Range<usize>) -> Vec<Ink>) {
+        if range.is_empty() {
+            return;
+        }
+        let end = self.first + self.lines.len();
+        if dark != self.dark
+            || self.lines.is_empty()
+            || range.end <= self.first
+            || range.start >= end
+        {
+            self.dark = dark;
+            self.first = range.start;
+            self.lines = make(range).into();
+            return;
+        }
+        if range.start < self.first {
+            for ink in make(range.start..self.first).into_iter().rev() {
+                self.lines.push_front(ink);
+            }
+            self.first = range.start;
+        }
+        let end = self.first + self.lines.len();
+        if range.end > end {
+            self.lines.extend(make(end..range.end));
+        }
+        // A screenful either side is kept for scrolling back.
+        let slack = range.len();
+        while self.first + slack < range.start {
+            self.lines.pop_front();
+            self.first += 1;
+        }
+        while self.first + self.lines.len() > range.end + slack {
+            self.lines.pop_back();
+        }
+    }
+}
+
 pub struct LinesPane {
     doc: Rc<Doc>,
     /// The first line in view, with the fraction of it scrolled past.
@@ -177,20 +279,32 @@ pub struct LinesPane {
     /// Where the lines were last drawn, for the pointer.
     area: Rc<Cell<Bounds<Pixels>>>,
     advance: Rc<Cell<Pixels>>,
-    scrubber: Scrubber,
+    overview: Overview,
+    mini: Rc<RefCell<Mini>>,
+    pitch: Pitch,
+    /// A line just jumped to, lit for a moment.
+    flash: Option<(usize, Instant)>,
 }
 
 impl LinesPane {
-    pub fn new(doc: Doc) -> Self {
+    pub fn new(doc: Doc, mode: Mode, view: Option<View>) -> Self {
+        let advance = px(7.5);
+        let (top, side) = match view {
+            Some(View::Lines { top, side }) => (top, side),
+            _ => (0., 0.),
+        };
         Self {
             doc: Rc::new(doc),
-            top: 0.,
-            scroll_x: px(0.),
+            top,
+            scroll_x: advance * side,
             selection: None,
             dragging: None,
             area: Rc::default(),
-            advance: Rc::new(Cell::new(px(7.5))),
-            scrubber: Scrubber::default(),
+            advance: Rc::new(Cell::new(advance)),
+            overview: Overview::new(mode),
+            mini: Rc::default(),
+            pitch: Pitch::at(1.),
+            flash: None,
         }
     }
 
@@ -216,6 +330,20 @@ impl LinesPane {
                 parts
             }
         }
+    }
+
+    /// Where the view is, to come back to; nothing at the start.
+    pub fn view(&self) -> Option<View> {
+        let side = self.scroll_x / self.advance.get();
+        (self.top > 0.01 || side > 0.01).then_some(View::Lines {
+            top: self.top,
+            side,
+        })
+    }
+
+    pub fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
+        self.overview.mode = mode;
+        overview::reveal(self, cx);
     }
 
     fn font() -> Font {
@@ -244,31 +372,60 @@ impl LinesPane {
         self.scroll_x = self.scroll_x.clamp(px(0.), self.max_scroll_x());
     }
 
-    pub fn scroll_by_page(&mut self, down: bool, cx: &mut Context<Self>) {
-        let page = (self.rows() - 2.).max(1.);
-        self.top += if down { page } else { -page };
-        self.clamp();
-        cx.notify();
-    }
-
-    pub fn scroll_to_end(&mut self, end: bool, cx: &mut Context<Self>) {
-        self.top = if end { self.max_top() } else { 0. };
-        self.clamp();
-        cx.notify();
-    }
-
-    pub fn set_shift(&mut self, held: bool, cx: &mut Context<Self>) {
-        if self.scrubber.held != held {
-            self.scrubber.held = held;
-            cx.notify();
+    /// Moves as vim's keys and the arrows ask.
+    pub fn motion(&mut self, motion: Motion, cx: &mut Context<Self>) {
+        let rows = self.rows();
+        let half = (rows / 2.).floor().max(1.);
+        let page = (rows - 2.).max(1.);
+        let step = self.advance.get() * STEP;
+        let n = |count: usize| count as f64;
+        let before = self.top;
+        match motion {
+            Motion::Down(k) | Motion::ScrollDown(k) => self.top += n(k),
+            Motion::Up(k) | Motion::ScrollUp(k) => self.top -= n(k),
+            Motion::HalfDown(k) => self.top += n(k) * half,
+            Motion::HalfUp(k) => self.top -= n(k) * half,
+            Motion::PageDown(k) => self.top += n(k) * page,
+            Motion::PageUp(k) => self.top -= n(k) * page,
+            Motion::Right(k) => self.scroll_x += step * k.min(1 << 20) as f32,
+            Motion::Left(k) => self.scroll_x -= step * k.min(1 << 20) as f32,
+            Motion::Home => self.scroll_x = px(0.),
+            Motion::Top => self.top = 0.,
+            Motion::Bottom => self.top = f64::MAX,
+            Motion::Line(k) => {
+                // The line comes to the middle of the view, lit for a moment.
+                let ix = k
+                    .saturating_sub(1)
+                    .min(self.doc.line_count().saturating_sub(1));
+                self.top = ix as f64 - ((rows - 1.) / 2.).floor();
+                self.flash = Some((ix, Instant::now()));
+            }
         }
+        self.clamp();
+        if self.top != before {
+            overview::reveal(self, cx);
+        }
+        cx.notify();
+    }
+
+    /// Half the view sideways, in whole columns.
+    pub fn sideways(&mut self, right: bool, cx: &mut Context<Self>) {
+        let advance = self.advance.get();
+        let half = advance * ((self.area.get().size.width / advance / 2.).floor().max(1.));
+        self.scroll_x += if right { half } else { -half };
+        self.clamp();
+        cx.notify();
     }
 
     fn scroll(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
         let delta = event.delta.pixel_delta(px(LINE_HEIGHT));
+        let before = self.top;
         self.top -= f64::from(delta.y / LINE_HEIGHT);
         self.scroll_x -= delta.x;
         self.clamp();
+        if self.top != before {
+            overview::reveal(self, cx);
+        }
         cx.stop_propagation();
         cx.notify();
     }
@@ -453,6 +610,7 @@ impl LinesPane {
         })
     }
 
+    /// Where the view is, beside the scrollbar's thumb.
     fn label(&self) -> String {
         let line = (self.top.floor() as usize).min(self.doc.line_count().saturating_sub(1));
         match self.doc.as_ref() {
@@ -472,15 +630,69 @@ impl LinesPane {
             }
         }
     }
+
+    /// The minimap's lines, drawn from the track's top at the geometry's shift.
+    fn minimap(
+        &self,
+        g: Geometry,
+        theme: Theme,
+        highlight: Arc<HighlightTheme>,
+        dark: bool,
+    ) -> AnyElement {
+        let (doc, mini, pitch) = (self.doc.clone(), self.mini.clone(), self.pitch);
+        let shift = g.shift();
+        let count = doc.line_count();
+        let (base, muted) = (theme.text, theme.muted);
+        let painted = mini.clone();
+        canvas(
+            move |bounds, _, _| {
+                let first = ((shift / pitch.line).floor() as usize).min(count);
+                let rows = (f64::from(bounds.size.height) / pitch.line).ceil() as usize + 1;
+                let range = first..(first + rows).min(count);
+                mini.borrow_mut().fill(range.clone(), dark, |lines| {
+                    ink_lines(&doc, lines, &highlight, base, muted)
+                });
+                range
+            },
+            move |bounds, range, window, _| {
+                let mini = painted.borrow();
+                let height = px(pitch.ink);
+                for ix in range {
+                    let Some(ink) = mini.get(ix) else {
+                        continue;
+                    };
+                    let y = bounds.top() + px(pitch.snap(ix as f64 * pitch.line - shift));
+                    for &(from, to, color) in ink {
+                        let x = bounds.left() + px(MINI_PAD + f32::from(from) * pitch.column);
+                        let width = px(f32::from(to - from) * pitch.column);
+                        window.paint_quad(fill(
+                            Bounds::new(point(x, y), size(width, height)),
+                            color.opacity(0.8),
+                        ));
+                    }
+                }
+            },
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .into_any_element()
+    }
 }
 
-impl Scrubbed for LinesPane {
-    fn scrubber(&mut self) -> &mut Scrubber {
-        &mut self.scrubber
+impl Overviewed for LinesPane {
+    fn overview(&mut self) -> &mut Overview {
+        &mut self.overview
     }
 
-    fn scrub_to(&mut self, fraction: f32, _: &mut Window, cx: &mut Context<Self>) {
-        self.top = (f64::from(fraction) * self.max_top()).round();
+    fn geometry(&self, track: f64) -> Geometry {
+        let content = self.doc.line_count() as f64 + 1.;
+        Geometry::new(content, self.rows(), self.top, self.pitch.line, track)
+    }
+
+    fn scroll_to(&mut self, top: f64, _: &mut Window, cx: &mut Context<Self>) {
+        self.top = top.round();
         self.clamp();
         cx.notify();
     }
@@ -588,6 +800,119 @@ fn hex_runs(line: &str, digits: usize, base: &TextStyle, muted: Hsla) -> Vec<Tex
     runs
 }
 
+/// Ink for a line: each run of visible characters as columns, coloured by
+/// `spans` (byte ranges of the line) or else `base`. Spaces leave gaps.
+fn ink(line: &str, spans: &[(Range<usize>, Hsla)], base: Hsla) -> Ink {
+    let mut out = Ink::new();
+    let mut column = 0;
+    let mut span = 0;
+    for (i, c) in line.char_indices() {
+        if column >= MINI_COLUMNS {
+            break;
+        }
+        let width = match c {
+            '\t' => TAB - column % TAB,
+            c => c.width().unwrap_or(0),
+        };
+        if width > 0 && !c.is_whitespace() {
+            while span < spans.len() && spans[span].0.end <= i {
+                span += 1;
+            }
+            let color = spans
+                .get(span)
+                .filter(|(range, _)| range.start <= i)
+                .map_or(base, |(_, color)| *color);
+            let (from, to) = (column as u16, (column + width).min(MINI_COLUMNS) as u16);
+            match out.last_mut() {
+                Some(last) if last.1 == from && last.2 == color => last.1 = to,
+                _ => out.push((from, to, color)),
+            }
+        }
+        column += width;
+    }
+    out
+}
+
+/// The start of `line` that the minimap can show, cut at a character.
+fn head(text: &str, line: &Range<usize>) -> Range<usize> {
+    let mut end = line.end.min(line.start + MINI_COLUMNS * 4);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    line.start..end
+}
+
+/// Ink for lines `range`: highlighted text asks the highlighter once for
+/// all of them, unless they are long.
+fn ink_lines(
+    doc: &Doc,
+    range: Range<usize>,
+    highlight: &HighlightTheme,
+    base: Hsla,
+    muted: Hsla,
+) -> Vec<Ink> {
+    let text = match doc {
+        Doc::Hex(_) => {
+            let style = TextStyle {
+                color: base,
+                ..TextStyle::default()
+            };
+            return range
+                .map(|ix| {
+                    let line = doc.line(ix);
+                    let mut at = 0;
+                    let spans: Vec<_> = hex_runs(&line, doc.digits(), &style, muted)
+                        .into_iter()
+                        .map(|run| {
+                            at += run.len;
+                            (at - run.len..at, run.color)
+                        })
+                        .collect();
+                    ink(&line, &spans, base)
+                })
+                .collect();
+        }
+        Doc::Text(text) => text,
+    };
+    let Some(highlighter) = &text.highlighter else {
+        return range
+            .map(|ix| ink(&text.text[head(&text.text, &text.lines[ix])], &[], base))
+            .collect();
+    };
+    let heads: Vec<Range<usize>> = range.map(|ix| head(&text.text, &text.lines[ix])).collect();
+    let (Some(first), Some(last)) = (heads.first(), heads.last()) else {
+        return Vec::new();
+    };
+    let span = first.start..last.end;
+    let styles = if span.len() <= MINI_SPAN {
+        highlighter.styles(&span, highlight)
+    } else {
+        heads
+            .iter()
+            .flat_map(|line| highlighter.styles(line, highlight))
+            .collect()
+    };
+    let mut at = 0;
+    heads
+        .iter()
+        .map(|line| {
+            while at < styles.len() && styles[at].0.end <= line.start {
+                at += 1;
+            }
+            let spans: Vec<_> = styles[at..]
+                .iter()
+                .take_while(|(range, _)| range.start < line.end)
+                .map(|(range, style)| {
+                    let start = range.start.max(line.start) - line.start;
+                    let end = range.end.min(line.end) - line.start;
+                    (start..end, style.color.unwrap_or(base))
+                })
+                .collect();
+            ink(&text.text[line.clone()], &spans, base)
+        })
+        .collect()
+}
+
 struct Drawn {
     first: usize,
     lines: Vec<(ShapedLine, Shown)>,
@@ -597,17 +922,21 @@ struct Drawn {
 impl Render for LinesPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(window.appearance());
-        let highlight: Arc<HighlightTheme> = match window.appearance() {
-            WindowAppearance::Dark | WindowAppearance::VibrantDark => {
-                HighlightTheme::default_dark()
-            }
-            _ => HighlightTheme::default_light(),
+        let dark = matches!(
+            window.appearance(),
+            WindowAppearance::Dark | WindowAppearance::VibrantDark
+        );
+        let highlight: Arc<HighlightTheme> = if dark {
+            HighlightTheme::default_dark()
+        } else {
+            HighlightTheme::default_light()
         };
         let doc = self.doc.clone();
         let count = doc.line_count();
         let top = self.top;
         let scroll_x = self.scroll_x;
         let selection = self.selection.as_ref().map(Selection::range);
+        let flash = self.flash.filter(|(_, at)| at.elapsed() < FLASH);
         let gutter = match doc.as_ref() {
             Doc::Text(_) => px(count.to_string().len() as f32 * 8.4 + 22.),
             Doc::Hex(_) => px(PAD_SIDE),
@@ -622,8 +951,13 @@ impl Render for LinesPane {
         let muted = theme.muted;
 
         let prepaint = {
-            let (doc, area, advance, base) =
-                (doc.clone(), area.clone(), advance.clone(), base.clone());
+            let (doc, area, advance, base, highlight) = (
+                doc.clone(),
+                area.clone(),
+                advance.clone(),
+                base.clone(),
+                highlight.clone(),
+            );
             move |bounds: Bounds<Pixels>, window: &mut Window, _: &mut App| {
                 let text_area = Bounds::from_corners(
                     point(bounds.left() + gutter, bounds.top()),
@@ -690,6 +1024,16 @@ impl Render for LinesPane {
             let line_height = px(LINE_HEIGHT);
             let y_of =
                 |ix: usize| bounds.top() + px(PAD_TOP) + line_height * ((ix as f64 - top) as f32);
+            if let Some((line, at)) = flash {
+                // Fades out over the flash, eased so it lingers first.
+                let left = 1. - at.elapsed().as_secs_f32() / FLASH.as_secs_f32();
+                let band = Bounds::new(
+                    point(bounds.left(), y_of(line)),
+                    size(bounds.size.width, line_height),
+                );
+                window.paint_quad(fill(band, progress().opacity(0.3 * left.max(0.).sqrt())));
+                window.request_animation_frame();
+            }
             window.with_content_mask(Some(ContentMask { bounds: text_area }), |window| {
                 for (i, (shaped, shown)) in drawn.lines.iter().enumerate() {
                     let ix = drawn.first + i;
@@ -745,13 +1089,33 @@ impl Render for LinesPane {
             });
         };
 
-        let scrubber = self.scrubber.shown().then(|| {
-            let fraction = match self.max_top() {
-                0. => 0.,
-                max => (self.top / max) as f32,
-            };
-            scrub::track(&self.scrubber, fraction, self.label(), theme, cx)
-        });
+        let height = window.viewport_size().height;
+        self.pitch = Pitch::at(window.scale_factor());
+        let overview = match self.overview.shown(self.geometry(1.).scrollable()) {
+            overview::Shown::Panel => {
+                let g = self.geometry(f64::from(height));
+                let content = self.minimap(g, theme, highlight, dark);
+                Some(overview::panel(
+                    &self.overview,
+                    g,
+                    self.pitch.width(),
+                    content,
+                    theme,
+                    cx,
+                ))
+            }
+            overview::Shown::Bar => {
+                let g = self.geometry(overview::bar_track(f32::from(height)));
+                Some(overview::scrollbar(
+                    &self.overview,
+                    g,
+                    self.label(),
+                    theme,
+                    cx,
+                ))
+            }
+            overview::Shown::Nothing => None,
+        };
         div()
             .id("lines")
             .size_full()
@@ -768,16 +1132,16 @@ impl Render for LinesPane {
                 cx.listener(|this, event: &ScrollWheelEvent, _, cx| this.scroll(event, cx)),
             )
             .child(canvas(prepaint, paint).size_full())
-            .children(scrubber)
+            .children(overview)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use gpui_kit::{Hsla, TextStyle};
+    use gpui_kit::{Hsla, TextStyle, rgb};
     use silent::hexdump;
 
-    use super::{SHOWN, Shown, hex_runs, word};
+    use super::{MINI_COLUMNS, Mini, Pitch, SHOWN, Shown, hex_runs, ink, word};
 
     #[test]
     fn tabs_stretch_to_the_next_stop_and_map_back() {
@@ -829,5 +1193,59 @@ mod tests {
         assert_eq!(word("", 0), 0..0);
         let chinese = "床前明月光，疑是";
         assert_eq!(&chinese[word(chinese, 3)], "床前明月光");
+    }
+
+    #[test]
+    fn ink_follows_words_colours_and_columns() {
+        let (base, keyword): (Hsla, Hsla) = (rgb(0x111111).into(), rgb(0xaa0000).into());
+        // `fn` in its colour, a gap, then the rest in the base colour.
+        let ink = ink("fn\tmain() 中", &[(0..2, keyword)], base);
+        assert_eq!(
+            ink.as_slice(),
+            [(0, 2, keyword), (4, 10, base), (11, 13, base)]
+        );
+        let long = "y".repeat(500);
+        assert_eq!(
+            super::ink(&long, &[], base).as_slice(),
+            [(0, MINI_COLUMNS as u16, base)]
+        );
+    }
+
+    #[test]
+    fn the_minimap_draws_on_whole_device_pixels() {
+        let device = |pitch: Pitch| {
+            let close = |v: f64| (v - v.round()).abs() < 1e-4;
+            let line = pitch.line * f64::from(pitch.scale);
+            let column = f64::from(pitch.column * pitch.scale);
+            let ink = f64::from(pitch.ink * pitch.scale);
+            assert!(close(line) && close(column) && close(ink));
+            (line.round(), column.round(), ink.round())
+        };
+        assert_eq!(device(Pitch::at(1.)), (2., 1., 1.));
+        assert_eq!(device(Pitch::at(1.7)), (3., 2., 2.));
+        assert_eq!(device(Pitch::at(2.)), (4., 2., 3.));
+        let pitch = Pitch::at(1.7);
+        assert!((pitch.snap(10.3) * 1.7 - 18.).abs() < 1e-4);
+    }
+
+    #[test]
+    fn the_minimap_keeps_lines_near_the_view() {
+        let made = std::cell::RefCell::new(Vec::new());
+        let make = |range: std::ops::Range<usize>| {
+            made.borrow_mut().push(range.clone());
+            range.map(|_| super::Ink::new()).collect()
+        };
+        let mut mini = Mini::default();
+        mini.fill(100..200, false, make);
+        mini.fill(110..210, false, make);
+        // Only the ten new lines were made.
+        assert_eq!(*made.borrow(), [100..200, 200..210]);
+        assert!(mini.get(105).is_some() && mini.get(209).is_some());
+        mini.fill(5000..5100, false, make);
+        assert_eq!(made.borrow().last(), Some(&(5000..5100)));
+        assert!(mini.get(105).is_none());
+        // The appearance changed: everything is made again.
+        mini.fill(5000..5100, true, make);
+        assert_eq!(made.borrow().len(), 4);
     }
 }

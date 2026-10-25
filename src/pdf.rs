@@ -1,20 +1,27 @@
 //! PDF pages in a vertical scroll, rendered by gpui-pdf (hayro) around
-//! what is in view. Text on a page can be selected by dragging.
+//! what is in view, with a rail of thumbnails at the right edge. Text on a
+//! page can be selected by dragging.
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::sync::Arc;
 
 use gpui_kit::*;
+use silent::memory::View;
+use silent::vim::Motion;
 
 use crate::content::Pdf;
-use crate::paged::{GAP, Pages};
+use crate::overview::{self, Geometry, Mode, Overview, Overviewed, Shown};
+use crate::paged::{GAP, Pages, RAIL, THUMB};
 use crate::pdftext::{Area, PageText};
-use crate::scrub::{self, Scrubbed, Scrubber};
 use crate::theme::Theme;
 
 /// Pages kept rendered on each side of those in view.
 const MARGIN: usize = 2;
+/// Thumbnails kept on each side of those on the rail, and rendered at once.
+const THUMBS_KEPT: usize = 16;
+const THUMBS_AT_ONCE: usize = 4;
 
 pub struct PdfPane {
     document: Arc<gpui_pdf::Document>,
@@ -23,10 +30,16 @@ pub struct PdfPane {
     pending: HashSet<usize>,
     /// The device width pages were last rendered at.
     width: f32,
-    scrubber: Scrubber,
+    /// The window's size when last drawn.
+    viewport: Size<Pixels>,
     /// Text layers read so far; `None` while one is being read.
     texts: HashMap<usize, Option<PageText>>,
     selecting: Option<Drag>,
+    overview: Overview,
+    thumbs: HashMap<usize, Arc<RenderImage>>,
+    thumbs_pending: HashSet<usize>,
+    /// Where the file was left, gone to on the first frame.
+    restore: Option<View>,
 }
 
 /// A selection by dragging over one page.
@@ -40,11 +53,11 @@ struct Drag {
 }
 
 impl PdfPane {
-    pub fn new(pdf: Pdf, window: &Window) -> Self {
+    pub fn new(pdf: Pdf, mode: Mode, view: Option<View>, window: &Window) -> Self {
         let width = window.viewport_size().width.to_f64() as f32 * window.scale_factor();
         let mut rendered = HashMap::new();
-        if let Some(first) = pdf.first {
-            rendered.insert(0, first);
+        if let Some((page, image)) = pdf.first {
+            rendered.insert(page, image);
         }
         Self {
             document: pdf.document,
@@ -52,9 +65,13 @@ impl PdfPane {
             rendered,
             pending: HashSet::new(),
             width,
-            scrubber: Scrubber::default(),
+            viewport: window.viewport_size(),
             texts: HashMap::new(),
             selecting: None,
+            overview: Overview::new(mode),
+            thumbs: HashMap::new(),
+            thumbs_pending: HashSet::new(),
+            restore: view,
         }
     }
 
@@ -67,25 +84,18 @@ impl PdfPane {
         self.pages.at_top() + 1
     }
 
-    pub fn scroll_by_page(&self, window: &Window, down: bool) {
-        self.pages.scroll_by_page(window, down);
+    pub fn view(&self) -> Option<View> {
+        self.pages.view()
     }
 
-    pub fn step_page(&mut self, down: bool, cx: &mut Context<Self>) {
-        self.pages.step(down);
-        cx.notify();
+    pub fn motion(&mut self, motion: Motion, window: &Window, cx: &mut Context<Self>) {
+        self.pages.motion(motion, window);
+        overview::reveal(self, cx);
     }
 
-    pub fn go_to_end(&mut self, end: bool, cx: &mut Context<Self>) {
-        self.pages.go_to(if end { self.pages.count() } else { 0 });
-        cx.notify();
-    }
-
-    pub fn set_shift(&mut self, held: bool, cx: &mut Context<Self>) {
-        if self.scrubber.held != held {
-            self.scrubber.held = held;
-            cx.notify();
-        }
+    pub fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
+        self.overview.mode = mode;
+        overview::reveal(self, cx);
     }
 
     /// The page under a window position, and where on it, from 0 to 1.
@@ -243,25 +253,133 @@ impl PdfPane {
             .detach();
         }
     }
-}
 
-impl Scrubbed for PdfPane {
-    fn scrubber(&mut self) -> &mut Scrubber {
-        &mut self.scrubber
+    /// Renders the thumbnails of the pages `shown` on the rail, a few at a
+    /// time, and lets those far from it go.
+    fn thumbs_around(&mut self, shown: Range<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        let keep = shown.start.saturating_sub(THUMBS_KEPT)..shown.end + THUMBS_KEPT;
+        let far: Vec<usize> = self
+            .thumbs
+            .keys()
+            .copied()
+            .filter(|i| !keep.contains(i))
+            .collect();
+        for i in far {
+            if let Some(image) = self.thumbs.remove(&i) {
+                cx.drop_image(image, Some(window));
+            }
+        }
+        let device = THUMB * window.scale_factor();
+        let wanted = shown.start.saturating_sub(1)..(shown.end + 1).min(self.pages.count());
+        for i in wanted {
+            if self.thumbs_pending.len() >= THUMBS_AT_ONCE {
+                break;
+            }
+            if self.thumbs.contains_key(&i) || !self.thumbs_pending.insert(i) {
+                continue;
+            }
+            let document = self.document.clone();
+            let scale = device / self.pages.sizes[i].0.max(1.);
+            cx.spawn_in(window, async move |this, cx| {
+                let image = cx
+                    .background_executor()
+                    .spawn(async move { gpui_pdf::render_page(&document, i, scale) })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.thumbs_pending.remove(&i);
+                    if let Ok(image) = image {
+                        this.thumbs.insert(i, image);
+                    }
+                    // The next ones, if the rail still shows them.
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
     }
 
-    fn scrub_to(&mut self, fraction: f32, _: &mut Window, cx: &mut Context<Self>) {
-        self.pages
-            .go_to((fraction * self.pages.count() as f32) as usize);
+    /// The thumbnails on the rail, from the geometry's shift down.
+    fn rail(&mut self, g: Geometry, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let width = f32::from(self.viewport.width);
+        let (scale, shift) = (g.scale as f32, g.shift() as f32);
+        let span = shift / scale..(shift + g.track as f32) / scale;
+        let Some(shown) = self.pages.within(width, span) else {
+            return div().into_any_element();
+        };
+        self.thumbs_around(shown.clone(), window, cx);
+        let theme = Theme::of(window.appearance());
+        let thumbs: Vec<AnyElement> = self
+            .pages
+            .layout_at(width)
+            .enumerate()
+            .skip(shown.start)
+            .take(shown.len())
+            .map(|(i, (top, height))| {
+                let page = thumb_frame(top * scale - shift, height * scale, theme);
+                match self.thumbs.get(&i) {
+                    Some(image) => page
+                        .child(img(ImageSource::Render(image.clone())).size_full())
+                        .into_any_element(),
+                    None => page.into_any_element(),
+                }
+            })
+            .collect();
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .children(thumbs)
+            .into_any_element()
+    }
+}
+
+/// A page on the rail, `top` pixels down the track and `height` tall,
+/// a little apart from its neighbours.
+pub fn thumb_frame(top: f32, height: f32, theme: Theme) -> Div {
+    div()
+        .absolute()
+        .left(px((RAIL - THUMB) / 2.))
+        .top(px(top + 2.))
+        .w(px(THUMB))
+        .h(px((height - 4.).max(2.)))
+        .overflow_hidden()
+        .bg(rgb(0xffffff))
+        .border_1()
+        .border_color(theme.muted.opacity(0.35))
+}
+
+impl Overviewed for PdfPane {
+    fn overview(&mut self) -> &mut Overview {
+        &mut self.overview
+    }
+
+    fn geometry(&self, track: f64) -> Geometry {
+        let width = f32::from(self.viewport.width).max(1.);
+        Geometry::new(
+            f64::from(self.pages.height_at(width)),
+            f64::from(self.viewport.height),
+            f64::from(self.pages.view_top()),
+            f64::from(THUMB / width),
+            track,
+        )
+    }
+
+    fn scroll_to(&mut self, top: f64, _: &mut Window, cx: &mut Context<Self>) {
+        self.pages.scroll_to(top as f32);
         cx.notify();
     }
 }
 
 impl Render for PdfPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.viewport = window.viewport_size();
+        if let Some(view) = self.restore.take() {
+            self.pages.restore(&view, f32::from(self.viewport.width));
+        }
         self.render_around_view(window, cx);
         let theme = Theme::of(window.appearance());
-        let width = f32::from(window.viewport_size().width);
+        let width = f32::from(self.viewport.width);
         let selected = self
             .selecting
             .as_ref()
@@ -293,6 +411,7 @@ impl Render for PdfPane {
             }
             page
         });
+        let pages: Vec<_> = pages.collect();
         let view = cx.entity().downgrade();
         // Listened to on every frame: a quick click can be released before
         // the frame after its press is drawn.
@@ -314,10 +433,20 @@ impl Render for PdfPane {
             },
         )
         .absolute();
-        let scrubber = self.scrubber.shown().then(|| {
-            let label = format!("page {} of {}", self.current_page(), self.page_count());
-            scrub::track(&self.scrubber, self.pages.fraction(), label, theme, cx)
-        });
+        let height = f32::from(self.viewport.height);
+        let overview = match self.overview.shown(self.geometry(1.).scrollable()) {
+            Shown::Panel => {
+                let g = self.geometry(f64::from(height));
+                let content = self.rail(g, window, cx);
+                Some(overview::panel(&self.overview, g, RAIL, content, theme, cx))
+            }
+            Shown::Bar => {
+                let g = self.geometry(overview::bar_track(height));
+                let label = format!("page {} of {}", self.current_page(), self.page_count());
+                Some(overview::scrollbar(&self.overview, g, label, theme, cx))
+            }
+            Shown::Nothing => None,
+        };
         div()
             .size_full()
             .relative()
@@ -327,7 +456,9 @@ impl Render for PdfPane {
                     .size_full()
                     .overflow_y_scroll()
                     .track_scroll(&self.pages.scroll)
-                    .on_scroll_wheel(cx.listener(|_, _: &ScrollWheelEvent, _, cx| cx.notify()))
+                    .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
+                        overview::reveal(this, cx);
+                    }))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, event: &MouseDownEvent, window, cx| {
@@ -338,6 +469,6 @@ impl Render for PdfPane {
                     .child(div().flex().flex_col().gap(px(GAP)).children(pages)),
             )
             .child(follow)
-            .children(scrubber)
+            .children(overview)
     }
 }

@@ -5,47 +5,132 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use silent::memory::View;
 use silent::office::{Align, Block, Document, Paragraph, Role, Span, Table};
+use silent::vim::Motion;
 
 use crate::content::decode_still;
-use crate::theme::Theme;
+use crate::overview::{self, Geometry, Mode, Overview, Overviewed, Shown};
+use crate::theme::{Theme, progress};
 
 /// The page, warm white as paper is.
 const PAPER: u32 = 0xfffdf8;
 const INK: u32 = 0x1f1a16;
+/// How long a block jumped to stays lit.
+const FLASH: Duration = Duration::from_millis(1200);
 
 pub struct DocPane {
     doc: Rc<Document>,
     list: ListState,
     images: HashMap<usize, Arc<RenderImage>>,
     pending: HashSet<usize>,
+    /// A document has no minimap: the slim scrollbar shows while it scrolls.
+    overview: Overview,
+    /// Pixels per point, as last drawn.
+    scale: f32,
+    /// A block jumped to: brought to the middle once it is laid out, and
+    /// lit for a moment.
+    centre: Option<usize>,
+    flash: Option<(usize, Instant)>,
 }
 
 impl DocPane {
-    pub fn new(doc: Document) -> Self {
-        let list = ListState::new(doc.blocks.len(), ListAlignment::Top, px(1000.));
+    pub fn new(doc: Document, view: Option<View>, window: &Window) -> Self {
+        let scale = f32::from(window.viewport_size().width) / doc.page.0.max(1.);
+        // Blocks not laid out yet count as two lines, so that the scrollbar
+        // is about right from the start.
+        let guess = px(doc.base_size * scale * 1.3 * 2.5);
+        let list = ListState::new(doc.blocks.len(), ListAlignment::Top, px(1000.))
+            .with_uniform_item_height(guess);
+        if let Some(View::Blocks { block, offset }) = view {
+            list.scroll_to(ListOffset {
+                item_ix: block,
+                offset_in_item: px(offset),
+            });
+        }
         Self {
             doc: Rc::new(doc),
             list,
             images: HashMap::new(),
             pending: HashSet::new(),
+            overview: Overview::new(Mode::Off),
+            scale,
+            centre: None,
+            flash: None,
         }
     }
 
-    pub fn scroll_by_page(&self, window: &Window, down: bool) {
-        let height = window.viewport_size().height * 0.9;
-        self.list.scroll_by(if down { height } else { -height });
+    pub fn view(&self) -> Option<View> {
+        let top = self.list.logical_scroll_top();
+        let offset = f32::from(top.offset_in_item);
+        (top.item_ix > 0 || offset > 0.5).then_some(View::Blocks {
+            block: top.item_ix,
+            offset,
+        })
     }
 
-    pub fn scroll_to_end(&self, end: bool) {
-        let item_ix = if end { self.doc.blocks.len() } else { 0 };
-        self.list.scroll_to(ListOffset {
-            item_ix,
-            offset_in_item: px(0.),
-        });
+    /// Moves as vim's keys and the arrows ask: j and k by a line of body
+    /// text, `20G` to the twentieth block.
+    pub fn motion(&mut self, motion: Motion, window: &Window, cx: &mut Context<Self>) {
+        let height = window.viewport_size().height;
+        let line = px(self.doc.base_size * self.scale * 1.3);
+        let by = |pixels: Pixels, k: usize| self.list.scroll_by(pixels * k.min(1 << 16) as f32);
+        match motion {
+            Motion::Down(k) | Motion::ScrollDown(k) => by(line, k),
+            Motion::Up(k) | Motion::ScrollUp(k) => by(-line, k),
+            Motion::HalfDown(k) => by(height / 2., k),
+            Motion::HalfUp(k) => by(-height / 2., k),
+            Motion::PageDown(k) => by(height * 0.9, k),
+            Motion::PageUp(k) => by(-height * 0.9, k),
+            Motion::Top | Motion::Bottom => {
+                let item_ix = if motion == Motion::Top {
+                    0
+                } else {
+                    self.doc.blocks.len()
+                };
+                self.list.scroll_to(ListOffset {
+                    item_ix,
+                    offset_in_item: px(0.),
+                });
+            }
+            Motion::Line(k) => {
+                let ix = k
+                    .saturating_sub(1)
+                    .min(self.doc.blocks.len().saturating_sub(1));
+                self.list.scroll_to(ListOffset {
+                    item_ix: ix,
+                    offset_in_item: px(0.),
+                });
+                self.centre = Some(ix);
+                self.flash = Some((ix, Instant::now()));
+            }
+            Motion::Left(_) | Motion::Right(_) | Motion::Home => return,
+        }
+        overview::reveal(self, cx);
+    }
+
+    /// Brings the block jumped to into the middle, once it has been laid
+    /// out; a block taller than the view goes to its top.
+    fn centre_block(&mut self, window: &mut Window) {
+        let Some(ix) = self.centre else {
+            return;
+        };
+        let Some(block) = self.list.bounds_for_item(ix) else {
+            window.request_animation_frame();
+            return;
+        };
+        self.centre = None;
+        let view = self.list.viewport_bounds();
+        let delta = if block.size.height > view.size.height * 0.8 {
+            block.top() - view.top() - px(24.)
+        } else {
+            block.center().y - view.center().y
+        };
+        self.list.scroll_by(delta);
     }
 
     /// Decodes picture `ix` in the background, the first time it is drawn.
@@ -249,19 +334,54 @@ fn table(t: &Table, base: f32, scale: f32, ink: Hsla, rule: Hsla) -> Div {
     grid
 }
 
+impl Overviewed for DocPane {
+    fn overview(&mut self) -> &mut Overview {
+        &mut self.overview
+    }
+
+    /// Pixels: the list knows the heights of the blocks laid out so far,
+    /// and guesses the rest.
+    fn geometry(&self, track: f64) -> Geometry {
+        let view = f64::from(self.list.viewport_bounds().size.height);
+        let max = f64::from(self.list.max_offset_for_scrollbar().y);
+        let top = -f64::from(self.list.scroll_px_offset_for_scrollbar().y);
+        Geometry::new(max + view, view, top, 1., track)
+    }
+
+    fn scroll_to(&mut self, top: f64, _: &mut Window, cx: &mut Context<Self>) {
+        self.list
+            .set_offset_from_scrollbar(point(px(0.), px(-top as f32)));
+        cx.notify();
+    }
+
+    fn on_drag(&mut self, held: bool) {
+        if held {
+            self.list.scrollbar_drag_started();
+        } else {
+            self.list.scrollbar_drag_ended();
+        }
+    }
+}
+
 impl Render for DocPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.centre_block(window);
         let theme = Theme::of(window.appearance());
         let width = f32::from(window.viewport_size().width);
         let doc = self.doc.clone();
         // Pixels per point: the page's width fills the window's.
         let scale = width / doc.page.0.max(1.);
+        self.scale = scale;
         let margin = (doc.margins.0 * scale).clamp(16., width / 4.);
         let content = width - margin * 2.;
         let ink: Hsla = rgb(INK).into();
         let rule = theme.muted.opacity(0.5);
         let device = window.scale_factor();
         let view = cx.entity();
+        let flash = self.flash.filter(|(_, at)| at.elapsed() < FLASH);
+        if flash.is_some() {
+            window.request_animation_frame();
+        }
         let rows = list(self.list.clone(), move |ix, window, cx| {
             let block = match &doc.blocks[ix] {
                 Block::Paragraph(p) => paragraph(p, doc.base_size, scale, ink).into_any_element(),
@@ -283,13 +403,33 @@ impl Render for DocPane {
                     }
                 }
             };
-            div().px(px(margin)).child(block).into_any_element()
+            let lit = flash.filter(|(block, _)| *block == ix).map(|(_, at)| {
+                let left = 1. - at.elapsed().as_secs_f32() / FLASH.as_secs_f32();
+                progress().opacity(0.3 * left.max(0.).sqrt())
+            });
+            div()
+                .px(px(margin))
+                .when_some(lit, |row, lit| row.bg(lit))
+                .child(block)
+                .into_any_element()
         })
         .size_full();
+        let height = f32::from(window.viewport_size().height);
+        let overview =
+            (self.overview.shown(self.geometry(1.).scrollable()) == Shown::Bar).then(|| {
+                let g = self.geometry(overview::bar_track(height));
+                let label = format!("{}%", (g.fraction() * 100.).round());
+                overview::scrollbar(&self.overview, g, label, theme, cx)
+            });
         div()
             .size_full()
+            .relative()
             .bg(rgb(PAPER))
             .pt(px(margin.min(48.)))
+            .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
+                overview::reveal(this, cx);
+            }))
             .child(rows)
+            .children(overview)
     }
 }

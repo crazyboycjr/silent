@@ -1,24 +1,31 @@
 //! PowerPoint slides in a vertical scroll like PDF pages: each slide drawn
 //! from its shapes, pictures and tables, read in the background around what
-//! is in view.
+//! is in view, with a rail of the slides drawn small at the right edge.
 
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::*;
+use silent::memory::View;
 use silent::office::Align;
 use silent::office::pptx::{self, Anchor, Fill, Item, Kind, Text};
+use silent::vim::Motion;
 
 use crate::content::{Deck, Slide, render_slide};
 use crate::docview::{family, styled};
-use crate::paged::{GAP, Pages};
-use crate::scrub::{self, Scrubbed, Scrubber};
+use crate::overview::{self, Geometry, Mode, Overview, Overviewed, Shown};
+use crate::paged::{GAP, Pages, RAIL, THUMB};
+use crate::pdf::thumb_frame;
 use crate::theme::Theme;
 
 /// Slides kept read on each side of those in view.
 const MARGIN: usize = 1;
+/// Slides kept read for the rail on each side of those on it, and read at once.
+const THUMBS_KEPT: usize = 12;
+const THUMBS_AT_ONCE: usize = 3;
 
 pub struct SlidesPane {
     path: PathBuf,
@@ -28,15 +35,20 @@ pub struct SlidesPane {
     pending: HashSet<usize>,
     /// The device width slides were last read for.
     width: u32,
-    scrubber: Scrubber,
+    viewport: Size<Pixels>,
+    overview: Overview,
+    /// Slides read small, for the rail.
+    thumbs: HashMap<usize, Rc<Slide>>,
+    thumbs_pending: HashSet<usize>,
+    restore: Option<View>,
 }
 
 impl SlidesPane {
-    pub fn new(deck: Deck, window: &Window) -> Self {
+    pub fn new(deck: Deck, mode: Mode, view: Option<View>, window: &Window) -> Self {
         let width = (f32::from(window.viewport_size().width) * window.scale_factor()) as u32;
         let mut shown = HashMap::new();
-        if let Some(first) = deck.first {
-            shown.insert(0, Rc::new(first));
+        if let Some((index, first)) = deck.first {
+            shown.insert(index, Rc::new(first));
         }
         let sizes = vec![deck.deck.size; deck.deck.slides.len()];
         Self {
@@ -46,7 +58,11 @@ impl SlidesPane {
             shown,
             pending: HashSet::new(),
             width,
-            scrubber: Scrubber::default(),
+            viewport: window.viewport_size(),
+            overview: Overview::new(mode),
+            thumbs: HashMap::new(),
+            thumbs_pending: HashSet::new(),
+            restore: view,
         }
     }
 
@@ -58,25 +74,18 @@ impl SlidesPane {
         self.pages.at_top() + 1
     }
 
-    pub fn scroll_by_page(&self, window: &Window, down: bool) {
-        self.pages.scroll_by_page(window, down);
+    pub fn view(&self) -> Option<View> {
+        self.pages.view()
     }
 
-    pub fn step_slide(&mut self, down: bool, cx: &mut Context<Self>) {
-        self.pages.step(down);
-        cx.notify();
+    pub fn motion(&mut self, motion: Motion, window: &Window, cx: &mut Context<Self>) {
+        self.pages.motion(motion, window);
+        overview::reveal(self, cx);
     }
 
-    pub fn go_to_end(&mut self, end: bool, cx: &mut Context<Self>) {
-        self.pages.go_to(if end { self.pages.count() } else { 0 });
-        cx.notify();
-    }
-
-    pub fn set_shift(&mut self, held: bool, cx: &mut Context<Self>) {
-        if self.scrubber.held != held {
-            self.scrubber.held = held;
-            cx.notify();
-        }
+    pub fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
+        self.overview.mode = mode;
+        overview::reveal(self, cx);
     }
 
     fn read_around_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -116,17 +125,79 @@ impl SlidesPane {
             .detach();
         }
     }
-}
 
-impl Scrubbed for SlidesPane {
-    fn scrubber(&mut self) -> &mut Scrubber {
-        &mut self.scrubber
+    /// Reads the slides `on_rail` for the rail, a few at a time, and lets
+    /// those far from it go. Slides read for the view serve too.
+    fn thumbs_around(
+        &mut self,
+        on_rail: Range<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let keep = on_rail.start.saturating_sub(THUMBS_KEPT)..on_rail.end + THUMBS_KEPT;
+        self.thumbs.retain(|i, _| keep.contains(i));
+        let device = (THUMB * window.scale_factor()) as u32;
+        let wanted = on_rail.start.saturating_sub(1)..(on_rail.end + 1).min(self.pages.count());
+        for i in wanted {
+            if self.thumbs_pending.len() >= THUMBS_AT_ONCE {
+                break;
+            }
+            if self.thumbs.contains_key(&i)
+                || self.shown.contains_key(&i)
+                || !self.thumbs_pending.insert(i)
+            {
+                continue;
+            }
+            let (path, deck) = (self.path.clone(), self.deck.clone());
+            cx.spawn_in(window, async move |this, cx| {
+                let slide = cx
+                    .background_executor()
+                    .spawn(async move { render_slide(&path, &deck, i, device) })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.thumbs_pending.remove(&i);
+                    if let Some(slide) = slide {
+                        this.thumbs.insert(i, Rc::new(slide));
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
     }
 
-    fn scrub_to(&mut self, fraction: f32, _: &mut Window, cx: &mut Context<Self>) {
-        self.pages
-            .go_to((fraction * self.pages.count() as f32) as usize);
-        cx.notify();
+    fn rail(&mut self, g: Geometry, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let width = f32::from(self.viewport.width);
+        let (scale, shift) = (g.scale as f32, g.shift() as f32);
+        let span = shift / scale..(shift + g.track as f32) / scale;
+        let Some(on_rail) = self.pages.within(width, span) else {
+            return div().into_any_element();
+        };
+        self.thumbs_around(on_rail.clone(), window, cx);
+        let theme = Theme::of(window.appearance());
+        // Points to pixels on the rail.
+        let points = THUMB / self.deck.size.0.max(1.);
+        let thumbs: Vec<AnyElement> = self
+            .pages
+            .layout_at(width)
+            .enumerate()
+            .skip(on_rail.start)
+            .take(on_rail.len())
+            .map(|(i, (top, height))| {
+                let frame = thumb_frame(top * scale - shift, height * scale, theme);
+                match self.thumbs.get(&i).or_else(|| self.shown.get(&i)) {
+                    Some(slide) => frame.child(slide_view(slide, points)).into_any_element(),
+                    None => frame.into_any_element(),
+                }
+            })
+            .collect();
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .children(thumbs)
+            .into_any_element()
     }
 }
 
@@ -246,45 +317,93 @@ fn item(item: &Item, picture: Option<&Arc<RenderImage>>, scale: f32) -> Option<A
     })
 }
 
+/// A slide filling its frame, `scale` pixels to the point.
+fn slide_view(shown: &Slide, scale: f32) -> Div {
+    let page = div().absolute().size_full().overflow_hidden();
+    let page = match (&shown.slide.background, &shown.background) {
+        (_, Some(image)) => page.child(
+            img(ImageSource::Render(image.clone()))
+                .absolute()
+                .size_full()
+                .object_fit(ObjectFit::Cover),
+        ),
+        (Fill::Color(c), None) => page.bg(rgb(*c)),
+        _ => page.bg(rgb(0xffffff)),
+    };
+    page.children(
+        shown
+            .slide
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(ix, it)| item(it, shown.pictures.get(&ix), scale)),
+    )
+}
+
+impl Overviewed for SlidesPane {
+    fn overview(&mut self) -> &mut Overview {
+        &mut self.overview
+    }
+
+    fn geometry(&self, track: f64) -> Geometry {
+        let width = f32::from(self.viewport.width).max(1.);
+        Geometry::new(
+            f64::from(self.pages.height_at(width)),
+            f64::from(self.viewport.height),
+            f64::from(self.pages.view_top()),
+            f64::from(THUMB / width),
+            track,
+        )
+    }
+
+    fn scroll_to(&mut self, top: f64, _: &mut Window, cx: &mut Context<Self>) {
+        self.pages.scroll_to(top as f32);
+        cx.notify();
+    }
+}
+
 impl Render for SlidesPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.viewport = window.viewport_size();
+        if let Some(view) = self.restore.take() {
+            self.pages.restore(&view, f32::from(self.viewport.width));
+        }
         self.read_around_view(window, cx);
         let theme = Theme::of(window.appearance());
-        let width = f32::from(window.viewport_size().width);
+        let width = f32::from(self.viewport.width);
         let scale = width / self.deck.size.0.max(1.);
-        let slides = self.pages.sizes.iter().enumerate().map(|(i, &(w, h))| {
-            let page = div()
-                .relative()
-                .w_full()
-                .h(px(h * width / w))
-                .flex_none()
-                .overflow_hidden();
-            let Some(shown) = self.shown.get(&i) else {
-                return page.bg(rgb(0xffffff));
-            };
-            let page = match (&shown.slide.background, &shown.background) {
-                (_, Some(image)) => page.child(
-                    img(ImageSource::Render(image.clone()))
-                        .absolute()
-                        .size_full()
-                        .object_fit(ObjectFit::Cover),
-                ),
-                (Fill::Color(c), None) => page.bg(rgb(*c)),
-                _ => page.bg(rgb(0xffffff)),
-            };
-            page.children(
-                shown
-                    .slide
-                    .items
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(ix, it)| item(it, shown.pictures.get(&ix), scale)),
-            )
-        });
-        let scrubber = self.scrubber.shown().then(|| {
-            let label = format!("slide {} of {}", self.current_slide(), self.slide_count());
-            scrub::track(&self.scrubber, self.pages.fraction(), label, theme, cx)
-        });
+        let slides: Vec<_> = self
+            .pages
+            .sizes
+            .iter()
+            .enumerate()
+            .map(|(i, &(w, h))| {
+                let page = div()
+                    .relative()
+                    .w_full()
+                    .h(px(h * width / w))
+                    .flex_none()
+                    .bg(rgb(0xffffff));
+                match self.shown.get(&i) {
+                    Some(shown) => page.child(slide_view(shown, scale)),
+                    None => page,
+                }
+            })
+            .collect();
+        let height = f32::from(self.viewport.height);
+        let overview = match self.overview.shown(self.geometry(1.).scrollable()) {
+            Shown::Panel => {
+                let g = self.geometry(f64::from(height));
+                let content = self.rail(g, window, cx);
+                Some(overview::panel(&self.overview, g, RAIL, content, theme, cx))
+            }
+            Shown::Bar => {
+                let g = self.geometry(overview::bar_track(height));
+                let label = format!("slide {} of {}", self.current_slide(), self.slide_count());
+                Some(overview::scrollbar(&self.overview, g, label, theme, cx))
+            }
+            Shown::Nothing => None,
+        };
         div()
             .size_full()
             .relative()
@@ -294,10 +413,12 @@ impl Render for SlidesPane {
                     .size_full()
                     .overflow_y_scroll()
                     .track_scroll(&self.pages.scroll)
-                    .on_scroll_wheel(cx.listener(|_, _: &ScrollWheelEvent, _, cx| cx.notify()))
+                    .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
+                        overview::reveal(this, cx);
+                    }))
                     .bg(theme.backdrop)
                     .child(div().flex().flex_col().gap(px(GAP)).children(slides)),
             )
-            .children(scrubber)
+            .children(overview)
     }
 }

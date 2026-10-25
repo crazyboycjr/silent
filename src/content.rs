@@ -16,8 +16,8 @@ use gstreamer::prelude::*;
 use silent::decode::{Decoder, Event};
 use silent::detect::{self, Facts, Kind};
 use silent::geometry::Screen;
+use silent::memory::{self, Key, View};
 use silent::office::{self, docx, odf, pptx};
-use silent::resume::{self, Key};
 use silent::{hexdump, pretty, unpack};
 use smallvec::SmallVec;
 use unicode_width::UnicodeWidthChar;
@@ -41,6 +41,8 @@ pub struct Loaded {
     /// For a compressed file, what is known about the data inside.
     pub packed: Option<Packed>,
     pub body: Body,
+    /// Where the file was left, if it was within the hour.
+    pub view: Option<View>,
 }
 
 pub struct Packed {
@@ -79,8 +81,8 @@ pub struct Sheet {
 pub struct Deck {
     pub path: PathBuf,
     pub deck: office::pptx::Deck,
-    /// The first slide, read before the window opens.
-    pub first: Option<Slide>,
+    /// The slide shown first, by its index, read before the window opens.
+    pub first: Option<(usize, Slide)>,
 }
 
 /// A slide with its pictures decoded.
@@ -125,8 +127,8 @@ pub struct Pdf {
     pub document: Arc<gpui_pdf::Document>,
     /// Page sizes in points.
     pub pages: Vec<(f32, f32)>,
-    /// The first page, rendered at the window's width.
-    pub first: Option<Arc<RenderImage>>,
+    /// The page shown first, by its index, rendered at the window's width.
+    pub first: Option<(usize, Arc<RenderImage>)>,
 }
 
 pub struct Text {
@@ -189,18 +191,27 @@ pub fn load(uri: &str, screen: Screen, wait_for_pixels: bool) -> Loaded {
         Err(error) => return missing(uri, &error.to_string(), screen),
     };
     let description = gio::content_type_get_description(&facts.content_type).into();
+    let path = facts.path.clone();
+    let view = path
+        .as_deref()
+        .and_then(|p| Key::new(p, facts.size, facts.modified))
+        .and_then(|key| memory::recall(&key));
     let mut loaded = Loaded {
         size: screen.card(CARD.0, CARD.1),
         packed: None,
         body: Body::Info,
         facts,
         description,
+        view,
     };
-    let path = loaded.facts.path.clone();
-    let resume = path
-        .as_deref()
-        .and_then(|p| Key::new(p, loaded.facts.size, loaded.facts.modified))
-        .and_then(|key| resume::recall(&key));
+    let resume = match loaded.view {
+        Some(View::Media(position)) => Some(position),
+        _ => None,
+    };
+    let page = match loaded.view {
+        Some(View::Pages { page, .. }) => page,
+        _ => 0,
+    };
     let (size, body) = match (loaded.facts.kind, path) {
         (Kind::Image, _) => match image(&loaded.facts.uri, screen, wait_for_pixels) {
             Some((size, picture)) => (size, Body::Image(picture)),
@@ -219,7 +230,7 @@ pub fn load(uri: &str, screen: Screen, wait_for_pixels: bool) -> Loaded {
             Some(audio) => (screen.card(AUDIO_CARD.0, AUDIO_CARD.1), Body::Audio(audio)),
             None => return loaded,
         },
-        (Kind::Pdf, Some(path)) => match pdf(&path, screen) {
+        (Kind::Pdf, Some(path)) => match pdf(&path, screen, page) {
             Some((size, pdf)) => (size, Body::Pdf(pdf)),
             None => return loaded,
         },
@@ -246,7 +257,13 @@ pub fn load(uri: &str, screen: Screen, wait_for_pixels: bool) -> Loaded {
             None => return loaded,
         },
         (kind @ (Kind::Document | Kind::Spreadsheet | Kind::Presentation), Some(path)) => {
-            match document(kind, &path, &loaded.facts.content_type, screen) {
+            match document(
+                kind,
+                &path,
+                &loaded.facts.content_type,
+                screen,
+                &loaded.view,
+            ) {
                 Some(shown) => shown,
                 None => return loaded,
             }
@@ -274,6 +291,7 @@ fn missing(uri: &str, error: &str, screen: Screen) -> Loaded {
         size: screen.card(CARD.0, CARD.1),
         packed: None,
         body: Body::Info,
+        view: None,
     }
 }
 
@@ -397,6 +415,7 @@ fn document(
     path: &Path,
     content_type: &str,
     screen: Screen,
+    view: &Option<View>,
 ) -> Option<((i32, i32), Body)> {
     let iwork = ["apple", "iwork"].iter().any(|k| content_type.contains(k));
     let open = content_type.contains("opendocument");
@@ -409,7 +428,16 @@ fn document(
     }
     match kind {
         Kind::Spreadsheet => {
-            let (names, current, grid) = office::sheet::open(path)?;
+            let (names, mut current, mut grid) = office::sheet::open(path)?;
+            // Back on the sheet it was left on.
+            if let Some(View::Sheet { sheet, .. }) = view
+                && *sheet != current
+                && let Some(name) = names.get(*sheet)
+                && let Some(left) = office::sheet::read(path, name)
+            {
+                current = *sheet;
+                grid = left;
+            }
             let width: f64 = grid
                 .widths
                 .iter()
@@ -428,7 +456,11 @@ fn document(
         Kind::Presentation if !open => {
             let deck = pptx::open(path)?;
             let size = screen.fit_page((deck.size.0 as f64, deck.size.1 as f64));
-            let first = render_slide(path, &deck, 0, size.0 as u32);
+            let index = match view {
+                Some(View::Pages { page, .. }) => (*page).min(deck.slides.len().saturating_sub(1)),
+                _ => 0,
+            };
+            let first = render_slide(path, &deck, index, size.0 as u32).map(|slide| (index, slide));
             let deck = Deck {
                 path: path.to_owned(),
                 deck,
@@ -475,13 +507,17 @@ pub fn render_slide(path: &Path, deck: &pptx::Deck, index: usize, width: u32) ->
     })
 }
 
-fn pdf(path: &Path, screen: Screen) -> Option<((i32, i32), Pdf)> {
+/// A PDF, with page `page` rendered: the first, or the one it was left on.
+fn pdf(path: &Path, screen: Screen, page: usize) -> Option<((i32, i32), Pdf)> {
     let bytes = std::fs::read(path).ok()?;
     let document = gpui_pdf::parse(Arc::new(bytes)).ok()?;
     let pages = gpui_pdf::page_dims(&document);
     let &(width, height) = pages.first()?;
     let size = screen.fit_page((width as f64, height as f64));
-    let first = gpui_pdf::render_page(&document, 0, size.0 as f32 / width).ok();
+    let page = page.min(pages.len() - 1);
+    let first = gpui_pdf::render_page(&document, page, size.0 as f32 / pages[page].0)
+        .ok()
+        .map(|image| (page, image));
     Some((
         size,
         Pdf {

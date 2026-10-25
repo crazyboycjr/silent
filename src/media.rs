@@ -5,6 +5,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use gpui_video_player::Video;
 use gstreamer as gst;
@@ -16,9 +17,43 @@ use yuv::{YuvBiPlanarImage, YuvConversionMode, YuvRange, YuvStandardMatrix, yuv_
 use crate::content::{Audio, clock};
 use crate::theme::{Theme, accent, progress};
 
-const SEEK: Duration = Duration::from_secs(10);
-/// What Shift with an arrow key skips.
-const STEP: Duration = Duration::from_secs(5);
+/// How long the seek bar stays after a seek, or after the pointer leaves
+/// the bottom of the video.
+const BAR_LINGER: Duration = Duration::from_millis(1500);
+const BAR_FADE: Duration = Duration::from_millis(180);
+/// The pointer this close to the bottom brings the seek bar up.
+const NEAR_BOTTOM: f32 = 72.;
+/// Volume steps, in percent of a cubic scale, as the ear hears loudness.
+const VOLUME_STEP: i32 = 5;
+
+/// The volume and mute that carry from one sound or video to the next.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Loudness {
+    /// The player's linear volume, 1 at full.
+    pub volume: f64,
+    pub muted: bool,
+}
+
+impl Default for Loudness {
+    fn default() -> Self {
+        Self {
+            volume: 1.,
+            muted: false,
+        }
+    }
+}
+
+/// The percent a linear volume reads as.
+pub fn percent(volume: f64) -> i32 {
+    (volume.max(0.).cbrt() * 100.).round() as i32
+}
+
+/// A step louder or quieter, as a linear volume.
+fn stepped(volume: f64, louder: bool) -> f64 {
+    let step = if louder { VOLUME_STEP } else { -VOLUME_STEP };
+    let percent = (percent(volume) + step).clamp(0, 100);
+    (f64::from(percent) / 100.).powi(3)
+}
 
 /// A playing video. Frames are converted on a thread of their own, only
 /// when the player has a new one, so the UI thread only swaps images.
@@ -29,17 +64,29 @@ pub struct VideoPane {
     bar: Bar,
 }
 
-/// The seek bar over the bottom of a video, shown while Shift is held.
+/// The seek bar over the bottom of a video: up for a moment after a seek,
+/// and while the pointer is near the bottom or drags on it.
 #[derive(Default)]
 struct Bar {
-    held: bool,
+    up: bool,
+    near: bool,
+    /// Counts showings and hidings, so that each fade is a new animation.
+    epoch: usize,
+    timer: Option<Task<()>>,
     /// Where a drag on the bar has got to.
     dragging: Option<Duration>,
     track: Rc<Cell<Bounds<Pixels>>>,
 }
 
 impl VideoPane {
-    pub fn new(video: Video, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        video: Video,
+        loudness: Loudness,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        video.set_volume(loudness.volume);
+        video.set_muted(loudness.muted);
         let (sender, frames) = async_channel::bounded(1);
         let source = video.clone();
         std::thread::Builder::new()
@@ -75,26 +122,34 @@ impl VideoPane {
         self.video.set_muted(!self.video.muted());
     }
 
-    pub fn seek(&self, forward: bool) {
+    /// Back or on by `by`, to the frame or to the nearest keyframe; the
+    /// seek bar shows where to.
+    pub fn seek(&mut self, forward: bool, by: Duration, accurate: bool, cx: &mut Context<Self>) {
         let position = self.video.position();
         let target = if forward {
-            (position + SEEK).min(self.video.duration())
+            (position + by).min(self.video.duration())
         } else {
-            position.saturating_sub(SEEK)
+            position.saturating_sub(by)
         };
-        let _ = self.video.seek(target, false);
+        let _ = self.video.seek(target, accurate);
+        self.flash_bar(cx);
     }
 
-    /// Five seconds back or on, to the frame.
-    pub fn step(&self, forward: bool, cx: &mut Context<Self>) {
-        let position = self.video.position();
-        let target = if forward {
-            (position + STEP).min(self.video.duration())
-        } else {
-            position.saturating_sub(STEP)
-        };
-        let _ = self.video.seek(target, true);
-        cx.notify();
+    /// A step louder or quieter; louder also unmutes. Returns the percent.
+    pub fn louder(&self, louder: bool) -> i32 {
+        let volume = stepped(self.video.volume(), louder);
+        self.video.set_volume(volume);
+        if louder {
+            self.video.set_muted(false);
+        }
+        percent(volume)
+    }
+
+    pub fn loudness(&self) -> Loudness {
+        Loudness {
+            volume: self.video.volume(),
+            muted: self.video.muted(),
+        }
     }
 
     pub fn position(&self) -> Duration {
@@ -105,10 +160,32 @@ impl VideoPane {
         Some(self.video.duration()).filter(|d| !d.is_zero())
     }
 
-    pub fn set_shift(&mut self, held: bool, cx: &mut Context<Self>) {
-        if self.bar.held != held {
-            self.bar.held = held;
-            cx.notify();
+    /// Shows the seek bar, and hides it 1.5 s from now unless the pointer
+    /// is near it then.
+    fn flash_bar(&mut self, cx: &mut Context<Self>) {
+        if !self.bar.up {
+            self.bar.up = true;
+            self.bar.epoch += 1;
+        }
+        self.bar.timer = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(BAR_LINGER).await;
+            let _ = this.update(cx, |this, cx| {
+                if !this.bar.near && this.bar.dragging.is_none() {
+                    this.bar.up = false;
+                    this.bar.epoch += 1;
+                    cx.notify();
+                }
+            });
+        }));
+        cx.notify();
+    }
+
+    /// The pointer moved: near the bottom, the seek bar comes up.
+    fn pointer(&mut self, y: Pixels, window: &Window, cx: &mut Context<Self>) {
+        let near = y > window.viewport_size().height - px(NEAR_BOTTOM);
+        if near != self.bar.near {
+            self.bar.near = near;
+            self.flash_bar(cx);
         }
     }
 
@@ -127,7 +204,7 @@ impl VideoPane {
     }
 
     pub fn bar_shown(&self) -> bool {
-        self.bar.held || self.bar.dragging.is_some()
+        self.bar.up || self.bar.near || self.bar.dragging.is_some()
     }
 
     /// The time under `x` on the bar's track.
@@ -151,11 +228,24 @@ impl VideoPane {
     fn drop_at(&mut self, cx: &mut Context<Self>) {
         if let Some(target) = self.bar.dragging.take() {
             let _ = self.video.seek(target, true);
-            cx.notify();
+            self.flash_bar(cx);
         }
     }
 
-    fn bar(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+    /// The bar, drawn while it fades out too; only a shown bar takes the
+    /// pointer.
+    fn bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let shown = self.bar_shown();
+        let bar = self.bar_body(shown, cx);
+        bar.with_animation(
+            ("seek-bar", self.bar.epoch),
+            Animation::new(BAR_FADE).with_easing(ease_in_out),
+            move |bar, t| bar.opacity(if shown { t } else { 1. - t }),
+        )
+        .into_any_element()
+    }
+
+    fn bar_body(&self, live: bool, cx: &mut Context<Self>) -> Stateful<Div> {
         let theme = Theme::of(WindowAppearance::Dark);
         let duration = self.video.duration();
         let position = self.bar.dragging.unwrap_or_else(|| self.video.position());
@@ -169,6 +259,9 @@ impl VideoPane {
         let follow = canvas(
             move |bounds, _, _| track.set(bounds),
             move |_, _, window, _| {
+                if !live {
+                    return;
+                }
                 // Listened to on every frame: a quick click can be released
                 // before the frame after its press is drawn.
                 let moved = view.clone();
@@ -212,18 +305,20 @@ impl VideoPane {
             .items_center()
             .gap(px(12.))
             .bg(theme.strip)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                    // The whole bar keeps clicks from pausing; only the track seeks.
-                    cx.stop_propagation();
-                    let track = this.bar.track.get();
-                    let x = event.position.x;
-                    if x > track.left() - px(12.) && x < track.right() + px(12.) {
-                        this.drag_to(x, cx);
-                    }
-                }),
-            )
+            .when(live, |bar| {
+                bar.on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                        // The whole bar keeps clicks from pausing; only the track seeks.
+                        cx.stop_propagation();
+                        let track = this.bar.track.get();
+                        let x = event.position.x;
+                        if x > track.left() - px(12.) && x < track.right() + px(12.) {
+                            this.drag_to(x, cx);
+                        }
+                    }),
+                )
+            })
             .child(time(position))
             .child(
                 div()
@@ -232,7 +327,7 @@ impl VideoPane {
                     .relative()
                     .flex()
                     .items_center()
-                    .cursor(CursorStyle::PointingHand)
+                    .when(live, |track| track.cursor(CursorStyle::PointingHand))
                     .child(follow)
                     .child(
                         div()
@@ -269,11 +364,22 @@ impl Render for VideoPane {
                 .size_full()
                 .object_fit(ObjectFit::Contain)
         });
-        let bar = self.bar_shown().then(|| self.bar(cx));
+        // Before the first seek or visit to the bottom there is nothing to fade.
+        let bar = (self.bar.epoch > 0).then(|| self.bar(cx));
         div()
+            .id("video")
             .size_full()
             .relative()
             .bg(rgb(0x000000))
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                this.pointer(event.position.y, window, cx)
+            }))
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !hovered && this.bar.near {
+                    this.bar.near = false;
+                    this.flash_bar(cx);
+                }
+            }))
             .children(frame)
             .children(bar)
     }
@@ -360,9 +466,12 @@ impl AudioPane {
     pub fn new(
         audio: Audio,
         name: SharedString,
+        loudness: Loudness,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        audio.playbin.set_property("volume", loudness.volume);
+        audio.playbin.set_property("mute", loudness.muted);
         let _ = audio.playbin.set_state(gst::State::Playing);
         let tick = cx.spawn_in(window, async move |this, cx| {
             loop {
@@ -417,15 +526,30 @@ impl AudioPane {
         self.audio.playbin.set_property("mute", !self.muted());
     }
 
-    pub fn seek(&self, forward: bool) {
-        self.skip(SEEK, forward, gst::SeekFlags::KEY_UNIT);
+    /// A step louder or quieter; louder also unmutes. Returns the percent.
+    pub fn louder(&self, louder: bool) -> i32 {
+        let volume = stepped(self.audio.playbin.property::<f64>("volume"), louder);
+        self.audio.playbin.set_property("volume", volume);
+        if louder {
+            self.audio.playbin.set_property("mute", false);
+        }
+        percent(volume)
     }
 
-    pub fn step(&self, forward: bool) {
-        self.skip(STEP, forward, gst::SeekFlags::ACCURATE);
+    pub fn loudness(&self) -> Loudness {
+        Loudness {
+            volume: self.audio.playbin.property::<f64>("volume"),
+            muted: self.muted(),
+        }
     }
 
-    fn skip(&self, by: Duration, forward: bool, how: gst::SeekFlags) {
+    /// Back or on by `by`, to the sample or to the nearest keyframe.
+    pub fn seek(&self, forward: bool, by: Duration, accurate: bool) {
+        let how = if accurate {
+            gst::SeekFlags::ACCURATE
+        } else {
+            gst::SeekFlags::KEY_UNIT
+        };
         let position = self.position();
         let target = if forward {
             position + by
@@ -542,5 +666,24 @@ impl Render for AudioPane {
                             .child(self.status()),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{percent, stepped};
+
+    #[test]
+    fn volume_steps_are_even_to_the_ear() {
+        assert_eq!(percent(1.), 100);
+        let quieter = stepped(1., false);
+        assert!((quieter - 0.95f64.powi(3)).abs() < 1e-9);
+        assert_eq!(percent(quieter), 95);
+        assert_eq!(percent(stepped(quieter, true)), 100);
+        // The ends hold.
+        assert_eq!(stepped(1., true), 1.);
+        assert_eq!(stepped(0., false), 0.);
+        // A volume set elsewhere joins the steps.
+        assert_eq!(percent(stepped(0.5, true)), 84);
     }
 }
