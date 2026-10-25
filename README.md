@@ -27,15 +27,15 @@ screen, at a size you can see. It takes the place of GNOME's sushi.
 | Kind | Shown as |
 | --- | --- |
 | Images | The picture at its own aspect, as large as the screen allows; animations play |
-| Video | Plays at its own aspect, with sound; hardware decoding when GStreamer has it; Shift shows a seek bar |
+| Video | Plays at its own aspect, with sound; hardware decoding when GStreamer has it; a seek bar after each seek and while the pointer is near the bottom |
 | Audio | A card with the cover art, title, artist and album, playing |
-| PDF | The pages in a scroll, shaped by the first page, rendered as they come into view; text can be selected and copied; Shift shows a page scrubber |
-| Text and code | Highlighted, with line numbers; long lines scroll sideways instead of wrapping; select with the mouse and copy; UTF-8, UTF-16 and GB18030 (GBK) text; minified JSON laid out; the first 2 MB of large files |
-| Binary files | As `hexdump -C` prints them, read from a memory map, so a dump of gigabytes opens at once; select and copy as text |
+| PDF | The pages in a scroll, shaped by the first page, rendered as they come into view; a rail of page thumbnails at the right while it scrolls; text can be selected and copied |
+| Text and code | Highlighted, with line numbers; a minimap at the right while it scrolls; long lines scroll sideways instead of wrapping; select with the mouse and copy; UTF-8, UTF-16 and GB18030 (GBK) text; minified JSON laid out; the first 2 MB of large files |
+| Binary files | As `hexdump -C` prints them, read from a memory map, so a dump of gigabytes opens at once, minimap and all; select and copy as text |
 | Compressed files | gzip, xz, zstd, bzip2, lz4 and lzma files show what is inside: text and code as above, a tar as its listing, anything else as a hexdump; the strip gives both sizes when the format records them |
 | Word documents | docx and odt as a column on a page: headings, paragraphs with their bold, italic, underline and colour, bulleted and numbered lists, tables and pictures |
-| Spreadsheets | xlsx, xls and ods as a grid with column letters and row numbers, numbers and dates formatted, a tab for each worksheet, opening on the one that was in front; chart and hidden sheets get no tab; old .xls written as a bare BIFF stream too; the first 5,000 rows |
-| Presentations | pptx as its slides in a scroll, with text, pictures, tables and shapes where the deck puts them and what they inherit from the layout and master; odp as its thumbnail and text; Shift shows a slide scrubber |
+| Spreadsheets | xlsx, xls and ods as a grid with column letters and row numbers, numbers and dates formatted, a tab for each worksheet, opening on the one that was in front; a click puts a cell cursor down, and the strip shows its cell in full; chart and hidden sheets get no tab; old .xls written as a bare BIFF stream too; the first 5,000 rows |
+| Presentations | pptx as its slides in a scroll, with text, pictures, tables and shapes where the deck puts them and what they inherit from the layout and master, and a rail of the slides drawn small while it scrolls; odp as its thumbnail and text |
 | Keynote, Pages, Numbers | The preview picture the file carries, as Quick Look shows it |
 | Archives | The entries as a tree with file-type icons and their sizes, and the total unpacked; zip, tar (gz, bz2, xz, zstd), 7z, rar, ISO and more |
 | Folders | A card with the item count and the total size, counted in the background |
@@ -45,32 +45,65 @@ The Office files are read the way macOS Quick Look reads them: silent opens
 the package and parses its XML itself, with no office suite, and draws the
 result natively. Rendered Markdown and HTML, and fonts, come later.
 
-A video or a sound that you leave, by moving to another file or closing the
-preview, starts again where you left it if you come back within the hour,
-unless it was nearly over. That is the only thing silent remembers: one
-small file in `$XDG_RUNTIME_DIR/silent`, gone at the next boot.
+A file you leave, by moving to another or closing the preview, comes back
+as you left it if you return within the hour: video and sound play on from
+there (unless they were nearly over), PDFs and slides open at the page,
+text at the line, documents at the paragraph, spreadsheets on the sheet and
+the cell, archives with the same folders open and the same entry selected.
+That, and the mode M last chose for the minimap and the thumbnail rail, is
+all silent remembers: two small files in `$XDG_RUNTIME_DIR/silent`, gone at
+the next boot.
 
 ## Keys
 
 | Key | Action |
 | --- | --- |
-| Space, Esc | Close |
-| Arrow keys | The previous or next file in Nautilus |
+| Space, Esc | Close (Esc first drops a half-typed vim command) |
+| Arrow keys | The previous or next file in Nautilus; after a click inside the content, see below |
 | Enter | Open with the default application; for a folder, go into it |
 | F2 | Rename in Nautilus |
 | Delete | Move to the trash |
 | F | Fullscreen |
+| M | The minimap of text, or the thumbnail rail of a PDF or slides: shown while scrolling, always, or never (a slim scrollbar instead); mute video and audio |
 | K or a click | Pause or play video and audio |
 | J, L | Back or forward ten seconds |
-| M | Mute |
-| Shift, held | A seek bar on a video, a scrubber on a PDF, slides or text; click or drag on them |
-| Shift+← , Shift+→ | Back or forward five seconds; the previous or next sheet of a spreadsheet |
-| Shift+↑ , Shift+↓ | The previous or next page of a PDF, or slide |
-| Shift+Home, Shift+End | The first or last page or slide; the start or end of text, a document or a sheet |
-| Page Up, Page Down | Scroll a document, a sheet or text |
-| Shift with the wheel | Scroll sideways |
+| Shift+← , Shift+→ | Half a screen sideways in text; back or forward thirty seconds in video and audio; the previous or next sheet of a spreadsheet |
+| Shift+↑ , Shift+↓ | A screen up or down; the previous or next page of a PDF, or slide |
+| Page Up, Page Down | A screen up or down |
+| Home, End | The start or the end |
 | Drag, double-click, triple-click | Select text, a word, a line; the selection is also the primary selection |
 | Ctrl+A, Ctrl+C | Select all, copy |
+
+Text, code, hexdumps, Word documents, PDFs and slides also move with vim's
+keys. What has been typed of a command shows at the right of the strip,
+as vim's `showcmd` does:
+
+| Key | Action |
+| --- | --- |
+| j, k | A line down or up; in a PDF or slides, the next or previous page |
+| h, l, 0 | Sideways, and back to the left edge |
+| Ctrl+e, Ctrl+y | A line down or up |
+| Ctrl+d, Ctrl+u | Half a screen down or up |
+| Ctrl+f, Ctrl+b | A screen down or up |
+| gg, G | The start, the end |
+| 20G | Line 20, in the middle of the view and lit for a moment; page 20 of a PDF or slides; the twentieth paragraph or table of a document |
+| A number first | Does it that many times: 5j |
+
+A click inside the content engages it, and a thin warm ring shows it: the
+arrow keys act on the content instead of browsing files, until the window
+loses the focus (a click in Nautilus) or shows another file. The click that
+engages a video only engages it; the next one pauses.
+
+| Content | ← → | ↑ ↓ |
+| --- | --- | --- |
+| Text, code, hexdumps, documents | Sideways | A line |
+| PDF, slides | The previous or next page | Scroll |
+| Spreadsheets | The cell cursor | The cell cursor |
+| Archives | Close or open a folder | The previous or next entry |
+| Video, audio | Back or forward five seconds | Louder or quieter; the strip shows the volume, and the next sound or video keeps it, and the mute |
+
+The minimap and the rail show where the view is as a box: a click there
+brings that part into view, and a drag carries the view along.
 
 ## Install
 
