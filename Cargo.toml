@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 async-channel = "2.5"
 async-io = "2.6"
+calamine = "0.37"
 compress-tools = "0.16"
 encoding_rs = "0.8"
 fast_image_resize = "6.1"
@@ -50,12 +51,14 @@ lofty = "0.25"
 memmap2 = "0.9"
 raw-window-handle = "0.6"
 ropey = "=2.0.0-beta.1"
+roxmltree = "0.21"
 smallvec = "1"
 unicode-width = "0.2"
 url = "2"
 x11rb = { version = "0.14", features = ["randr"] }
 yuv = "0.8"
 zbus = { version = "5.15", default-features = false, features = ["async-io", "blocking-api"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [profile.release]
 lto = "thin"

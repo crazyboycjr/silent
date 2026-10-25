@@ -57,6 +57,9 @@ pub fn accent(kind: Kind) -> Hsla {
         Kind::Text => 0x5f8063,
         Kind::Archive | Kind::Compressed => 0x9a7340,
         Kind::Binary => 0x7a6a5c,
+        Kind::Document => 0x4f78a8,
+        Kind::Spreadsheet => 0x4b8a58,
+        Kind::Presentation => 0xc8693a,
         Kind::Folder => 0xd4a24c,
         Kind::Other => 0x8b7e70,
     })

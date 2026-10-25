@@ -21,6 +21,12 @@ pub enum Kind {
     Compressed,
     /// Shown as `hexdump -C` shows it.
     Binary,
+    /// Word processing: docx, odt, Pages.
+    Document,
+    /// xlsx, xls, ods, Numbers.
+    Spreadsheet,
+    /// pptx, odp, Keynote.
+    Presentation,
     Folder,
     Other,
 }
@@ -94,6 +100,62 @@ const BINARY: &[&str] = &[
     "application/wasm",
     "application/vnd.sqlite3",
 ];
+
+/// Office and iWork files by the start of their type, WPS Office's own
+/// types among them; legacy .doc and .ppt are not here and stay cards.
+const OFFICE: &[(&str, Kind)] = &[
+    (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml",
+        Kind::Document,
+    ),
+    ("application/vnd.ms-word.document", Kind::Document),
+    ("application/vnd.ms-word.template", Kind::Document),
+    ("application/vnd.oasis.opendocument.text", Kind::Document),
+    ("application/vnd.apple.pages", Kind::Document),
+    ("application/x-iwork-pages", Kind::Document),
+    ("application/wps-office.docx", Kind::Document),
+    ("application/wps-office.dotx", Kind::Document),
+    (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml",
+        Kind::Spreadsheet,
+    ),
+    ("application/vnd.ms-excel", Kind::Spreadsheet),
+    (
+        "application/vnd.oasis.opendocument.spreadsheet",
+        Kind::Spreadsheet,
+    ),
+    ("application/vnd.apple.numbers", Kind::Spreadsheet),
+    ("application/x-iwork-numbers", Kind::Spreadsheet),
+    ("application/wps-office.xls", Kind::Spreadsheet),
+    (
+        "application/vnd.openxmlformats-officedocument.presentationml",
+        Kind::Presentation,
+    ),
+    (
+        "application/vnd.ms-powerpoint.presentation",
+        Kind::Presentation,
+    ),
+    (
+        "application/vnd.oasis.opendocument.presentation",
+        Kind::Presentation,
+    ),
+    ("application/vnd.apple.keynote", Kind::Presentation),
+    ("application/x-iwork-keynote", Kind::Presentation),
+    ("application/wps-office.pptx", Kind::Presentation),
+];
+
+/// The kind of an Office or iWork file, when its first bytes are the zip or
+/// the OLE2 container its type promises; an Office lock file or a key named
+/// `.key` is not.
+fn office(content_type: &str, head: &[u8]) -> Option<Kind> {
+    let kind = OFFICE
+        .iter()
+        .find(|(prefix, _)| content_type.starts_with(prefix))?
+        .1;
+    let zip = head.starts_with(b"PK\x03\x04");
+    let ole = head.starts_with(&[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+    (zip || (ole && kind == Kind::Spreadsheet)).then_some(kind)
+}
 
 /// Types better shown as a card than as their bytes: documents and fonts,
 /// until they get previews of their own.
@@ -224,6 +286,8 @@ pub fn classify(content_type: &str, head: &[u8]) -> Kind {
         Kind::Video
     } else if major == "audio" || content_type == "application/ogg" {
         Kind::Audio
+    } else if let Some(kind) = office(content_type, head) {
+        kind
     } else if listed(BINARY) {
         Kind::Binary
     } else if (is_a("text/plain") && !has_nul(head)) || looks_like_text(head) {
@@ -307,6 +371,49 @@ mod tests {
             assert_eq!(classify(content_type, head), kind, "{content_type}");
         }
         assert_eq!(classify("application/octet-stream", &[]), Kind::Other);
+    }
+
+    #[test]
+    fn office_files_need_their_container() {
+        let zip = b"PK\x03\x04\x14\0";
+        let ole = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0, 0, 0, 0];
+        let docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        assert_eq!(classify(docx, zip), Kind::Document);
+        assert_eq!(classify("application/wps-office.docx", zip), Kind::Document);
+        assert_eq!(
+            classify("application/wps-office.xlsx", zip),
+            Kind::Spreadsheet
+        );
+        assert_eq!(
+            classify("application/wps-office.xls", &ole),
+            Kind::Spreadsheet
+        );
+        assert_eq!(
+            classify("application/vnd.ms-excel", &ole),
+            Kind::Spreadsheet
+        );
+        assert_eq!(
+            classify("application/vnd.apple.keynote", zip),
+            Kind::Presentation
+        );
+        assert_eq!(
+            classify("application/wps-office.pptx", zip),
+            Kind::Presentation
+        );
+        // Legacy Word and PowerPoint, an Office lock file, a PEM key named .key.
+        assert_eq!(classify("application/wps-office.doc", &ole), Kind::Other);
+        assert_eq!(classify("application/vnd.ms-powerpoint", &ole), Kind::Other);
+        assert_eq!(
+            classify("application/wps-office.pptx", b"\x03cjr      "),
+            Kind::Text
+        );
+        assert_eq!(
+            classify(
+                "application/vnd.apple.keynote",
+                b"-----BEGIN PRIVATE KEY-----\n"
+            ),
+            Kind::Text
+        );
     }
 
     #[test]

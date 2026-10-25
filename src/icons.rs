@@ -1,7 +1,7 @@
 //! File-type icons from the Lucide set that gpui-component bundles, so they
 //! look like the rest of the toolkit. Only the few used here are embedded.
 
-use gpui_kit::{Hsla, SharedString, rgb};
+use gpui_kit::{Hsla, SharedString};
 use gpui_kit_assets::IconName;
 use silent::detect::Kind;
 
@@ -52,12 +52,12 @@ pub fn for_entry(name: &str, dir: bool, open: bool) -> (SharedString, Hsla) {
         }
         "pdf" => (IconName::FileText, accent(Kind::Pdf)),
         "doc" | "docx" | "odt" | "rtf" | "pages" | "epub" => {
-            (IconName::FilePenLine, rgb(0x4f78a8).into())
+            (IconName::FilePenLine, accent(Kind::Document))
         }
         "xls" | "xlsx" | "ods" | "csv" | "tsv" | "numbers" => {
-            (IconName::FileSpreadsheet, rgb(0x4b8a58).into())
+            (IconName::FileSpreadsheet, accent(Kind::Spreadsheet))
         }
-        "ppt" | "pptx" | "odp" | "key" => (IconName::FileChartPie, rgb(0xc8693a).into()),
+        "ppt" | "pptx" | "odp" | "key" => (IconName::FileChartPie, accent(Kind::Presentation)),
         "rs" | "c" | "h" | "cc" | "cpp" | "hpp" | "py" | "js" | "mjs" | "ts" | "tsx" | "jsx"
         | "go" | "java" | "kt" | "swift" | "rb" | "php" | "lua" | "sh" | "bash" | "zsh"
         | "fish" | "pl" | "hs" | "ml" | "el" | "scala" | "css" | "scss" | "html" | "htm"
