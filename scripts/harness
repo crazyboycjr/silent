@@ -9,6 +9,10 @@
 #   harness show FILE [CLOSE]        ShowFile, as Nautilus calls it (inside `bus`)
 #   harness close                    Close (inside `bus`)
 #   harness shot NAME                screenshot of the test display
+#   harness cold BINARY FILE [N] [NEXT]
+#                                    N cold D-Bus activations of BINARY showing FILE, timed
+#                                    from the call to the first frame; with NEXT, also the
+#                                    switch to NEXT in the open window (arrow browsing)
 set -euo pipefail
 
 SCRATCH=${SILENT_SCRATCH:-$HOME/.cache/claude-scratch/silent}
@@ -152,12 +156,12 @@ CONF
 
 show() {
     local uri; uri=$(python3 -I -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve().as_uri())' "$1")
-    gdbus call --session --dest $NAME --object-path $OBJECT --method $IFACE.ShowFile \
+    gdbus call --session --timeout 10 --dest $NAME --object-path $OBJECT --method $IFACE.ShowFile \
         "$uri" "${SILENT_PARENT:-x11:0}" "${2:-false}" ''
 }
 
 close() {
-    gdbus call --session --dest $NAME --object-path $OBJECT --method $IFACE.Close
+    gdbus call --session --timeout 10 --dest $NAME --object-path $OBJECT --method $IFACE.Close
 }
 
 shot() {
@@ -166,8 +170,60 @@ shot() {
     echo "$SCRATCH/$1.png"
 }
 
+cold() {
+    local binary=$1 file=$2 n=${3:-10} next=${4:-}
+    local log; log=$(mktemp "$SCRATCH/cold.XXXXXX.log")
+    SILENT_TRACE=1 bus "$binary" -- "$0" cold-runs "$file" "$n" "$log" "$next" 2>"$log"
+    rm -f "$log"
+}
+
+# Inside `bus`: each run calls ShowFile, waits for the activated process's
+# first-frame mark (wall-clock ns) and subtracts the time of the call.
+cold-runs() {
+    local file=$1 n=$2 log=$3 next=$4 times=() warm=()
+    for _ in $(seq "$n"); do
+        local before; before=$(grep -c "first frame" "$log" || true)
+        local t0; t0=$(date +%s%N)
+        show "$file" true >/dev/null
+        local mark=""
+        for _ in $(seq 200); do
+            mark=$(grep "first frame" "$log" | sed -n "$((before + 1))p" || true)
+            [[ -n $mark ]] && break; sleep 0.02
+        done
+        [[ -z $mark ]] && die "no first frame for $file"
+        times+=($(( ($(sed -E 's/.* at ([0-9]+) ns.*/\1/' <<<"$mark") - t0) / 1000 )))
+        if [[ -n $next ]]; then
+            sleep 0.3
+            t0=$(date +%s%N)
+            show "$next" >/dev/null
+            for _ in $(seq 200); do
+                mark=$(grep "first frame" "$log" | sed -n "$((before + 2))p" || true)
+                [[ -n $mark ]] && break; sleep 0.02
+            done
+            warm+=($(( ($(sed -E 's/.* at ([0-9]+) ns.*/\1/' <<<"$mark") - t0) / 1000 )))
+        fi
+        local pid; pid=$(gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
+            --method org.freedesktop.DBus.GetConnectionUnixProcessID $NAME | sed -E 's/.*uint32 ([0-9]+).*/\1/')
+        [[ -n $pid ]] && echo "rss $(grep VmRSS /proc/"$pid"/status | awk '{print $2}') kB" >&2
+        close >/dev/null
+        for _ in $(seq 100); do
+            local owned; owned=$(gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
+                --method org.freedesktop.DBus.NameHasOwner $NAME)
+            [[ $owned == *false* ]] && break
+            sleep 0.02
+        done
+        echo "run done" >&2
+        sleep 0.2
+    done
+    report() { printf '%s\n' "${@:2}" | sort -n | awk -v what="$1" '{ v[NR] = $1 } END {
+        printf "%s: median %.1f ms, min %.1f, max %.1f (n=%d)\n", what, (NR % 2 ? v[(NR + 1) / 2] : (v[NR / 2] + v[NR / 2 + 1]) / 2) / 1000, v[1] / 1000, v[NR] / 1000, NR }'; }
+    report "cold $(basename "$file")" "${times[@]}"
+    [[ -n $next ]] && report "warm $(basename "$next")" "${warm[@]}"
+    grep "^rss" "$log" | awk '{ s += $2; n++ } END { if (n) printf "rss while shown: %.0f MB (mean of %d)\n", s / n / 1024, n }'
+}
+
 cmd=${1:-}; shift || true
 case $cmd in
-    fixtures | display | bus | show | close | shot) "$cmd" "$@" ;;
-    *) sed -n '2,13p' "$0"; exit 2 ;;
+    fixtures | display | bus | show | close | shot | cold | cold-runs) "$cmd" "$@" ;;
+    *) sed -n '2,17p' "$0"; exit 2 ;;
 esac
