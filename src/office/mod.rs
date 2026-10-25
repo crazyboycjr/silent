@@ -14,6 +14,7 @@ use roxmltree::Node;
 pub mod biff;
 pub mod docx;
 pub mod odf;
+pub mod ole;
 pub mod pptx;
 pub mod sheet;
 
@@ -144,6 +145,31 @@ pub fn rgb(hex: &str) -> Option<u32> {
     (hex.len() == 6)
         .then(|| u32::from_str_radix(hex, 16).ok())
         .flatten()
+}
+
+/// Whether `head` starts an OLE2 compound file, the container of the
+/// binary Office formats.
+pub fn is_ole(head: &[u8]) -> bool {
+    head.starts_with(&[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])
+}
+
+/// Whether the file at `path` is an OLE2 compound file.
+pub fn is_ole_file(path: &Path) -> bool {
+    let mut head = [0; 8];
+    File::open(path).is_ok_and(|mut file| file.read_exact(&mut head).is_ok()) && is_ole(&head)
+}
+
+/// Little-endian numbers in the binary formats: BIFF, Word and PowerPoint.
+pub(crate) fn u16_at(data: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(data.get(at..at + 2)?.try_into().ok()?))
+}
+
+pub(crate) fn u32_at(data: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(data.get(at..at + 4)?.try_into().ok()?))
+}
+
+pub(crate) fn f64_at(data: &[u8], at: usize) -> Option<f64> {
+    Some(f64::from_le_bytes(data.get(at..at + 8)?.try_into().ok()?))
 }
 
 /// What a word-processing document holds, in reading order.

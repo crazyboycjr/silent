@@ -5,6 +5,7 @@
 use encoding_rs::Encoding;
 
 use super::sheet::{Cell, general};
+use super::{f64_at, u16_at, u32_at};
 
 /// Whether `head` starts with a BIFF beginning-of-file record, of BIFF2
 /// to BIFF8.
@@ -174,18 +175,6 @@ fn rk(v: u32) -> f64 {
         f64::from_bits(u64::from(v & 0xffff_fffc) << 32)
     };
     if v & 1 != 0 { n / 100. } else { n }
-}
-
-fn u16_at(data: &[u8], at: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(data.get(at..at + 2)?.try_into().ok()?))
-}
-
-fn u32_at(data: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(data.get(at..at + 4)?.try_into().ok()?))
-}
-
-fn f64_at(data: &[u8], at: usize) -> Option<f64> {
-    Some(f64::from_le_bytes(data.get(at..at + 8)?.try_into().ok()?))
 }
 
 #[cfg(test)]
