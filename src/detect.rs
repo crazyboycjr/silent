@@ -108,13 +108,11 @@ const OFFICE: &[(&str, Kind)] = &[
         "application/vnd.openxmlformats-officedocument.wordprocessingml",
         Kind::Document,
     ),
-    ("application/vnd.ms-word.document", Kind::Document),
-    ("application/vnd.ms-word.template", Kind::Document),
+    ("application/vnd.ms-word.", Kind::Document),
     ("application/vnd.oasis.opendocument.text", Kind::Document),
     ("application/vnd.apple.pages", Kind::Document),
     ("application/x-iwork-pages", Kind::Document),
-    ("application/wps-office.docx", Kind::Document),
-    ("application/wps-office.dotx", Kind::Document),
+    ("application/wps-office.do", Kind::Document),
     (
         "application/vnd.openxmlformats-officedocument.spreadsheetml",
         Kind::Spreadsheet,
@@ -131,22 +129,19 @@ const OFFICE: &[(&str, Kind)] = &[
         "application/vnd.openxmlformats-officedocument.presentationml",
         Kind::Presentation,
     ),
-    (
-        "application/vnd.ms-powerpoint.presentation",
-        Kind::Presentation,
-    ),
+    ("application/vnd.ms-powerpoint.", Kind::Presentation),
     (
         "application/vnd.oasis.opendocument.presentation",
         Kind::Presentation,
     ),
     ("application/vnd.apple.keynote", Kind::Presentation),
     ("application/x-iwork-keynote", Kind::Presentation),
-    ("application/wps-office.pptx", Kind::Presentation),
+    ("application/wps-office.pp", Kind::Presentation),
 ];
 
-/// The kind of an Office or iWork file, when its first bytes are the zip or
-/// the OLE2 container its type promises; an Office lock file or a key named
-/// `.key` is not.
+/// The kind of an Office or iWork file, when its first bytes are the zip
+/// it promises, or for a spreadsheet the OLE2 file or bare BIFF stream of
+/// xls; an Office lock file, a legacy .doc or a key named `.key` is not.
 fn office(content_type: &str, head: &[u8]) -> Option<Kind> {
     let kind = OFFICE
         .iter()
@@ -154,7 +149,8 @@ fn office(content_type: &str, head: &[u8]) -> Option<Kind> {
         .1;
     let zip = head.starts_with(b"PK\x03\x04");
     let ole = head.starts_with(&[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
-    (zip || (ole && kind == Kind::Spreadsheet)).then_some(kind)
+    let xls = ole || crate::office::biff::is_biff(head);
+    (zip || (xls && kind == Kind::Spreadsheet)).then_some(kind)
 }
 
 /// Types better shown as a card than as their bytes: documents and fonts,
@@ -399,6 +395,12 @@ mod tests {
         assert_eq!(
             classify("application/wps-office.pptx", zip),
             Kind::Presentation
+        );
+        assert_eq!(classify("application/wps-office.dot", zip), Kind::Document);
+        let bare_xls = [0x09, 0x08, 0x08, 0, 0, 0, 0x10, 0];
+        assert_eq!(
+            classify("application/wps-office.xls", &bare_xls),
+            Kind::Spreadsheet
         );
         // Legacy Word and PowerPoint, an Office lock file, a PEM key named .key.
         assert_eq!(classify("application/wps-office.doc", &ole), Kind::Other);

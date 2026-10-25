@@ -166,8 +166,9 @@ fn describe_office(path: &std::path::Path, content_type: &str, kind: Kind) {
     }
     match kind {
         Kind::Spreadsheet => match sheet::open(path) {
-            Some((names, grid)) => println!(
-                "  sheets {names:?}; the first: {} × {} used, {} rows read from {:?}",
+            Some((names, current, grid)) => println!(
+                "  sheets {names:?}; opens on {:?}: {} × {} used, {} rows read from {:?}",
+                names[current],
                 grid.size.0,
                 grid.size.1,
                 grid.cells.len(),

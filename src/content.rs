@@ -71,6 +71,8 @@ pub struct Still {
 pub struct Sheet {
     pub path: PathBuf,
     pub names: Vec<String>,
+    /// The sheet to open on.
+    pub current: usize,
     pub grid: office::sheet::Grid,
 }
 
@@ -407,7 +409,7 @@ fn document(
     }
     match kind {
         Kind::Spreadsheet => {
-            let (names, grid) = office::sheet::open(path)?;
+            let (names, current, grid) = office::sheet::open(path)?;
             let width: f64 = grid
                 .widths
                 .iter()
@@ -418,6 +420,7 @@ fn document(
             let sheet = Sheet {
                 path: path.to_owned(),
                 names,
+                current,
                 grid,
             };
             Some((size, Body::Sheet(Box::new(sheet))))

@@ -37,7 +37,7 @@ impl SheetPane {
         Self {
             path: sheet.path,
             names: sheet.names,
-            current: 0,
+            current: sheet.current,
             grid: Rc::new(sheet.grid),
             loading: false,
             top: 0.,

@@ -1,10 +1,16 @@
 //! Spreadsheets through calamine: the sheets' names, and a sheet's cells as
 //! text, capped so that a huge sheet still opens at once.
 
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 
-use calamine::{Data, DataRef, ExcelDateTime, Reader, Sheets, open_workbook_auto};
+use calamine::{
+    Data, DataRef, ExcelDateTime, Reader, SheetType, SheetVisible, Sheets, open_workbook_auto,
+};
 use unicode_width::UnicodeWidthStr;
+
+use super::biff;
 
 /// Rows and columns read from a sheet; the rest is left unread.
 pub const MAX_ROWS: usize = 5000;
@@ -29,12 +35,65 @@ pub struct Cell {
     pub number: bool,
 }
 
-/// The sheets' names and the first sheet.
-pub fn open(file: &Path) -> Option<(Vec<String>, Grid)> {
-    let mut book = open_workbook_auto(file).ok()?;
-    let names = book.sheet_names();
-    let grid = read_from(&mut book, names.first()?)?;
-    Some((names, grid))
+/// The sheets worth a tab, which of them to open on, and that sheet. Chart,
+/// dialog and macro sheets have no cells to show, and sheets hidden in Excel
+/// stay hidden, unless every worksheet is. The workbook opens where Excel
+/// would, on the sheet that was in front when it was saved, and when that
+/// one cannot be read, on the next that can.
+pub fn open(file: &Path) -> Option<(Vec<String>, usize, Grid)> {
+    let Ok(mut book) = open_workbook_auto(file) else {
+        return bare(file).map(|grid| (vec!["Sheet1".to_owned()], 0, grid));
+    };
+    let active = active_sheet(file)
+        .and_then(|i| book.sheets_metadata().get(i))
+        .map(|s| s.name.clone());
+    let worksheets: Vec<(String, bool)> = book
+        .sheets_metadata()
+        .iter()
+        .filter(|s| matches!(s.typ, SheetType::WorkSheet))
+        .map(|s| (s.name.clone(), matches!(s.visible, SheetVisible::Visible)))
+        .collect();
+    let any_visible = worksheets.iter().any(|(_, visible)| *visible);
+    let names: Vec<String> = worksheets
+        .into_iter()
+        .filter(|(_, visible)| *visible || !any_visible)
+        .map(|(name, _)| name)
+        .collect();
+    let start = active
+        .and_then(|name| names.iter().position(|n| *n == name))
+        .unwrap_or(0);
+    for i in (start..names.len()).chain(0..start) {
+        if let Some(grid) = read_from(&mut book, &names[i]) {
+            return Some((names, i, grid));
+        }
+    }
+    None
+}
+
+/// The place, among all the workbook's sheets, of the one in front when
+/// it was saved. xlsx records it in its workbook view; xls and ods are not asked.
+fn active_sheet(file: &Path) -> Option<usize> {
+    let xml = super::Package::open(file)?.text("xl/workbook.xml")?;
+    let doc = roxmltree::Document::parse(&xml).ok()?;
+    let view = doc
+        .descendants()
+        .find(|n| n.tag_name().name() == "workbookView")?;
+    super::attr(view, "activeTab")?.parse().ok()
+}
+
+/// A bare BIFF stream, which holds one sheet.
+fn bare(file: &Path) -> Option<Grid> {
+    let mut data = Vec::new();
+    File::open(file)
+        .ok()?
+        .take(64 << 20)
+        .read_to_end(&mut data)
+        .ok()?;
+    let cells = biff::cells(&data)?;
+    let end = cells.iter().fold((0, 0), |(r, c), ((row, column), _)| {
+        (r.max(*row), c.max(*column))
+    });
+    Some(grid(cells, end))
 }
 
 /// The sheet called `name`.
@@ -233,6 +292,81 @@ pub fn column_name(mut n: u32) -> String {
 mod tests {
     use super::*;
     use calamine::ExcelDateTimeType;
+    use std::io::Write;
+
+    /// A workbook as Excel for Mac wrote one: a hidden chart sheet first,
+    /// then a worksheet, then another, hidden when `secret` is; `active` is
+    /// the sheet in front, among all three.
+    fn workbook(dir: &str, secret: bool, active: usize) -> std::path::PathBuf {
+        let state = if secret { r#" state="hidden""# } else { "" };
+        let dir = std::env::temp_dir().join(format!("silent-{dir}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("book.xlsx");
+        let main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+        let rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+        let sheet = |value: u32| {
+            format!(
+                r#"<worksheet xmlns="{main}"><sheetData><row r="1"><c r="A1"><v>{value}</v></c></row></sheetData></worksheet>"#
+            )
+        };
+        let parts = [
+            (
+                "[Content_Types].xml".to_owned(),
+                r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>"#
+                    .to_owned(),
+            ),
+            (
+                "_rels/.rels".to_owned(),
+                format!(
+                    r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{rel}/officeDocument" Target="xl/workbook.xml"/></Relationships>"#
+                ),
+            ),
+            (
+                "xl/workbook.xml".to_owned(),
+                format!(
+                    r#"<workbook xmlns="{main}" xmlns:r="{rel}"><bookViews><workbookView activeTab="{active}"/></bookViews><sheets><sheet name="Chart1" sheetId="4" state="hidden" r:id="rId1"/><sheet name="Data" sheetId="1" r:id="rId2"/><sheet name="Secret" sheetId="2"{state} r:id="rId3"/></sheets></workbook>"#
+                ),
+            ),
+            (
+                "xl/_rels/workbook.xml.rels".to_owned(),
+                format!(
+                    r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{rel}/chartsheet" Target="chartsheets/sheet1.xml"/><Relationship Id="rId2" Type="{rel}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId3" Type="{rel}/worksheet" Target="worksheets/sheet2.xml"/></Relationships>"#
+                ),
+            ),
+            (
+                "xl/chartsheets/sheet1.xml".to_owned(),
+                format!(r#"<chartsheet xmlns="{main}"/>"#),
+            ),
+            ("xl/worksheets/sheet1.xml".to_owned(), sheet(42)),
+            ("xl/worksheets/sheet2.xml".to_owned(), sheet(7)),
+        ];
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for (name, xml) in parts {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(xml.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+        path
+    }
+
+    #[test]
+    fn chart_and_hidden_sheets_get_no_tab() {
+        // The chart sheet was in front; the first worksheet shown opens instead.
+        let (names, current, grid) = open(&workbook("charts", true, 0)).unwrap();
+        assert_eq!(names, ["Data"]);
+        assert_eq!(current, 0);
+        assert_eq!(grid.cells[0][0].text, "42");
+    }
+
+    #[test]
+    fn workbooks_open_on_the_sheet_in_front() {
+        let (names, current, grid) = open(&workbook("active", false, 2)).unwrap();
+        assert_eq!(names, ["Data", "Secret"]);
+        assert_eq!(current, 1);
+        assert_eq!(grid.cells[0][0].text, "7");
+    }
 
     #[test]
     fn numbers_read_as_general_format() {

@@ -34,7 +34,7 @@ screen, at a size you can see. It takes the place of GNOME's sushi.
 | Binary files | As `hexdump -C` prints them, read from a memory map, so a dump of gigabytes opens at once; select and copy as text |
 | Compressed files | gzip, xz, zstd, bzip2, lz4 and lzma files show what is inside: text and code as above, a tar as its listing, anything else as a hexdump; the strip gives both sizes when the format records them |
 | Word documents | docx and odt as a column on a page: headings, paragraphs with their bold, italic, underline and colour, bulleted and numbered lists, tables and pictures |
-| Spreadsheets | xlsx, xls and ods as a grid with column letters and row numbers, numbers and dates formatted, a tab for each sheet; the first 5,000 rows |
+| Spreadsheets | xlsx, xls and ods as a grid with column letters and row numbers, numbers and dates formatted, a tab for each worksheet, opening on the one that was in front; chart and hidden sheets get no tab; old .xls written as a bare BIFF stream too; the first 5,000 rows |
 | Presentations | pptx as its slides in a scroll, with text, pictures, tables and shapes where the deck puts them and what they inherit from the layout and master; odp as its thumbnail and text; Shift shows a slide scrubber |
 | Keynote, Pages, Numbers | The preview picture the file carries, as Quick Look shows it |
 | Archives | The entries as a tree with file-type icons and their sizes, and the total unpacked; zip, tar (gz, bz2, xz, zstd), 7z, rar, ISO and more |

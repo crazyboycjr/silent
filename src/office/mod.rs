@@ -11,6 +11,7 @@ use std::path::Path;
 
 use roxmltree::Node;
 
+pub mod biff;
 pub mod docx;
 pub mod odf;
 pub mod pptx;
