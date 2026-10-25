@@ -10,4 +10,5 @@ pub mod office;
 pub mod pretty;
 pub mod resume;
 pub mod unpack;
+pub mod vim;
 pub mod x11;
