@@ -1,0 +1,37 @@
+# Builds the working tree this file sits in.
+pkgname=silent
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='A borderless, fast file previewer for Nautilus (replaces sushi)'
+arch=('x86_64')
+license=('unknown')
+depends=('glycin' 'bubblewrap' 'vulkan-icd-loader' 'fontconfig' 'freetype2' 'glib2'
+         'libxcb' 'libxkbcommon' 'libxkbcommon-x11' 'libseccomp' 'gcc-libs' 'glibc')
+makedepends=('cargo')
+provides=('sushi')
+conflicts=('sushi')
+options=('!lto' '!debug')
+
+prepare() {
+  cd "$startdir/../.."
+  cargo fetch --locked
+}
+
+build() {
+  cd "$startdir/../.."
+  export CARGO_TARGET_DIR="$srcdir/target"
+  cargo build --release --locked
+}
+
+check() {
+  cd "$startdir/../.."
+  export CARGO_TARGET_DIR="$srcdir/target"
+  cargo test --release --locked --lib
+}
+
+package() {
+  cd "$startdir/../.."
+  install -Dm755 "$srcdir/target/release/silent" "$pkgdir/usr/bin/silent"
+  install -Dm644 data/org.gnome.NautilusPreviewer.service \
+    "$pkgdir/usr/share/dbus-1/services/org.gnome.NautilusPreviewer.service"
+}
