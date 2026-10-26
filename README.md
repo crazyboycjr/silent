@@ -11,9 +11,11 @@ screen, at a size you can see. It takes the place of GNOME's sushi.
   is under them. The window follows the desktop's light or dark
   preference, in warm tones.
 - **Blazing fast.** The window opens at its final size, centred, with the
-  content already in it, well under a quarter of a second after the key
-  press. Decoding runs beside the start of the toolkit and the GPU, and
-  nothing stays in memory between previews.
+  content already in it: text some 15 ms after Nautilus asks, a PDF in 50,
+  a large photo as fast as it decodes. silent starts when Nautilus does,
+  which pings it, makes its window and its GPU device then, and keeps them
+  until Nautilus quits; a closed preview's window waits withdrawn for the
+  next, holding no file.
 - **Smarter, broader format support.** Pictures in every format the system's
   glycin loaders read (JPEG, PNG, WebP, AVIF, HEIC, JPEG XL, SVG, TIFF, GIF
   and animated GIF, WebP and APNG among them), upright as the camera meant,
@@ -209,7 +211,8 @@ the first frame and its present.
 
 `scripts/bench` times silent against sushi on the desktop, from the ShowFile
 call to the first frame that shows the file, read back from the X server:
-cold, with sushi's process kept warm, and switching files in an open window.
+cold, warm, with each previewer's process kept alive between previews as it
+lives, and switching files in an open window.
 It switches previewers with a service file of the user's and always puts the
 user's back. The results are in [docs/benchmark.md](docs/benchmark.md):
 
