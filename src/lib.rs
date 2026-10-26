@@ -9,6 +9,7 @@ pub mod hexdump;
 pub mod memory;
 pub mod office;
 pub mod pretty;
+pub mod scrim;
 pub mod unpack;
 pub mod vim;
 pub mod x11;
