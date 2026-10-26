@@ -387,7 +387,7 @@ impl LinesPane {
         self.overview.scrubbing().then(|| self.label())
     }
 
-    fn font() -> Font {
+    pub fn font() -> Font {
         Font {
             features: FontFeatures::disable_ligatures(),
             ..font("JetBrains Mono")

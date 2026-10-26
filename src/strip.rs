@@ -41,10 +41,15 @@ pub fn line(ink: Hsla) -> Div {
         .items_center()
         .gap(px(16.))
         .font_family("Noto Sans")
-        .font_features(FontFeatures(Arc::new(vec![("tnum".into(), 1)])))
+        .font_features(figures())
         .text_size(px(TEXT))
         .line_height(px(LEADING))
         .text_color(ink)
+}
+
+/// Figures of one width, so that times and counts do not shift as they change.
+pub fn figures() -> FontFeatures {
+    FontFeatures(Arc::new(vec![("tnum".into(), 1)]))
 }
 
 /// `word` on a veil reaching a little past it, which leaves the word where

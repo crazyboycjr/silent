@@ -111,6 +111,12 @@ pub fn run(bus: Option<Bus>, requests: async_channel::Receiver<Request>, first: 
     trace::mark("toolkit");
     app.run(move |cx| {
         trace::mark("app runs");
+        // Finding the fonts takes the first frame milliseconds; here it is
+        // done while the GPU is still starting.
+        let text = cx.text_system().clone();
+        cx.background_executor()
+            .spawn(async move { text.prewarm_fonts(&first_fonts()) })
+            .detach();
         let forward = input.clone();
         cx.spawn(async move |_| {
             while let Ok(request) = requests.recv().await {
@@ -127,6 +133,27 @@ pub fn run(bus: Option<Bus>, requests: async_channel::Receiver<Request>, first: 
         cx.spawn(async move |cx| controller.serve(inputs, cx).await)
             .detach();
     });
+}
+
+/// The faces a first frame draws in: the strip's and the cards' sans, and
+/// code's mono with the styles highlighting gives it.
+fn first_fonts() -> Vec<Font> {
+    let sans = font("Noto Sans");
+    let code = crate::lines::LinesPane::font();
+    vec![
+        Font {
+            features: crate::strip::figures(),
+            ..sans.clone()
+        },
+        Font {
+            weight: FontWeight::SEMIBOLD,
+            ..sans.clone()
+        },
+        sans,
+        code.clone().bold(),
+        code.clone().italic(),
+        code,
+    ]
 }
 
 impl Controller {
