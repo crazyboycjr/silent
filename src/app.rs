@@ -1,17 +1,20 @@
-//! The previewer's life: requests from Nautilus, the window, and leaving.
+//! The previewer's life: requests from Nautilus and from clients such as
+//! yazi, the window, and leaving.
 //!
 //! Started by D-Bus, the previewer lives as long as its callers stay on the
-//! bus: Nautilus pings it as it starts, and it stays until Nautilus quits.
-//! Its one window is made ahead of the first file, with its GPU surface,
-//! swapchain and pipelines, and is withdrawn rather than destroyed when a
-//! preview closes, to be shown again for the next.
+//! bus and the processes client previews are for run: Nautilus pings it as
+//! it starts, and it stays until Nautilus quits. Its one window is made
+//! ahead of the first file, with its GPU surface, swapchain and pipelines,
+//! and is withdrawn rather than destroyed when a preview closes, to be
+//! shown again for the next. A preview belongs to whoever asked for it
+//! last; a client's leaves the keyboard where it was, until a click.
 
 use std::time::Duration;
 
 use futures_lite::FutureExt;
 use gpui_kit::*;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use silent::dbus::{Bus, Direction, Request};
+use silent::dbus::{Ask, Bus, Direction, Request};
 use silent::detect::Kind;
 use silent::extract::{self, Places};
 use silent::geometry::{self, Rect, Screen};
@@ -44,6 +47,16 @@ pub enum Intent {
     /// The window takes this size about its centre, for a file taken out of
     /// an archive and back.
     Fit((i32, i32)),
+    /// A click in a window without the keyboard: it takes it.
+    Focus,
+}
+
+/// Whose preview the window shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Owner {
+    Nautilus,
+    /// A client's, for this process.
+    Process(u32),
 }
 
 /// How long a released name waits for calls that were already on their way.
@@ -57,6 +70,9 @@ struct Shown {
     window_handle: String,
     activation_token: String,
     folder: bool,
+    owner: Owner,
+    /// Whether the preview takes the keyboard as it shows.
+    focus: bool,
 }
 
 struct Open {
@@ -65,6 +81,9 @@ struct Open {
     size: (i32, i32),
     /// Mapped, showing a file; otherwise withdrawn, waiting for the next.
     shown: bool,
+    /// The input hint the window carries: whether the window manager gives
+    /// it the keyboard.
+    input: bool,
 }
 
 struct Controller {
@@ -80,6 +99,8 @@ struct Controller {
     rounded: bool,
     /// The previewer's callers still on the bus.
     callers: usize,
+    /// The processes client previews are for, still running.
+    owners: usize,
     /// The executable was replaced: the previewer leaves once nothing is
     /// shown, for the next call to start the new one.
     replaced: bool,
@@ -116,6 +137,7 @@ pub fn run(bus: Option<Bus>, requests: async_channel::Receiver<Request>, first: 
         },
         rounded,
         callers: 0,
+        owners: 0,
         replaced: false,
     };
     for request in first {
@@ -231,12 +253,12 @@ impl Controller {
         cx.update(|cx| cx.quit());
     }
 
-    /// Nothing shown or on its way, and no caller left on the bus, or a new
-    /// version installed.
+    /// Nothing shown or on its way, and no caller left on the bus nor
+    /// process to preview for, or a new version installed.
     fn idle(&self) -> bool {
         !self.window.as_ref().is_some_and(|w| w.shown)
             && !self.loading
-            && (self.callers == 0 || self.replaced)
+            && ((self.callers == 0 && self.owners == 0) || self.replaced)
     }
 
     /// Waits a moment for a call, unless a new version waits, then gives the
@@ -287,39 +309,125 @@ impl Controller {
                 activation_token,
             } => {
                 trace::mark("request");
-                if self.shown.as_ref().is_some_and(|shown| shown.uri == uri) {
+                if self
+                    .shown
+                    .as_ref()
+                    .is_some_and(|shown| shown.uri == uri && shown.owner == Owner::Nautilus)
+                {
                     if close_if_shown && let Some(cx) = cx {
                         self.close(cx);
                     }
                     return;
                 }
-                if let Some(bus) = &self.bus {
-                    let _ = bus.set_parent_handle(&window_handle);
-                    let _ = bus.set_visible(true);
-                }
-                if !self.window.as_ref().is_some_and(|w| w.shown)
-                    && let Some(x11) = &self.x11
-                {
-                    self.screen = x11.screen_for(x11::parse_handle(&window_handle));
-                }
-                self.shown = Some(Shown {
-                    uri: uri.clone(),
-                    window_handle,
-                    activation_token,
-                    folder: false,
-                });
-                self.load(uri);
+                self.show(uri, window_handle, activation_token, Owner::Nautilus, true);
             }
+            Request::Ask {
+                ask,
+                uri,
+                window_handle,
+                owner,
+                focus,
+                answer,
+            } => {
+                trace::mark("request");
+                let owner = Owner::Process(owner);
+                let mine = self.shown.as_ref().filter(|shown| shown.owner == owner);
+                let (open, same) = (mine.is_some(), mine.is_some_and(|shown| shown.uri == uri));
+                let shown = match ask {
+                    Ask::Warm => open,
+                    Ask::Close | Ask::Toggle if open => {
+                        if let Some(cx) = cx {
+                            self.close(cx);
+                        }
+                        false
+                    }
+                    Ask::Close => false,
+                    Ask::Follow if !open => false,
+                    Ask::Show | Ask::Toggle | Ask::Follow => {
+                        if !same {
+                            self.show(uri, window_handle, String::new(), owner, focus);
+                        }
+                        true
+                    }
+                };
+                let _ = answer.try_send(shown);
+            }
+            // Nautilus's own preview, not a client's.
             Request::Close => {
-                if let Some(cx) = cx {
+                if self.owned_by(Owner::Nautilus)
+                    && let Some(cx) = cx
+                {
                     self.close(cx);
                 }
             }
-            Request::Callers(count) => self.callers = count,
+            Request::Callers(count) => {
+                trace::mark(&format!("{count} callers on the bus"));
+                self.callers = count;
+            }
+            Request::Owners(count) => {
+                trace::mark(&format!("{count} processes previewed for"));
+                self.owners = count;
+            }
+            Request::Gone(pid) => {
+                if self.owned_by(Owner::Process(pid))
+                    && let Some(cx) = cx
+                {
+                    self.close(cx);
+                }
+            }
             Request::Replaced => {
                 trace::mark("replaced");
                 self.replaced = true;
             }
+        }
+    }
+
+    fn owned_by(&self, owner: Owner) -> bool {
+        self.shown
+            .as_ref()
+            .is_some_and(|shown| shown.owner == owner)
+    }
+
+    /// Shows `uri` for `owner`, in the window shown or the one waiting.
+    fn show(
+        &mut self,
+        uri: String,
+        window_handle: String,
+        activation_token: String,
+        owner: Owner,
+        focus: bool,
+    ) {
+        if let Some(bus) = &self.bus {
+            // Nautilus follows its selection with a visible preview; a
+            // client's is not Nautilus's to follow.
+            if owner == Owner::Nautilus {
+                let _ = bus.set_parent_handle(&window_handle);
+            }
+            let _ = bus.set_visible(owner == Owner::Nautilus);
+        }
+        if !self.window.as_ref().is_some_and(|w| w.shown)
+            && let Some(x11) = &self.x11
+        {
+            self.screen = x11.screen_for(x11::parse_handle(&window_handle));
+        }
+        self.shown = Some(Shown {
+            uri: uri.clone(),
+            window_handle,
+            activation_token,
+            folder: false,
+            owner,
+            focus,
+        });
+        self.load(uri);
+    }
+
+    /// The window the preview of `shown` is transient for: Nautilus's, or
+    /// the terminal a client gave, if it is there.
+    fn parent(&self, shown: &Shown) -> Option<u32> {
+        let parent = x11::parse_handle(&shown.window_handle)?;
+        match shown.owner {
+            Owner::Nautilus => Some(parent),
+            Owner::Process(_) => self.x11.as_ref()?.exists(parent).then_some(parent),
         }
     }
 
@@ -346,10 +454,18 @@ impl Controller {
             return;
         };
         shown.folder = loaded.facts.kind == Kind::Folder;
+        let (focus, token) = (shown.focus, shown.activation_token.clone());
         trace::mark("loaded");
         let size = loaded.size;
-        let Some(open) = &mut self.window else {
+        let Some(mapped) = self.window.as_ref().map(|w| w.shown) else {
             return self.open(loaded, true, cx);
+        };
+        let parent = match (&self.shown, mapped) {
+            (Some(shown), false) => self.parent(shown),
+            _ => None,
+        };
+        let Some(open) = &mut self.window else {
+            return;
         };
         if (!open.shown || open.size != size)
             && let (Some(x11), Some(xid)) = (&self.x11, open.xid)
@@ -358,23 +474,37 @@ impl Controller {
         }
         open.size = size;
         if open.shown {
+            // Another caller's preview in the window shown: it takes the
+            // keyboard with it, or leaves it where it is.
+            if open.input != focus
+                && let (Some(x11), Some(xid)) = (&self.x11, open.xid)
+            {
+                let _ = x11.set_input_hint(xid, focus);
+                if focus {
+                    let _ = x11.focus(xid);
+                }
+                open.input = focus;
+            }
             let _ = open
                 .handle
                 .update(cx, |view, window, cx| view.show(loaded, window, cx));
             return;
         }
         // The window waiting for this file: its content first, then on the
-        // screen, where the window manager centres it and gives it the focus.
+        // screen, where the window manager centres it and gives it the
+        // focus, unless the preview leaves the keyboard where it was.
         let screen = self.screen;
         let _ = open.handle.update(cx, |view, window, cx| {
             view.reopen(loaded, screen, window, cx)
         });
         open.shown = true;
         if let (Some(x11), Some(xid)) = (&self.x11, open.xid) {
-            if let Some(parent) = x11::parse_handle(&shown.window_handle) {
-                let _ = x11.set_transient_for(xid, parent);
+            if open.input != focus {
+                let _ = x11.set_input_hint(xid, focus);
+                open.input = focus;
             }
-            let _ = x11.complete_startup(xid, &shown.activation_token);
+            let _ = x11.set_transient_for(xid, parent);
+            let _ = x11.complete_startup(xid, &token);
             trace::mark("map");
             let _ = x11.map(xid);
         }
@@ -407,6 +537,13 @@ impl Controller {
 
     /// Opens the window with `loaded`, on the screen when `visible`.
     fn open(&mut self, loaded: Loaded, visible: bool, cx: &mut AsyncApp) {
+        // A preview that leaves the keyboard where it was opens withdrawn,
+        // to be mapped once the window says so.
+        let quiet = visible && self.x11.is_some() && self.shown.as_ref().is_some_and(|s| !s.focus);
+        let parent = match &self.shown {
+            Some(shown) if visible => self.parent(shown),
+            _ => None,
+        };
         let size = loaded.size;
         let rect = self.screen.centre(size);
         let scale = self.screen.scale as f32;
@@ -428,7 +565,7 @@ impl Controller {
                 WindowBackgroundAppearance::Opaque
             },
             app_id: Some("silent".into()),
-            show: visible,
+            show: visible && !quiet,
             ..Default::default()
         };
         let (screen, rounded, input) = (self.screen, self.rounded, self.input.clone());
@@ -451,10 +588,13 @@ impl Controller {
         if let (Some(x11), Some(xid)) = (&self.x11, xid) {
             let _ = x11.undecorate(xid);
             if let Some(shown) = self.shown.as_ref().filter(|_| visible) {
-                if let Some(parent) = x11::parse_handle(&shown.window_handle) {
-                    let _ = x11.set_transient_for(xid, parent);
-                }
+                let _ = x11.set_transient_for(xid, parent);
                 let _ = x11.complete_startup(xid, &shown.activation_token);
+            }
+            if quiet {
+                let _ = x11.set_input_hint(xid, false);
+                trace::mark("map");
+                let _ = x11.map(xid);
             }
         }
         self.window = Some(Open {
@@ -462,7 +602,27 @@ impl Controller {
             xid,
             size,
             shown: visible,
+            input: !quiet,
         });
+    }
+
+    /// A click in a preview that left the keyboard where it was: the window
+    /// takes it, and says so to the window manager.
+    fn take_focus(&mut self) {
+        let (Some(x11), Some(open)) = (&self.x11, &mut self.window) else {
+            return;
+        };
+        let Some(xid) = open.xid.filter(|_| open.shown) else {
+            return;
+        };
+        if !open.input {
+            let _ = x11.set_input_hint(xid, true);
+            open.input = true;
+        }
+        let _ = x11.focus(xid);
+        if let Some(shown) = &mut self.shown {
+            shown.focus = true;
+        }
     }
 
     /// Ends the preview: the window lets its file go and is withdrawn, to be
@@ -501,14 +661,20 @@ impl Controller {
         match intent {
             Intent::Redock(by) => return self.redock(by),
             Intent::Fit(size) => return self.fit(size),
+            Intent::Focus => return self.take_focus(),
             _ => {}
         }
         let Some(shown) = &self.shown else {
             return;
         };
         let (uri, folder) = (shown.uri.clone(), shown.folder);
+        let nautilus = shown.owner == Owner::Nautilus;
         match intent {
             Intent::Close => self.close(cx),
+            // Nautilus's selection and its files: a client's preview has
+            // nobody listening for these.
+            Intent::Select(_) | Intent::Rename | Intent::Trash if !nautilus => {}
+            Intent::Open if folder && !nautilus => {}
             Intent::Select(direction) => {
                 if let Some(bus) = &self.bus {
                     let _ = bus.selection_event(direction);
@@ -542,7 +708,7 @@ impl Controller {
                     let _ = bus.trash(&uri);
                 }
             }
-            Intent::Redock(_) | Intent::Fit(_) => {}
+            Intent::Redock(_) | Intent::Fit(_) | Intent::Focus => {}
         }
     }
 

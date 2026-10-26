@@ -22,7 +22,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use gio::glib;
-use silent::dbus::{Bus, Request};
+use silent::dbus::{Ask, Bus, Request};
 use silent::decode::{self, Event, MemoryFormatSelection};
 use silent::detect::{self, Kind};
 use silent::x11::X11;
@@ -41,15 +41,80 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("--probe") => probe(&args[1..]),
         Some("--help" | "-h") => {
-            println!("usage: silent            serve Nautilus's previewer on the session bus");
-            println!("       silent FILE       preview FILE");
-            println!(
-                "       silent --probe FILE...  print what a preview would be, and its timings"
-            );
+            print!("{USAGE}");
             ExitCode::SUCCESS
         }
+        Some(word) if let Some(ask) = Ask::parse(word) => client(ask, &args[1..]),
         Some(path) => standalone(path),
         None => serve(),
+    }
+}
+
+const USAGE: &str = "\
+usage: silent                  serve Nautilus's previewer on the session bus
+       silent FILE             preview FILE on its own
+       silent show FILE        show FILE in the previewer, leaving the keyboard where it is
+       silent toggle FILE      the same, or close the preview if it is open
+       silent follow FILE      show FILE if the preview is open, as a cursor moves
+       silent close            close the preview
+       silent warm             start the previewer ahead of the previews to come
+         --owner PID           whose preview it is: silent stays while PID runs and
+                               closes its preview when it ends; the parent by default
+         --focus               the preview takes the keyboard, as Nautilus's does
+       silent --probe FILE...  print what a preview would be, and its timings
+
+show, toggle, follow, close and warm print whether the preview is shown or closed.
+";
+
+/// `silent show FILE` and its kin: the request goes to the previewer on the
+/// session bus, which the bus starts for it if need be, about the preview of
+/// the owner, the parent process unless `--owner` names another.
+fn client(ask: Ask, args: &[String]) -> ExitCode {
+    let wrong = |why: &str| {
+        eprint!("silent: {why}\n{USAGE}");
+        ExitCode::from(2)
+    };
+    let (mut file, mut owner, mut focus) = (None, std::os::unix::process::parent_id(), false);
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--focus" => focus = true,
+            "--owner" => match args.next().and_then(|pid| pid.parse().ok()) {
+                Some(pid) => owner = pid,
+                None => return wrong("--owner takes a process id"),
+            },
+            _ if ask.takes_file() && file.is_none() => file = Some(arg),
+            _ => return wrong(&format!("{arg} is not for {}", ask.name())),
+        }
+    }
+    let uri = match file {
+        Some(file) => {
+            let path = std::path::absolute(file).unwrap_or_else(|_| file.into());
+            match glib::filename_to_uri(&path, None) {
+                Ok(uri) => uri.to_string(),
+                Err(_) => return wrong(&format!("{} is not a local file", path.display())),
+            }
+        }
+        None if ask.takes_file() => return wrong(&format!("{} takes a file", ask.name())),
+        None => String::new(),
+    };
+    // The terminal's window, which most X11 terminals give what they run.
+    let window_handle = std::env::var("WINDOWID")
+        .ok()
+        .and_then(|id| match id.trim().strip_prefix("0x") {
+            Some(hex) => u32::from_str_radix(hex, 16).ok(),
+            None => id.trim().parse().ok(),
+        })
+        .map_or_else(String::new, |id| format!("x11:{id:x}"));
+    match silent::dbus::ask(ask, &uri, owner, focus, &window_handle) {
+        Ok(shown) => {
+            println!("{}", if shown { "shown" } else { "closed" });
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("silent: {error}");
+            ExitCode::FAILURE
+        }
     }
 }
 

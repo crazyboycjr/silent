@@ -1,14 +1,15 @@
 //! What the toolkits cannot do on X11: read the monitors and the desktop
 //! scale before any window exists, place a window, make it transient for
-//! Nautilus.
+//! Nautilus, say whether it takes the keyboard.
 
 use std::error::Error;
 
 use x11rb::connection::Connection;
+use x11rb::properties::WmHints;
 use x11rb::protocol::randr::ConnectionExt as _;
 use x11rb::protocol::xproto::{
-    AtomEnum, ClientMessageEvent, ConfigureWindowAux, ConnectionExt as _, EventMask, PropMode,
-    UNMAP_NOTIFY_EVENT, UnmapNotifyEvent,
+    AtomEnum, ClientMessageEvent, ConfigureWindowAux, ConnectionExt as _, EventMask, InputFocus,
+    PropMode, UNMAP_NOTIFY_EVENT, UnmapNotifyEvent,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
@@ -180,14 +181,66 @@ impl X11 {
         Ok(())
     }
 
-    pub fn set_transient_for(&self, window: u32, parent: u32) -> Result<(), Box<dyn Error>> {
-        self.conn.change_property32(
-            PropMode::REPLACE,
-            window,
-            AtomEnum::WM_TRANSIENT_FOR,
-            AtomEnum::WINDOW,
-            &[parent],
+    /// ICCCM's input hint: whether the window manager gives `window` the
+    /// keyboard. A preview opened from a terminal says no, and the keys stay
+    /// in the terminal; xmonad, among others, then focuses it only in name.
+    pub fn set_input_hint(&self, window: u32, input: bool) -> Result<(), Box<dyn Error>> {
+        let mut hints = WmHints::get(&self.conn, window)?
+            .reply()?
+            .unwrap_or_default();
+        hints.input = Some(input);
+        hints.set(&self.conn, window)?;
+        self.conn.flush()?;
+        Ok(())
+    }
+
+    /// Gives the shown `window` the keyboard: asked of the window manager,
+    /// and set directly for one that would not answer.
+    pub fn focus(&self, window: u32) -> Result<(), Box<dyn Error>> {
+        let active = self
+            .atom("_NET_ACTIVE_WINDOW")
+            .ok_or("no _NET_ACTIVE_WINDOW")?;
+        // Source 1, an application; the current time.
+        let event = ClientMessageEvent::new(32, window, active, [1u32, 0, 0, 0, 0]);
+        self.conn.send_event(
+            false,
+            self.root,
+            EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+            event,
         )?;
+        self.conn
+            .set_input_focus(InputFocus::PARENT, window, x11rb::CURRENT_TIME)?;
+        self.conn.flush()?;
+        Ok(())
+    }
+
+    /// Whether `window` exists.
+    pub fn exists(&self, window: u32) -> bool {
+        self.conn
+            .get_window_attributes(window)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .is_some()
+    }
+
+    /// Makes `window` transient for `parent`, or for nothing.
+    pub fn set_transient_for(
+        &self,
+        window: u32,
+        parent: Option<u32>,
+    ) -> Result<(), Box<dyn Error>> {
+        match parent {
+            Some(parent) => self.conn.change_property32(
+                PropMode::REPLACE,
+                window,
+                AtomEnum::WM_TRANSIENT_FOR,
+                AtomEnum::WINDOW,
+                &[parent],
+            )?,
+            None => self
+                .conn
+                .delete_property(window, AtomEnum::WM_TRANSIENT_FOR.into())?,
+        };
         self.conn.flush()?;
         Ok(())
     }

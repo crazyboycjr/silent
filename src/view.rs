@@ -241,9 +241,12 @@ impl Preview {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let appearance = cx.observe_window_appearance(window, |_, _, cx| cx.notify());
-        // Coming back to the window without a click, the arrows browse again.
+        // Leaving the window, the arrows browse again; the click that brings
+        // the keyboard back may engage the content again.
         let activation = cx.observe_window_activation(window, |this, window, cx| {
-            this.disengage(window, cx);
+            if !window.is_window_active() {
+                this.disengage(window, cx);
+            }
         });
         let bounds = cx.observe_window_bounds(window, Self::bounds_changed);
         let traced = loaded.is_blank();
@@ -1534,6 +1537,13 @@ impl Render for Preview {
             .bg(self.ground(theme))
             .rounded(radius)
             .on_key_down(cx.listener(Self::key))
+            // A preview opened from a terminal leaves it the keyboard, until
+            // a click here.
+            .capture_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, window, _| {
+                if !window.is_window_active() {
+                    this.intent(Intent::Focus);
+                }
+            }))
             .on_mouse_move(cx.listener(Self::pointer_moved))
             // Where the pointer is, not whether a key came last: by default
             // a key ends the hover, and the strip it showed would go with it.
