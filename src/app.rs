@@ -212,10 +212,12 @@ impl Controller {
                         }
                     }
                 }
-                // The window for the next file, unless a file that came
-                // first has opened its own.
+                // The window for the next file, and what previews would wait
+                // for, unless a file that came first has opened its own: then
+                // the rest is prepared as its preview closes.
                 Input::Warm => {
                     if self.window.is_none() && !self.loading {
+                        content::prepare();
                         self.warm(cx);
                     }
                 }
@@ -464,6 +466,7 @@ impl Controller {
             }
             open.shown = false;
             if self.bus.is_some() {
+                content::prepare();
                 // The heap the file took goes back to the system while
                 // silent waits for the next.
                 #[cfg(target_env = "gnu")]

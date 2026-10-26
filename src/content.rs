@@ -5,11 +5,12 @@ use std::fs::File;
 use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui_kit::RenderImage;
 use gpui_kit::component::highlighter::{Language, SyntaxHighlighter};
+use tree_sitter::{InputEdit, Point};
 use gpui_video_player::{Video, VideoOptions};
 use gstreamer as gst;
 use gstreamer::prelude::*;
@@ -679,8 +680,8 @@ fn text(bytes: Vec<u8>, mut truncated: bool, name: &Path, content_type: &str) ->
         .max()
         .unwrap_or(0);
     let highlighter = language.map(|language| {
-        let mut highlighter = SyntaxHighlighter::new(language);
-        highlighter.update(None, &ropey::Rope::from_str(&text), None);
+        let highlighter = highlight(language, &text);
+        crate::trace::mark("highlighted");
         highlighter
     });
     Text {
@@ -692,6 +693,117 @@ fn text(bytes: Vec<u8>, mut truncated: bool, name: &Path, content_type: &str) ->
         widest,
         pretty,
     }
+}
+
+/// A highlighter made ahead for each language seen, and for the commonest,
+/// with the text it was run over: making one compiles its language's
+/// queries, some 10 ms, and the first run over a text compiles those of the
+/// languages inside it, such as Markdown in Rust's doc comments and Rust in
+/// its macros, 10 ms more. One run over a text like the next keeps both.
+struct Ready {
+    highlighter: SyntaxHighlighter,
+    /// Where the text it ran over ends.
+    end: (usize, Point),
+}
+
+static READY: Mutex<Vec<Ready>> = Mutex::new(Vec::new());
+
+/// The languages a resident previewer makes highlighters for as it starts,
+/// with a text to run them over first.
+const COMMON: [(&str, &str); 8] = [
+    ("rust", "/// A `doc` comment.\nfn f() {\n    println!(\"{}\", vec![1]);\n}\n"),
+    ("python", ""),
+    ("javascript", ""),
+    ("json", ""),
+    ("markdown", "# Title\n\nSome *text* with `code`.\n"),
+    ("bash", ""),
+    ("c", ""),
+    ("toml", ""),
+];
+
+/// How much of a file the next highlighter for its language runs over.
+const PRIMER: usize = 64 << 10;
+
+/// `text` highlighted in `language`, by the highlighter made ahead when
+/// there is one; the next is made in the background, run over this text.
+fn highlight(language: &'static str, text: &str) -> SyntaxHighlighter {
+    let ready = {
+        let mut ready = READY.lock().unwrap();
+        ready
+            .iter()
+            .position(|r| r.highlighter.language().as_ref() == language)
+            .map(|i| ready.swap_remove(i))
+    };
+    let mut head = &text[..text.len().min(PRIMER)];
+    while !text.is_char_boundary(head.len()) {
+        head = &head[..head.len() - 1];
+    }
+    prepare_highlighter(language, head.to_owned());
+    let rope = ropey::Rope::from_str(text);
+    match ready {
+        // The text it ran over is replaced whole: what it knows of the
+        // languages inside stays.
+        Some(Ready {
+            mut highlighter,
+            end,
+        }) => {
+            let edit = InputEdit {
+                start_byte: 0,
+                old_end_byte: end.0,
+                new_end_byte: text.len(),
+                start_position: Point::new(0, 0),
+                old_end_position: end.1,
+                new_end_position: end_of(text),
+            };
+            highlighter.update(Some(edit), &rope, None);
+            highlighter
+        }
+        None => {
+            let mut highlighter = SyntaxHighlighter::new(language);
+            highlighter.update(None, &rope, None);
+            highlighter
+        }
+    }
+}
+
+fn prepare_highlighter(language: &'static str, primer: String) {
+    let _ = std::thread::Builder::new()
+        .name("highlighter".into())
+        .spawn(move || {
+            let mut highlighter = SyntaxHighlighter::new(language);
+            highlighter.update(None, &ropey::Rope::from_str(&primer), None);
+            let end = (primer.len(), end_of(&primer));
+            READY.lock().unwrap().push(Ready { highlighter, end });
+        });
+}
+
+/// Where `text` ends, as tree-sitter counts: rows, and bytes into the last.
+fn end_of(text: &str) -> Point {
+    let row = text.matches('\n').count();
+    let column = text.len() - text.rfind('\n').map_or(0, |i| i + 1);
+    Point::new(row, column)
+}
+
+/// Prepares, in the background and once, what the next previews of a
+/// resident previewer would wait for: highlighters for the commonest
+/// languages, and GStreamer with the plugins playback takes, some 60 ms. It
+/// would slow a preview being opened, so it waits for none to be.
+pub fn prepare() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        for (language, primer) in COMMON {
+            if Language::from_str(language) != Language::Plain {
+                prepare_highlighter(language, primer.to_owned());
+            }
+        }
+        let _ = std::thread::Builder::new()
+            .name("media".into())
+            .spawn(|| {
+                if gst::init().is_ok() {
+                    let _ = gst::ElementFactory::make("playbin").build();
+                }
+            });
+    });
 }
 
 /// How many columns `line` takes, tabs stretched to the next stop.
@@ -922,4 +1034,40 @@ fn walk(root: PathBuf, sender: &async_channel::Sender<Totals>) {
     }
     totals.done = true;
     let _ = sender.send_blocking(totals);
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui_kit::component::highlighter::{HighlightTheme, SyntaxHighlighter};
+
+    use super::{COMMON, Ready, end_of, highlight, prepare_highlighter};
+
+    #[test]
+    fn a_text_ends_where_tree_sitter_counts() {
+        assert_eq!(end_of(""), tree_sitter::Point::new(0, 0));
+        assert_eq!(end_of("ab"), tree_sitter::Point::new(0, 2));
+        assert_eq!(end_of("ab\n"), tree_sitter::Point::new(1, 0));
+        assert_eq!(end_of("ab\ncdé"), tree_sitter::Point::new(1, 4));
+    }
+
+    #[test]
+    fn a_highlighter_made_ahead_colours_as_a_new_one_does() {
+        let text = include_str!("geometry.rs");
+        let theme = HighlightTheme::default_dark();
+        let fresh = {
+            let mut fresh = SyntaxHighlighter::new("rust");
+            fresh.update(None, &ropey::Rope::from_str(text), None);
+            fresh.styles(&(0..text.len()), &*theme)
+        };
+        // One made ahead over the warm-up's sample, then one over this file.
+        let (_, primer) = COMMON.iter().find(|(language, _)| *language == "rust").unwrap();
+        for primer in [primer.to_string(), text[..text.len() / 2].to_string()] {
+            prepare_highlighter("rust", primer);
+            while !super::READY.lock().unwrap().iter().any(|r: &Ready| r.highlighter.language().as_ref() == "rust") {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let made_ahead = highlight("rust", text);
+            assert_eq!(made_ahead.styles(&(0..text.len()), &*theme), fresh);
+        }
+    }
 }

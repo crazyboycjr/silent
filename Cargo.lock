@@ -6971,6 +6971,7 @@ dependencies = [
  "ropey",
  "roxmltree 0.21.2",
  "smallvec",
+ "tree-sitter",
  "unicode-width",
  "url",
  "x11rb 0.14.0",
