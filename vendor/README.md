@@ -18,11 +18,9 @@ vendor` shows every change; in the code, `silent:` comments mark them.
   before its toolkit, its X11 connection and its loading; the first window
   takes them, and its surface target carries the display handle,
   since the prepared instance has none.
-- **A new window's size settles before its swapchain** (`wgpu_renderer.rs`):
-  until the first frame is presented, a new drawable size waits 32 ms
-  before the swapchain follows it, so that a window manager's border
-  adjustment that comes and goes costs no swapchain, which costs NVIDIA
-  15–75 ms. Later resizes make theirs at once, as gpui does.
+- **The swapchain follows a new size at the next frame**
+  (`wgpu_renderer.rs`), not at each ConfigureNotify, so that sizes which
+  come and go in between cost no swapchain, which costs NVIDIA 3–75 ms.
 
 To take a newer gpui, copy its crates over these, drop their `Cargo.lock`
 and benchmarks, and carry the changes over.

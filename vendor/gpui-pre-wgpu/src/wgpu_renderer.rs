@@ -20,12 +20,6 @@ const MAX_INSTANCE_BUFFER_SIZE: u64 = 256 * 1024 * 1024;
 
 const INSTANCE_TEXTURE_TEXEL_SIZE: u64 = 16;
 
-/// silent: how long a new window's size waits, before its first frame, for the swapchain to
-/// be made again for it. A window manager settling a new window can shrink it for its border
-/// and give the room back a few milliseconds later, and a swapchain costs NVIDIA tens of
-/// milliseconds.
-const SIZE_SETTLES: std::time::Duration = std::time::Duration::from_millis(32);
-
 /// Shader variant for backends with storage buffer support: the shared shader
 /// logic plus the storage-buffer instance transport.
 const STORAGE_BUFFER_SHADERS: &str = concat!(
@@ -260,9 +254,7 @@ pub struct WgpuRenderer {
     surface_config: wgpu::SurfaceConfiguration,
     /// The size the surface was last configured for.
     configured_size: (u32, u32),
-    /// When the drawable size last changed.
-    resized_at: Option<std::time::Instant>,
-    /// Whether a frame has been presented; sizes settle only before the first.
+    /// Whether the window has presented a frame.
     presented: bool,
     atlas: Arc<WgpuAtlas>,
     transparent_alpha_mode: wgpu::CompositeAlphaMode,
@@ -502,7 +494,6 @@ impl WgpuRenderer {
             compositor_gpu,
             state: RendererState::Ready { surface, core },
             configured_size: (surface_config.width, surface_config.height),
-            resized_at: None,
             presented: false,
             surface_config,
             atlas,
@@ -1057,24 +1048,14 @@ impl WgpuRenderer {
         }
         self.surface_config.width = clamped_width.max(1);
         self.surface_config.height = clamped_height.max(1);
-        // silent: the surface follows in the next frame, once a new window's size has settled.
-        self.resized_at = Some(std::time::Instant::now());
+        // silent: the surface follows in the next frame, so that sizes which come and go
+        // before it cost no swapchain.
     }
 
-    /// Whether a new window's size is still too fresh to make a swapchain for.
-    fn settling(&self) -> bool {
-        !self.presented && self.resized_at.is_some_and(|at| at.elapsed() < SIZE_SETTLES)
-    }
-
-    /// Reconfigures the surface for the size `update_drawable_size` recorded last, once a new
-    /// window's size has settled; until then its frames go to the old swapchain, if it fits.
+    /// Reconfigures the surface for the size `update_drawable_size` recorded last.
     fn follow_drawable_size(&mut self) {
         let size = (self.surface_config.width, self.surface_config.height);
         if size == self.configured_size {
-            return;
-        }
-        if self.settling() {
-            self.needs_redraw = true;
             return;
         }
         let (width, height) = size;
@@ -1230,9 +1211,8 @@ impl WgpuRenderer {
             self.failed_frame_count = 0;
         }
 
-        // silent: the first frame's steps are marked.
-        static PRESENTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        let first = !PRESENTED.load(std::sync::atomic::Ordering::Relaxed);
+        // silent: the first frame's steps are marked, for each window.
+        let first = !self.presented;
         let acquired = surface.get_current_texture();
         if first {
             let outcome = match &acquired {
@@ -1248,15 +1228,6 @@ impl WgpuRenderer {
         }
         let frame = match acquired {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
-            wgpu::CurrentSurfaceTexture::Suboptimal(_)
-            | wgpu::CurrentSurfaceTexture::Lost
-            | wgpu::CurrentSurfaceTexture::Outdated
-                if !self.presented && self.resized_at.is_some_and(|at| at.elapsed() < SIZE_SETTLES) =>
-            {
-                // silent: a new window is between sizes; the next frame looks again.
-                self.needs_redraw = true;
-                return false;
-            }
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
                 // Textures must be destroyed before the surface can be reconfigured.
                 drop(frame);
@@ -1306,7 +1277,6 @@ impl WgpuRenderer {
         frame.present();
         self.presented = true;
         if first {
-            PRESENTED.store(true, std::sync::atomic::Ordering::Relaxed);
             log::info!(target: "silent::trace", "presented");
         }
         true
