@@ -278,11 +278,7 @@ impl Preview {
     /// hour, and the volume for the next sound. Inside an archive, that is
     /// how the outermost archive was left; what was taken out goes.
     pub fn leave(&mut self, cx: &App) {
-        match &self.pane {
-            Pane::Video(v) => self.loudness = v.read(cx).loudness(),
-            Pane::Audio(a) => self.loudness = a.read(cx).loudness(),
-            _ => {}
-        }
+        self.keep_loudness(cx);
         let (loaded, pane) = match self.levels.first() {
             Some(outermost) => (&outermost.loaded, &outermost.pane),
             None => (&self.loaded, &self.pane),
@@ -303,6 +299,29 @@ impl Preview {
         self.inside = None;
     }
 
+    /// The volume and mute of the sound or video shown, for the next.
+    fn keep_loudness(&mut self, cx: &App) {
+        match &self.pane {
+            Pane::Video(v) => self.loudness = v.read(cx).loudness(),
+            Pane::Audio(a) => self.loudness = a.read(cx).loudness(),
+            _ => {}
+        }
+    }
+
+    /// Takes the files the archive in view asks to look inside.
+    fn watch_archive(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self._archive = match &self.pane {
+            Pane::Archive(a) => Some(cx.subscribe_in(
+                a,
+                window,
+                |this, _, archive::Open(entry, size), window, cx| {
+                    this.take_out(entry.clone(), *size, window, cx);
+                },
+            )),
+            _ => None,
+        };
+    }
+
     fn mode(&mut self, family: Family) -> Mode {
         let slot = match family {
             Family::Minimap => &mut self.minimap,
@@ -316,7 +335,6 @@ impl Preview {
         self.totals = None;
         self.pane = Pane::None;
         self._pane_changes = None;
-        self._archive = None;
         self.keys = Keys::default();
         self.strip.note = None;
         self.strip.veil = None;
@@ -375,15 +393,7 @@ impl Preview {
             Pane::Slides(v) => Some(cx.observe(v, |_, _, cx| cx.notify())),
             _ => None,
         };
-        if let Pane::Archive(a) = &self.pane {
-            self._archive = Some(cx.subscribe_in(
-                a,
-                window,
-                |this, _, archive::Open(entry, size), window, cx| {
-                    this.take_out(entry.clone(), *size, window, cx);
-                },
-            ));
-        }
+        self.watch_archive(window, cx);
         let mut image = None;
         match &mut self.loaded.body {
             Body::Image(picture) => {
@@ -852,11 +862,7 @@ impl Preview {
         let Some(level) = self.levels.pop() else {
             return;
         };
-        match &self.pane {
-            Pane::Video(v) => self.loudness = v.read(cx).loudness(),
-            Pane::Audio(a) => self.loudness = a.read(cx).loudness(),
-            _ => {}
-        }
+        self.keep_loudness(cx);
         self.feed = None;
         self.totals = None;
         self._pane_changes = None;
@@ -871,16 +877,9 @@ impl Preview {
         self.strip.veil = None;
         self.redock = None;
         self.strip.mode = StripMode::load(self.family());
+        self.watch_archive(window, cx);
+        // The tree had the keys when the file was opened, and has them again.
         if let Pane::Archive(a) = &self.pane {
-            let a = a.clone();
-            self._archive = Some(cx.subscribe_in(
-                &a,
-                window,
-                |this, _, archive::Open(entry, size), window, cx| {
-                    this.take_out(entry.clone(), *size, window, cx);
-                },
-            ));
-            // The tree had the keys when the file was opened, and has them again.
             a.update(cx, |a, cx| a.engage(window, cx));
         }
         if !window.is_fullscreen() {
