@@ -5,9 +5,10 @@ screen, at a size you can see. It takes the place of GNOME's sushi.
 
 - **No border.** No title bar, no frame, no buttons: the window is the
   picture, or a card, and nothing else.
-- **Minimal.** One line of facts about the file fades in when the pointer
-  moves and fades out when it rests. The window follows the desktop's light
-  or dark preference, in warm tones.
+- **Minimal.** One line of facts about the file sits in a row of its own
+  below the content, fading in when the pointer moves and out when it
+  rests; nothing is ever drawn over what you are looking at. The window
+  follows the desktop's light or dark preference, in warm tones.
 - **Blazing fast.** The window opens at its final size, centred, with the
   content already in it, well under a quarter of a second after the key
   press. Decoding runs beside the start of the toolkit and the GPU, and
@@ -27,15 +28,15 @@ screen, at a size you can see. It takes the place of GNOME's sushi.
 | Kind | Shown as |
 | --- | --- |
 | Images | The picture at its own aspect, as large as the screen allows; animations play |
-| Video | Plays at its own aspect, with sound; hardware decoding when GStreamer has it; a seek bar after each seek and while the pointer is near the bottom |
+| Video | Plays at its own aspect, with sound; hardware decoding when GStreamer has it; the seek bar and the times in the row below the picture, after each seek and while the pointer moves |
 | Audio | A card with the cover art, title, artist and album, playing |
-| PDF | The pages in a scroll, shaped by the first page, rendered as they come into view; a rail of page thumbnails at the right while it scrolls; text can be selected and copied |
-| Text and code | Highlighted, with line numbers; a minimap at the right while it scrolls; long lines scroll sideways instead of wrapping; select with the mouse and copy; UTF-8, UTF-16 and GB18030 (GBK) text; minified JSON laid out; the first 2 MB of large files |
+| PDF | The pages in a scroll, shaped by the first page, rendered as they come into view; a rail of page thumbnails in a column at the right while it scrolls; text can be selected and copied |
+| Text and code | Highlighted, with line numbers; a minimap in a column at the right while it scrolls; long lines scroll sideways instead of wrapping; select with the mouse and copy; UTF-8, UTF-16 and GB18030 (GBK) text; minified JSON laid out; the first 2 MB of large files |
 | Binary files | As `hexdump -C` prints them, read from a memory map, so a dump of gigabytes opens at once, minimap and all; select and copy as text |
 | Compressed files | gzip, xz, zstd, bzip2, lz4 and lzma files show what is inside: text and code as above, a tar as its listing, anything else as a hexdump; the strip gives both sizes when the format records them |
 | Word documents | docx, odt and the older doc of Word 97 to 2003 (and WPS Writer's wps) as a column on a page: headings, paragraphs with their bold, italic, underline and colour, bulleted and numbered lists, tables, and the pictures of docx and odt |
 | Spreadsheets | xlsx, xls and ods as a grid with column letters and row numbers, numbers and dates formatted, a tab for each worksheet, opening on the one that was in front; a click puts a cell cursor down, and the strip shows its cell in full; chart and hidden sheets get no tab; old .xls written as a bare BIFF stream too; the first 5,000 rows |
-| Presentations | pptx as its slides in a scroll, with text, pictures, tables and shapes where the deck puts them and what they inherit from the layout and master, and a rail of the slides drawn small while it scrolls; odp as its thumbnail and text; the older ppt as an outline of each slide's title and text |
+| Presentations | pptx as its slides in a scroll, with text, pictures, tables and shapes where the deck puts them and what they inherit from the layout and master, and a rail of the slides drawn small in a column at the right while it scrolls; odp as its thumbnail and text; the older ppt as an outline of each slide's title and text |
 | Keynote, Pages, Numbers | The preview picture the file carries, as Quick Look shows it |
 | Archives | The entries as a tree with file-type icons and their sizes, and the total unpacked; zip, tar (gz, bz2, xz, zstd), 7z, rar, ISO and more |
 | Folders | A card with the item count and the total size, counted in the background |
@@ -44,6 +45,16 @@ screen, at a size you can see. It takes the place of GNOME's sushi.
 The Office files are read the way macOS Quick Look reads them: silent opens
 the package and parses its XML itself, or the binary streams of the formats
 of Office 97 to 2003, with no office suite, and draws the result natively. Rendered Markdown and HTML, and fonts, come later.
+
+Nothing silent draws covers the content. Every window keeps a row along
+its bottom for the strip, and text, code, hexdumps, PDFs and slides that
+need scrolling keep a column at the right for the minimap or the rail, or
+for a slim scrollbar once M has turned those off. The window is sized to
+hold them, within 85% of the screen: large pictures and pages shrink a
+little to make room, small ones show as large as ever. The row and the
+column keep their place when what is in them fades, so nothing moves
+while you scroll, and fullscreen keeps the same layout at the screen's
+edges.
 
 A file you leave, by moving to another or closing the preview, comes back
 as you left it if you return within the hour: video and sound play on from
@@ -103,7 +114,9 @@ engages a video only engages it; the next one pauses.
 | Video, audio | Back or forward five seconds | Louder or quieter; the strip shows the volume, and the next sound or video keeps it, and the mute |
 
 The minimap and the rail show where the view is as a box: a click there
-brings that part into view, and a drag carries the view along.
+brings that part into view, and a drag carries the view along. Pointing
+at their column shows them; pointing at the slim scrollbar of text or a
+document puts the line or the place in the strip.
 
 ## Install
 
@@ -146,3 +159,7 @@ scripts/harness cold "$PWD/target/release/silent" ~/.cache/claude-scratch/silent
 `silent FILE` previews a file without D-Bus; `silent --probe FILE...` prints
 what a preview would be and how long decoding takes. `SILENT_TRACE=1` prints
 start-up timings.
+
+The strip and the overview fade when the pointer and the view rest.
+`STRIP_ALWAYS` and `COLUMN_ALWAYS` in `src/layout.rs` keep either one
+shown instead.
