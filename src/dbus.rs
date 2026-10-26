@@ -147,6 +147,8 @@ fn watch_callers(conn: &Connection, requests: async_channel::Sender<Request>) ->
                         }
                     });
             }
+            // The bus has gone, and nobody can call again.
+            let _ = requests.send_blocking(Request::Callers(0));
         })
         .map_err(|e| zbus::Error::Failure(e.to_string()))?;
     Ok(())
