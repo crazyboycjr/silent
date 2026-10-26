@@ -15,6 +15,7 @@ use roxmltree::Node;
 pub mod biff;
 pub mod doc;
 pub mod docx;
+pub mod miniature;
 pub mod odf;
 pub mod ole;
 pub mod ppt;
@@ -173,6 +174,38 @@ pub(crate) fn u32_at(data: &[u8], at: usize) -> Option<u32> {
 
 pub(crate) fn f64_at(data: &[u8], at: usize) -> Option<f64> {
     Some(f64::from_le_bytes(data.get(at..at + 8)?.try_into().ok()?))
+}
+
+/// The families installed for the faces Office documents name most:
+/// Carlito and Caladea are metric twins of Calibri and Cambria.
+pub fn family(font: Option<&str>) -> &'static str {
+    let Some(font) = font else {
+        return "Carlito";
+    };
+    let lower = font.to_lowercase();
+    if lower.contains("calibri") || lower.contains("aptos") {
+        "Carlito"
+    } else if lower.contains("cambria") {
+        "Caladea"
+    } else if lower.contains("courier") || lower.contains("consolas") || lower.contains("mono") {
+        "Liberation Mono"
+    } else if lower.contains("times")
+        || lower.contains("georgia")
+        || lower.contains("garamond")
+        || lower.contains("serif") && !lower.contains("sans")
+        || lower.contains("song")
+        || lower.contains("宋")
+        || lower.contains("ming")
+    {
+        "Liberation Serif"
+    } else if lower.contains("arial")
+        || lower.contains("helvetica")
+        || lower.contains("liberation sans")
+    {
+        "Liberation Sans"
+    } else {
+        "Noto Sans"
+    }
 }
 
 /// What a word-processing document holds, in reading order.

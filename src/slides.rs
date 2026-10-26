@@ -11,12 +11,12 @@ use std::sync::Arc;
 
 use gpui_kit::*;
 use silent::memory::View;
-use silent::office::Align;
 use silent::office::pptx::{self, Anchor, Fill, Item, Kind, Text};
+use silent::office::{Align, family};
 use silent::vim::Motion;
 
 use crate::content::{Deck, Slide, render_slide};
-use crate::docview::{family, styled};
+use crate::docview::styled;
 use crate::layout;
 use crate::overview::{self, Geometry, Mode, Overview, Overviewed, Shown};
 use crate::paged::{GAP, Pages, THUMB};

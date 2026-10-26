@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use silent::memory::View;
-use silent::office::{Align, Block, Document, Paragraph, Role, Span, Table};
+use silent::office::miniature::size_of;
+use silent::office::{Align, Block, Document, Paragraph, Role, Span, Table, family};
 use silent::vim::Motion;
 
 use crate::content::decode_still;
@@ -168,38 +169,6 @@ impl DocPane {
     }
 }
 
-/// The families installed for the faces Office documents name most:
-/// Carlito and Caladea are metric twins of Calibri and Cambria.
-pub fn family(font: Option<&str>) -> &'static str {
-    let Some(font) = font else {
-        return "Carlito";
-    };
-    let lower = font.to_lowercase();
-    if lower.contains("calibri") || lower.contains("aptos") {
-        "Carlito"
-    } else if lower.contains("cambria") {
-        "Caladea"
-    } else if lower.contains("courier") || lower.contains("consolas") || lower.contains("mono") {
-        "Liberation Mono"
-    } else if lower.contains("times")
-        || lower.contains("georgia")
-        || lower.contains("garamond")
-        || lower.contains("serif") && !lower.contains("sans")
-        || lower.contains("song")
-        || lower.contains("宋")
-        || lower.contains("ming")
-    {
-        "Liberation Serif"
-    } else if lower.contains("arial")
-        || lower.contains("helvetica")
-        || lower.contains("liberation sans")
-    {
-        "Liberation Sans"
-    } else {
-        "Noto Sans"
-    }
-}
-
 /// A paragraph's runs as one styled text: weight, slant, lines and colour
 /// per run, on the paragraph's font and size.
 pub fn styled(spans: &[Span], default: Hsla) -> StyledText {
@@ -233,25 +202,6 @@ fn text_align(align: Align) -> TextAlign {
         Align::End => TextAlign::Right,
         Align::Start | Align::Justify => TextAlign::Left,
     }
-}
-
-/// Points for a paragraph: its largest run, or its role's size.
-fn size_of(paragraph: &Paragraph, base: f32) -> f32 {
-    let own = paragraph
-        .spans
-        .iter()
-        .filter_map(|s| s.size)
-        .fold(None, |max: Option<f32>, s| {
-            Some(max.map_or(s, |m| m.max(s)))
-        });
-    own.unwrap_or(match paragraph.role {
-        Role::Title => 26.,
-        Role::Subtitle => 15.,
-        Role::Heading(1) => 20.,
-        Role::Heading(2) => 16.,
-        Role::Heading(3) => 14.,
-        _ => base,
-    })
 }
 
 fn paragraph(p: &Paragraph, base: f32, scale: f32, ink: Hsla) -> Div {
