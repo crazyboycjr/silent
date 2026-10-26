@@ -1,14 +1,19 @@
-//! Image decoding through glycin's sandboxed loaders, on a thread of its own.
+//! Image decoding on a thread of its own: JPEG and still PNG in this
+//! process (see [`crate::native`]), everything else through glycin's
+//! sandboxed loaders.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gio::glib;
 use gio::prelude::*;
 pub use glycin::{MemoryFormat, MemoryFormatSelection};
+pub use image::metadata::Orientation;
 
 use crate::geometry::Screen;
+use crate::native;
 
-/// Decoded pixels, upright (EXIF orientation applied).
+/// Decoded pixels.
 #[derive(Clone, Debug)]
 pub struct Frame {
     pub width: u32,
@@ -19,6 +24,11 @@ pub struct Frame {
     pub pixels: glib::Bytes,
     /// How long an animation shows this frame.
     pub delay: Option<Duration>,
+    /// What is still to be done to the pixels, best once they are shrunk:
+    /// turned upright, and taken to sRGB from this ICC profile. glycin's
+    /// frames come with both done.
+    pub orientation: Orientation,
+    pub icc: Option<Arc<[u8]>>,
 }
 
 #[derive(Debug)]
@@ -66,8 +76,22 @@ where
         .name("decode".into())
         .spawn(move || {
             async_io::block_on(async {
-                let decoded =
-                    run(&uri, screen, accepted, thread_cancellable, prepare, &sender).await;
+                let mut prepare = prepare;
+                let mut sized = false;
+                if here(&uri, screen, &thread_cancellable, &mut prepare, &sender, &mut sized).await
+                {
+                    return;
+                }
+                let decoded = run(
+                    &uri,
+                    screen,
+                    accepted,
+                    thread_cancellable,
+                    prepare,
+                    &sender,
+                    sized,
+                )
+                .await;
                 if let Err(error) = decoded {
                     let _ = sender.send(Event::Failed(error.to_string())).await;
                 }
@@ -80,6 +104,71 @@ where
     }
 }
 
+/// Decodes a JPEG or a still PNG in this process; false when glycin is to,
+/// `sized` saying whether the size has gone out already.
+async fn here<T>(
+    uri: &str,
+    screen: Option<Screen>,
+    cancellable: &gio::Cancellable,
+    prepare: &mut impl FnMut(Frame) -> T,
+    sender: &async_channel::Sender<Event<T>>,
+    sized: &mut bool,
+) -> bool {
+    let Some(path) = gio::File::for_uri(uri).path() else {
+        return false;
+    };
+    let Some(opened) = native::open(&path) else {
+        return false;
+    };
+    log::info!(target: "silent::trace", "headers read here");
+    let (width, height) = opened.upright();
+    if sender.send(Event::Size { width, height }).await.is_err() {
+        return true;
+    }
+    *sized = true;
+    // As stored, the size it is shrunk to for the monitor, if it is.
+    let at_least = screen.and_then(|screen| {
+        let monitor = screen.monitor;
+        let shrink = (f64::from(monitor.width) / f64::from(width))
+            .min(f64::from(monitor.height) / f64::from(height));
+        (shrink < 1.0).then(|| {
+            let upright = (
+                (f64::from(width) * shrink).round() as u32,
+                (f64::from(height) * shrink).round() as u32,
+            );
+            if native::turns(opened.orientation) {
+                (upright.1, upright.0)
+            } else {
+                upright
+            }
+        })
+    });
+    let (orientation, icc) = (opened.orientation, opened.icc.clone());
+    let decoded = match opened.decode(at_least) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            log::info!(target: "silent::trace", "decoding here failed: {error}");
+            return false;
+        }
+    };
+    if cancellable.is_cancelled() {
+        return true;
+    }
+    let channels = if decoded.format == MemoryFormat::R8g8b8 { 3 } else { 4 };
+    let frame = Frame {
+        width: decoded.width,
+        height: decoded.height,
+        stride: decoded.width * channels,
+        format: decoded.format,
+        pixels: glib::Bytes::from_owned(decoded.pixels),
+        delay: None,
+        orientation,
+        icc,
+    };
+    let _ = sender.send(Event::Frame(prepare(frame))).await;
+    true
+}
+
 async fn run<T>(
     uri: &str,
     screen: Option<Screen>,
@@ -87,6 +176,7 @@ async fn run<T>(
     cancellable: gio::Cancellable,
     mut prepare: impl FnMut(Frame) -> T,
     sender: &async_channel::Sender<Event<T>>,
+    sized: bool,
 ) -> Result<(), glycin::Error> {
     let mut loader = glycin::Loader::new(gio::File::for_uri(uri));
     loader
@@ -96,7 +186,7 @@ async fn run<T>(
     let mut image = loader.load().await?;
     let details = image.details();
     let (width, height) = (details.width(), details.height());
-    if sender.send(Event::Size { width, height }).await.is_err() {
+    if !sized && sender.send(Event::Size { width, height }).await.is_err() {
         return Ok(());
     }
 
@@ -118,6 +208,8 @@ async fn run<T>(
             format: frame.memory_format(),
             pixels: frame.buf_bytes(),
             delay,
+            orientation: Orientation::NoTransforms,
+            icc: None,
         });
         if sender.send(Event::Frame(decoded)).await.is_err() {
             return Ok(());

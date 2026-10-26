@@ -8,6 +8,7 @@ pub mod format;
 pub mod geometry;
 pub mod hexdump;
 pub mod memory;
+pub mod native;
 pub mod office;
 pub mod pretty;
 pub mod scrim;

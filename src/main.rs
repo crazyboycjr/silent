@@ -203,8 +203,15 @@ fn probe(paths: &[String]) -> ExitCode {
                     );
                 }
                 Event::Frame(frame) => {
+                    let pending = match (frame.orientation, &frame.icc) {
+                        (decode::Orientation::NoTransforms, None) => String::new(),
+                        (orientation, icc) => format!(
+                            ", still to turn {orientation:?}{}",
+                            if icc.is_some() { " and take to sRGB" } else { "" }
+                        ),
+                    };
                     println!(
-                        "  frame {}x{} {:?} at {:.1} ms",
+                        "  frame {}x{} {:?}{pending} at {:.1} ms",
                         frame.width,
                         frame.height,
                         frame.format,

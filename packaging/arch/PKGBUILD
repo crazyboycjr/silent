@@ -9,7 +9,8 @@ depends=('glycin' 'bubblewrap' 'vulkan-icd-loader' 'fontconfig' 'freetype2' 'gli
          'libxcb' 'libxkbcommon' 'libxkbcommon-x11' 'libseccomp' 'gcc-libs' 'glibc'
          'gstreamer' 'gst-plugins-base' 'gst-plugins-good' 'libarchive' 'openssl')
 optdepends=('gst-libav: more video and audio formats'
-            'gst-plugins-bad: more video formats and hardware decoding')
+            'gst-plugins-bad: more video formats and hardware decoding'
+            'libjpeg-turbo: very large JPEGs decoded at a fraction of their size')
 makedepends=('cargo')
 provides=('sushi')
 conflicts=('sushi')
