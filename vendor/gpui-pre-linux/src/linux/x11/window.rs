@@ -515,6 +515,9 @@ impl X11WindowState {
         let win_aux = xproto::CreateWindowAux::new()
             // https://stackoverflow.com/questions/43218127/x11-xlib-xcb-creating-a-window-requires-border-pixel-if-specifying-colormap-wh
             .border_pixel(visual_set.black_pixel)
+            // silent: a window being resized keeps the frame it shows, at its top left, until
+            // the next is drawn for its size, rather than showing nothing.
+            .bit_gravity(xproto::Gravity::NORTH_WEST)
             .colormap(colormap)
             .override_redirect((params.kind == WindowKind::PopUp) as u32)
             .event_mask(
@@ -788,6 +791,12 @@ impl X11WindowState {
             log::info!(target: "silent::trace", "renderer");
 
             renderer.set_subpixel_layout(is_bgr);
+            {
+                let xcb = xcb.clone();
+                renderer.set_size_source(Box::new(move || {
+                    query_render_extent(&xcb, x_window).ok()
+                }));
+            }
 
             // Set max window size hints based on the GPU's maximum texture dimension.
             // This prevents the window from being resized larger than what the GPU can render.
@@ -1315,6 +1324,14 @@ impl X11WindowStatePtr {
     }
 
     pub fn set_bounds(&self, bounds: Bounds<i32>) -> anyhow::Result<()> {
+        // silent: the layout and the swapchain both take the event's size, without a round trip
+        // to ask the server for a newer one: a window resized under the pointer keeps the server
+        // busy, and each round trip waits behind its resizes. A swapchain the window has outgrown
+        // by the time its frame is acquired is made again then, for the size the window has.
+        let gpu_size = Size {
+            width: DevicePixels(bounds.size.width),
+            height: DevicePixels(bounds.size.height),
+        };
         let (is_resize, content_size, scale_factor) = {
             let mut state = self.state.borrow_mut();
             let bounds = bounds.map(|f| px(f as f32 / state.scale_factor));
@@ -1330,7 +1347,6 @@ impl X11WindowStatePtr {
                 state.bounds = bounds;
             }
 
-            let gpu_size = query_render_extent(&self.xcb, self.x_window)?;
             if let Some(renderer) = &mut state.renderer {
                 renderer.update_drawable_size(gpu_size);
             }

@@ -20,6 +20,14 @@ const MAX_INSTANCE_BUFFER_SIZE: u64 = 256 * 1024 * 1024;
 
 const INSTANCE_TEXTURE_TEXEL_SIZE: u64 = 16;
 
+/// silent: how soon after its size last changed a window whose size changes again counts as
+/// being resized, its swapchain made again for nearly every frame.
+const RESIZING: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// silent: how many times a frame whose swapchain the window has outgrown is tried again at the
+/// window's size before it is given up, when the size changes slower than a swapchain is made.
+const OUTGROWN_TRIES: u32 = 1;
+
 /// Shader variant for backends with storage buffer support: the shared shader
 /// logic plus the storage-buffer instance transport.
 const STORAGE_BUFFER_SHADERS: &str = concat!(
@@ -266,6 +274,18 @@ pub struct WgpuRenderer {
     observed_error_generation: u64,
     last_surface_error: Option<String>,
     needs_redraw: bool,
+    /// silent: asks the window for the size it has now.
+    size_source: Option<Box<dyn Fn() -> Option<Size<DevicePixels>>>>,
+    /// silent: the present modes the surface offers, and the one used while the window is not
+    /// being resized.
+    present_modes: Vec<wgpu::PresentMode>,
+    resting_mode: wgpu::PresentMode,
+    /// silent: when the drawable size last changed, whether it changed shortly before that, and
+    /// how long before; and how long the last swapchain took to make.
+    resized_at: Option<std::time::Instant>,
+    resized_again: bool,
+    resize_gap: Option<std::time::Duration>,
+    configure_took: std::time::Duration,
 }
 
 impl WgpuRenderer {
@@ -478,16 +498,18 @@ impl WgpuRenderer {
         surface.configure(&context.device, &surface_config);
         log::info!(
             target: "silent::trace",
-            "configure {}x{} {:?} {:?} of {:?}",
+            "configure {}x{} {:?} of {:?} {:?} of {:?}",
             surface_config.width,
             surface_config.height,
             surface_config.present_mode,
+            surface_caps.present_modes,
             alpha_mode,
             surface_caps.alpha_modes
         );
 
         let core = WgpuRendererCore::new(context, atlas.clone(), surface_format, alpha_mode);
         log::info!(target: "silent::trace", "renderer core");
+        let resting_mode = surface_config.present_mode;
 
         Ok(Self {
             context: gpu_context,
@@ -506,6 +528,13 @@ impl WgpuRenderer {
             observed_error_generation: 0,
             last_surface_error: None,
             needs_redraw: false,
+            size_source: None,
+            present_modes: surface_caps.present_modes,
+            resting_mode,
+            resized_at: None,
+            resized_again: false,
+            resize_gap: None,
+            configure_took: std::time::Duration::ZERO,
         })
     }
 }
@@ -1050,6 +1079,29 @@ impl WgpuRenderer {
         self.surface_config.height = clamped_height.max(1);
         // silent: the surface follows in the next frame, so that sizes which come and go
         // before it cost no swapchain.
+        let now = std::time::Instant::now();
+        self.resize_gap = self.resized_at.map(|at| now.duration_since(at));
+        self.resized_again = self.resize_gap.is_some_and(|gap| gap < RESIZING);
+        self.resized_at = Some(now);
+    }
+
+    /// silent: how to ask the window for the size it has now.
+    pub fn set_size_source(&mut self, source: Box<dyn Fn() -> Option<Size<DevicePixels>>>) {
+        self.size_source = Some(source);
+    }
+
+    /// silent: the present mode for the next swapchain. While the window is being resized, its
+    /// frames are presented at once rather than at the next vertical blank: each comes with a
+    /// swapchain of its own, which waits for the frame before it to be presented, and a frame
+    /// waiting for the blank holds up the window's events with it. Composited, nothing tears.
+    fn present_mode(&self) -> wgpu::PresentMode {
+        let resizing =
+            self.resized_again && self.resized_at.is_some_and(|at| at.elapsed() < RESIZING);
+        if resizing && self.present_modes.contains(&wgpu::PresentMode::Immediate) {
+            wgpu::PresentMode::Immediate
+        } else {
+            self.resting_mode
+        }
     }
 
     /// silent: the window is about to be shown anew, as a new window is.
@@ -1057,12 +1109,15 @@ impl WgpuRenderer {
         self.presented = false;
     }
 
-    /// Reconfigures the surface for the size `update_drawable_size` recorded last.
+    /// Reconfigures the surface for the size `update_drawable_size` recorded last, and for the
+    /// present mode the window's resizing calls for.
     fn follow_drawable_size(&mut self) {
         let size = (self.surface_config.width, self.surface_config.height);
-        if size == self.configured_size {
+        let mode = self.present_mode();
+        if size == self.configured_size && mode == self.surface_config.present_mode {
             return;
         }
+        self.surface_config.present_mode = mode;
         let (width, height) = size;
 
         let Some(core) = self.core_mut() else {
@@ -1092,9 +1147,16 @@ impl WgpuRenderer {
         resources.invalidate_intermediate_textures();
 
         if let RendererState::Ready { surface, core } = &self.state {
+            let started = std::time::Instant::now();
             surface.configure(&core.resources.device, &self.surface_config);
             self.configured_size = size;
+            self.configure_took = started.elapsed();
             log::info!(target: "silent::trace", "reconfigure for {width}x{height}");
+            log::debug!(
+                target: "silent::frames",
+                "configured {width}x{height} {mode:?} in {:.2} ms",
+                started.elapsed().as_secs_f64() * 1e3
+            );
         }
     }
 
@@ -1218,7 +1280,43 @@ impl WgpuRenderer {
 
         // silent: the first frame's steps are marked, for each showing of the window.
         let first = !self.presented;
-        let acquired = surface.get_current_texture();
+        let mut acquired = surface.get_current_texture();
+        // silent: a window being resized has often outgrown the swapchain just made for it by
+        // the time its frame is acquired. The swapchain is made again for the size the window
+        // has now, and the frame drawn into it, laid out a few pixels small or large, rather
+        // than dropped; the next frame is laid out for the size.
+        // Trying again is worth it only if the size changes slower than a swapchain is made: a
+        // window manager catching up with a backlog of resizes would outgrow every one.
+        let mut tries = 0;
+        while tries < OUTGROWN_TRIES
+            && self
+                .resize_gap
+                .is_none_or(|gap| gap > self.configure_took * 2)
+            && matches!(
+                acquired,
+                wgpu::CurrentSurfaceTexture::Suboptimal(_)
+                    | wgpu::CurrentSurfaceTexture::Outdated
+                    | wgpu::CurrentSurfaceTexture::Lost
+            )
+            && let Some(size) = self.size_source.as_ref().and_then(|source| source())
+        {
+            tries += 1;
+            drop(acquired);
+            self.surface_config.width = (size.width.0 as u32).clamp(1, self.max_texture_size);
+            self.surface_config.height = (size.height.0 as u32).clamp(1, self.max_texture_size);
+            let started = std::time::Instant::now();
+            surface.configure(&core.resources.device, &self.surface_config);
+            self.configured_size = (self.surface_config.width, self.surface_config.height);
+            self.configure_took = started.elapsed();
+            log::debug!(
+                target: "silent::frames",
+                "outgrown, configured {}x{} in {:.2} ms",
+                self.surface_config.width,
+                self.surface_config.height,
+                started.elapsed().as_secs_f64() * 1e3
+            );
+            acquired = surface.get_current_texture();
+        }
         if first {
             let outcome = match &acquired {
                 wgpu::CurrentSurfaceTexture::Success(_) => "acquire",
@@ -1233,6 +1331,20 @@ impl WgpuRenderer {
         }
         let frame = match acquired {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Suboptimal(frame) if self.size_source.is_some() => {
+                // silent: still outgrown; the next frame tries again, at the window's size then.
+                drop(frame);
+                log::debug!(target: "silent::frames", "outgrown, frame given up");
+                self.needs_redraw = true;
+                return false;
+            }
+            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated
+                if self.size_source.is_some() =>
+            {
+                log::debug!(target: "silent::frames", "outgrown, frame given up");
+                self.needs_redraw = true;
+                return false;
+            }
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
                 // Textures must be destroyed before the surface can be reconfigured.
                 drop(frame);
@@ -1281,6 +1393,12 @@ impl WgpuRenderer {
 
         frame.present();
         self.presented = true;
+        log::debug!(
+            target: "silent::frames",
+            "presented {}x{}",
+            size.width.0,
+            size.height.0
+        );
         if first {
             log::info!(target: "silent::trace", "presented");
         }

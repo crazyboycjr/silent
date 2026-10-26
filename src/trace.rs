@@ -1,13 +1,17 @@
 //! Start-up timing on stderr when `SILENT_TRACE` is set. Each mark carries
 //! the wall clock, so a harness can measure from before the D-Bus call that
 //! started the process. gpui's vendored backends mark their steps as log
-//! records with the target `silent::trace`, which land here too.
+//! records with the target `silent::trace`, which land here too, and with
+//! `SILENT_TRACE=frames` every frame's, with the target `silent::frames`.
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static START: OnceLock<Option<Instant>> = OnceLock::new();
 const TARGET: &str = "silent::trace";
+const FRAMES: &str = "silent::frames";
+static FRAMES_ON: AtomicBool = AtomicBool::new(false);
 
 pub fn start() {
     let tracing = START
@@ -16,8 +20,14 @@ pub fn start() {
     if !tracing {
         return;
     }
+    let frames = std::env::var_os("SILENT_TRACE").is_some_and(|v| v == "frames");
+    FRAMES_ON.store(frames, Ordering::Relaxed);
     if log::set_logger(&Marks).is_ok() {
-        log::set_max_level(log::LevelFilter::Info);
+        log::set_max_level(if frames {
+            log::LevelFilter::Debug
+        } else {
+            log::LevelFilter::Info
+        });
     }
     // The time the process has run or waited to run so far: since its fork,
     // unless it slept, as it may on a binary that is not in the page cache.
@@ -56,6 +66,7 @@ struct Marks;
 impl log::Log for Marks {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
         metadata.target() == TARGET
+            || (metadata.target() == FRAMES && FRAMES_ON.load(Ordering::Relaxed))
     }
 
     fn log(&self, record: &log::Record) {

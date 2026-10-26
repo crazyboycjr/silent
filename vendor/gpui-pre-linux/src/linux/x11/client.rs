@@ -746,6 +746,30 @@ impl X11Client {
                 break;
             }
 
+            // silent: of the ConfigureNotify events read in one go, each window's last is
+            // handled: a window manager resizing a window under the pointer sends one for every
+            // motion, and each would cost a round trip and a layout.
+            let mut configured = HashSet::new();
+            let read = events.len();
+            events = events
+                .into_iter()
+                .rev()
+                .filter(|event| match event {
+                    Event::ConfigureNotify(event) => configured.insert(event.window),
+                    _ => true,
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            if events.len() < read {
+                log::debug!(
+                    target: "silent::frames",
+                    "{} configure notifies passed over",
+                    read - events.len()
+                );
+            }
+
             for event in events.into_iter() {
                 let mut state = self.0.borrow_mut();
                 if !state.has_xim() {
@@ -1040,6 +1064,12 @@ impl X11Client {
                 }
             }
             Event::ConfigureNotify(event) => {
+                log::debug!(
+                    target: "silent::frames",
+                    "configure notify {}x{}",
+                    event.width,
+                    event.height
+                );
                 let bounds = Bounds {
                     origin: Point {
                         x: event.x.into(),

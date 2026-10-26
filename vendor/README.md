@@ -7,7 +7,9 @@ unchanged, without their `Cargo.lock` and benchmarks, so `git log -p --
 vendor` shows every change; in the code, `silent:` comments mark them.
 
 - **Start-up marks**, everywhere: log records with the target
-  `silent::trace`, which silent prints with `SILENT_TRACE` set.
+  `silent::trace`, which silent prints with `SILENT_TRACE` set, and with
+  the target `silent::frames` each frame's configure, swapchain and
+  present, printed with `SILENT_TRACE=frames`.
 - **Vulkan alone** (`wgpu_context.rs`): with gpui's XCB display, wgpu's GL
   backend asks EGL for its XCB platform, which NVIDIA's EGL lacks; Mesa's
   EGL then takes the NVIDIA card and fails, costing 90 ms a start and once
@@ -25,6 +27,17 @@ vendor` shows every change; in the code, `silent:` comments mark them.
   `x11/client.rs`): a window opened with `show: false` is not mapped, for
   silent to map it when it has something to show; when it is unmapped, the
   next showing's first frame is marked as a first one again.
+- **A window resized under the pointer follows it** (`x11/client.rs`,
+  `x11/window.rs`, `wgpu_renderer.rs`): of the ConfigureNotify events read
+  in one go, each window's last is handled, and the layout and the
+  swapchain take its size without a round trip to the server; a frame
+  whose swapchain the window outgrew while it was being made is drawn into
+  one made again for the size the window has then, when the size changes
+  slower than a swapchain is made, and a swapchain is never made again for
+  a size the window has left. While the size keeps changing, frames are
+  presented at once rather than at the vertical blank, and the window keeps
+  its last frame at its top left (north-west bit gravity) until the next is
+  drawn.
 
 To take a newer gpui, copy its crates over these, drop their `Cargo.lock`
 and benchmarks, and carry the changes over.

@@ -207,7 +207,8 @@ scripts/harness cold "$PWD/target/release/silent" ~/.cache/claude-scratch/silent
 what a preview would be and how long decoding takes. `SILENT_TRACE=1` prints a
 mark at each step of the start-up on stderr, with the wall clock: the bus, the
 fonts, the X11 window, the GPU's instance, device, swapchain and pipelines,
-the first frame and its present.
+the first frame and its present. `SILENT_TRACE=frames` adds every frame's
+ConfigureNotify, swapchain and present, as resizing the window shows them.
 
 `scripts/bench` times silent against sushi on the desktop, from the ShowFile
 call to the first frame that shows the file, read back from the X server:
