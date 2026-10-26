@@ -332,6 +332,12 @@ impl WgpuContext {
         }
     }
 
+    /// Whether the context `prepare` makes is done, or none is being made.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn prepared() -> bool {
+        PREPARED.lock().as_ref().is_none_or(|thread| thread.is_finished())
+    }
+
     /// The context `prepare` made, once it is done.
     #[cfg(not(target_family = "wasm"))]
     pub fn take_prepared() -> Option<Self> {

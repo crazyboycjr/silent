@@ -66,6 +66,8 @@ pub struct Preview {
     content: FocusHandle,
     rounded: bool,
     input: async_channel::Sender<Input>,
+    /// Whether the first frame of the content is marked, or has none to
+    /// mark: the blank a withdrawn window holds is never on the screen.
     traced: bool,
     /// What has been typed of a vim command.
     keys: Keys,
@@ -244,6 +246,7 @@ impl Preview {
             this.disengage(window, cx);
         });
         let bounds = cx.observe_window_bounds(window, Self::bounds_changed);
+        let traced = loaded.is_blank();
         let mut preview = Self {
             loaded,
             image: None,
@@ -257,7 +260,7 @@ impl Preview {
             content: cx.focus_handle(),
             rounded,
             input,
-            traced: false,
+            traced,
             keys: Keys::default(),
             minimap: None,
             rail: None,
@@ -284,9 +287,33 @@ impl Preview {
     pub fn show(&mut self, loaded: Loaded, window: &mut Window, cx: &mut Context<Self>) {
         self.leave(cx);
         self.loaded = loaded;
-        self.traced = false;
+        self.traced = self.loaded.is_blank();
+        window.set_window_title(&self.loaded.facts.name);
         self.attach(window, cx);
         self.disengage(window, cx);
+    }
+
+    /// Shows `loaded` in the window shown anew, on `screen`, as a new window
+    /// would show it: the strip waits for the pointer to move.
+    pub fn reopen(
+        &mut self,
+        loaded: Loaded,
+        screen: Screen,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.screen = screen;
+        self.strip = Strip::default();
+        self.hide = None;
+        self.was_fullscreen = false;
+        self.show(loaded, window, cx);
+    }
+
+    /// Lets the file go, remembering where it was left, before the window
+    /// is withdrawn to wait for the next: sound and video stop, and what
+    /// was taken out of archives goes.
+    pub fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show(Loaded::blank(self.screen), window, cx);
     }
 
     /// Remembers where the file was left, for coming back to it within the

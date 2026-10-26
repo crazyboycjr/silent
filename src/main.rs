@@ -19,17 +19,13 @@ mod trace;
 mod view;
 
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use futures_lite::FutureExt;
 use gio::glib;
 use silent::dbus::{Bus, Request};
 use silent::decode::{self, Event, MemoryFormatSelection};
 use silent::detect::{self, Kind};
 use silent::x11::X11;
-
-/// How long a process D-Bus started waits for something to show.
-const IDLE: Duration = Duration::from_secs(3);
 
 fn main() -> ExitCode {
     // Pictures and pages are mapped and given back when freed. Left to itself,
@@ -58,10 +54,11 @@ fn main() -> ExitCode {
 }
 
 /// Owns Nautilus's previewer name and shows what it asks for. D-Bus starts
-/// this process for a call, so that call is waited for before anything else;
-/// a call that shows nothing, such as Nautilus's ping, leaves it idle, and it
-/// goes after a moment.
+/// this process for a call to the name, Nautilus's ping as it starts or a
+/// ShowFile; what a preview needs is made from then on, in the background,
+/// and the process lives as long as its callers stay on the bus.
 fn serve() -> ExitCode {
+    gpui_wgpu::WgpuContext::prepare();
     let (sender, requests) = async_channel::unbounded();
     let bus = match Bus::start(sender) {
         Ok(bus) => bus,
@@ -71,21 +68,7 @@ fn serve() -> ExitCode {
         }
     };
     trace::mark("bus");
-    let first = async_io::block_on(requests.recv().or(async {
-        async_io::Timer::after(IDLE).await;
-        Err(async_channel::RecvError)
-    }));
-    let Ok(first) = first else {
-        let _ = bus.release();
-        return ExitCode::SUCCESS;
-    };
-    trace::mark("request");
-    if matches!(first, Request::Show { .. }) {
-        // The GPU's instance and device take longer than anything else before
-        // the window: they are made beside the toolkit and the loading.
-        gpui_wgpu::WgpuContext::prepare();
-    }
-    app::run(Some(bus), requests, vec![first]);
+    app::run(Some(bus), requests, Vec::new());
     ExitCode::SUCCESS
 }
 

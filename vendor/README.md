@@ -14,13 +14,17 @@ vendor` shows every change; in the code, `silent:` comments mark them.
   1.8 s.
 - **A device made from the start** (`wgpu_context.rs`, `wgpu_renderer.rs`):
   `WgpuContext::prepare` makes the Vulkan instance, adapter and device on a
-  thread of their own, which silent calls as soon as it has a file to show,
-  before its toolkit, its X11 connection and its loading; the first window
-  takes them, and its surface target carries the display handle,
-  since the prepared instance has none.
+  thread of their own, which silent calls as D-Bus starts it, before its
+  toolkit and its X11 connection; the first window takes them, and its
+  surface target carries the display handle, since the prepared instance
+  has none.
 - **The swapchain follows a new size at the next frame**
   (`wgpu_renderer.rs`), not at each ConfigureNotify, so that sizes which
   come and go in between cost no swapchain, which costs NVIDIA 3–75 ms.
+- **A window opened hidden, and shown again** (`x11/window.rs`,
+  `x11/client.rs`): a window opened with `show: false` is not mapped, for
+  silent to map it when it has something to show; when it is unmapped, the
+  next showing's first frame is marked as a first one again.
 
 To take a newer gpui, copy its crates over these, drop their `Cargo.lock`
 and benchmarks, and carry the changes over.

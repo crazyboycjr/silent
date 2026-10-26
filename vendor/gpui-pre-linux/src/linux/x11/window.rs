@@ -267,6 +267,11 @@ pub struct X11WindowState {
     visual_id: u32,
     pub(crate) counter_id: sync::Counter,
     pub(crate) last_sync_counter: Option<sync::Int64>,
+    /// silent: whether the window maps when gpui opens it; one opened hidden
+    /// waits for its owner to map it.
+    show: bool,
+    /// silent: whether the next frame request is the first of a showing.
+    first_request: bool,
     bounds: Bounds<Pixels>,
     scale_factor: f32,
     /// Taken when the window is dropped. Its GPU objects use the X connection, so they mustn't
@@ -861,6 +866,8 @@ impl X11WindowState {
                 accesskit_adapter: None,
                 counter_id: sync_request_counter,
                 last_sync_counter: None,
+                show: params.show,
+                first_request: true,
             })
         });
 
@@ -1184,12 +1191,23 @@ impl X11WindowStatePtr {
         }
     }
 
+    /// silent: the window went from the screen, to be shown anew later; its next frame is
+    /// marked as a first one.
+    pub fn unmapped(&self) {
+        let mut state = self.state.borrow_mut();
+        state.first_request = true;
+        if let Some(renderer) = &mut state.renderer {
+            renderer.expect_first_frame();
+        }
+    }
+
     pub fn refresh(&self, mut request_frame_options: RequestFrameOptions) {
         let callback = self.callbacks.borrow_mut().request_frame.take();
         if let Some(mut fun) = callback {
-            // silent: the first frame request is marked.
-            static REQUESTED: std::sync::Once = std::sync::Once::new();
-            REQUESTED.call_once(|| log::info!(target: "silent::trace", "frame requested"));
+            // silent: the first frame request of each showing is marked.
+            if std::mem::take(&mut self.state.borrow_mut().first_request) {
+                log::info!(target: "silent::trace", "frame requested");
+            }
             // Expose events can present a frame before the refresh timer runs,
             // so every frame request must rebuild stale atlas references after recovery.
             request_frame_options.force_render |=
@@ -1621,6 +1639,9 @@ impl PlatformWindow for X11Window {
     }
 
     fn map_window(&mut self) -> anyhow::Result<()> {
+        if !self.0.state.borrow().show {
+            return Ok(());
+        }
         log::info!(target: "silent::trace", "map");
         check_reply(
             || "X11 MapWindow failed.",

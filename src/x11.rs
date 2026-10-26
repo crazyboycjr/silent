@@ -8,6 +8,7 @@ use x11rb::connection::Connection;
 use x11rb::protocol::randr::ConnectionExt as _;
 use x11rb::protocol::xproto::{
     AtomEnum, ClientMessageEvent, ConfigureWindowAux, ConnectionExt as _, EventMask, PropMode,
+    UNMAP_NOTIFY_EVENT, UnmapNotifyEvent,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
@@ -186,6 +187,34 @@ impl X11 {
             AtomEnum::WM_TRANSIENT_FOR,
             AtomEnum::WINDOW,
             &[parent],
+        )?;
+        self.conn.flush()?;
+        Ok(())
+    }
+
+    /// Shows `window`; the window manager manages it afresh, and centres it.
+    pub fn map(&self, window: u32) -> Result<(), Box<dyn Error>> {
+        self.conn.map_window(window)?;
+        self.conn.flush()?;
+        Ok(())
+    }
+
+    /// Withdraws `window`, as ICCCM asks: unmapped, and a synthetic
+    /// UnmapNotify to the root for window managers that reparent.
+    pub fn unmap(&self, window: u32) -> Result<(), Box<dyn Error>> {
+        self.conn.unmap_window(window)?;
+        let event = UnmapNotifyEvent {
+            response_type: UNMAP_NOTIFY_EVENT,
+            sequence: 0,
+            event: self.root,
+            window,
+            from_configure: false,
+        };
+        self.conn.send_event(
+            false,
+            self.root,
+            EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+            event,
         )?;
         self.conn.flush()?;
         Ok(())

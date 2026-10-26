@@ -2,10 +2,18 @@
 //! user presses Space.
 //!
 //! zbus serves it from its own thread; calls reach the UI as [`Request`]s
-//! over a channel, and the UI answers through [`Bus`].
+//! over a channel, and the UI answers through [`Bus`]. Whoever calls the
+//! previewer, Nautilus's ping as it starts among them, is watched until it
+//! leaves the bus, so that the previewer can live as long as its callers.
+
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
 use zbus::blocking::Connection;
+use zbus::blocking::fdo::DBusProxy;
 use zbus::blocking::object_server::InterfaceRef;
+use zbus::message::Type;
+use zbus::names::BusName;
 use zbus::object_server::SignalEmitter;
 
 pub const NAME: &str = "org.gnome.NautilusPreviewer";
@@ -21,6 +29,8 @@ pub enum Request {
         activation_token: String,
     },
     Close,
+    /// How many of the previewer's callers are still on the bus.
+    Callers(usize),
 }
 
 /// `GtkDirectionType` values, which Nautilus expects in `SelectionEvent`.
@@ -47,6 +57,7 @@ impl Previewer {
         close_if_already_shown: bool,
         activation_token: String,
     ) {
+        log::info!(target: "silent::trace", "show file");
         let _ = self.requests.try_send(Request::Show {
             uri,
             window_handle,
@@ -82,6 +93,65 @@ impl Previewer {
     async fn trash(emitter: &SignalEmitter<'_>, uri: &str) -> zbus::Result<()>;
 }
 
+/// Counts the callers still on the bus: the senders of method calls to this
+/// connection, Peer's Ping included, which zbus answers itself, until the
+/// bus says they have left.
+fn watch_callers(conn: &Connection, requests: async_channel::Sender<Request>) -> zbus::Result<()> {
+    let callers = Arc::new(Mutex::new(HashSet::<String>::new()));
+    let bus = DBusProxy::new(conn)?;
+    // Departures are watched first, so that none goes unseen.
+    let departures = bus.receive_name_owner_changed()?;
+    let (gone, left) = (callers.clone(), requests.clone());
+    std::thread::Builder::new()
+        .name("callers left".into())
+        .spawn(move || {
+            for signal in departures {
+                let Ok(args) = signal.args() else { continue };
+                if args.new_owner().is_none() && gone.lock().unwrap().remove(args.name().as_str()) {
+                    let count = gone.lock().unwrap().len();
+                    let _ = left.send_blocking(Request::Callers(count));
+                }
+            }
+        })
+        .map_err(|e| zbus::Error::Failure(e.to_string()))?;
+    let calls = zbus::blocking::MessageIterator::from(conn);
+    std::thread::Builder::new()
+        .name("callers".into())
+        .spawn(move || {
+            for message in calls.flatten() {
+                let header = message.header();
+                if header.message_type() != Type::MethodCall {
+                    continue;
+                }
+                let Some(sender) = header.sender() else { continue };
+                let sender = sender.to_owned();
+                let count = {
+                    let mut known = callers.lock().unwrap();
+                    if !known.insert(sender.to_string()) {
+                        continue;
+                    }
+                    known.len()
+                };
+                let _ = requests.send_blocking(Request::Callers(count));
+                // A caller may have left before it was counted, as a script
+                // does. The bus is asked on a thread of its own: this one must
+                // keep reading, or the answer could not come in.
+                let (bus, callers, requests) = (bus.clone(), callers.clone(), requests.clone());
+                let _ = std::thread::Builder::new()
+                    .name("caller here".into())
+                    .spawn(move || {
+                        let here = bus.name_has_owner(BusName::from(sender.clone())).unwrap_or(false);
+                        let mut known = callers.lock().unwrap();
+                        if !here && known.remove(sender.as_str()) {
+                            let _ = requests.send_blocking(Request::Callers(known.len()));
+                        }
+                    });
+            }
+        })
+        .map_err(|e| zbus::Error::Failure(e.to_string()))?;
+    Ok(())
+}
+
 /// The session-bus connection that owns the previewer's name.
 #[derive(Clone)]
 pub struct Bus {
@@ -89,18 +159,20 @@ pub struct Bus {
 }
 
 impl Bus {
-    /// Exports the previewer, then claims its name, so that a call which
-    /// activated this process finds the object waiting.
+    /// Exports the previewer and watches for callers, then claims its name,
+    /// so that the call which activated this process finds the object
+    /// waiting, and its caller is seen.
     pub fn start(requests: async_channel::Sender<Request>) -> zbus::Result<Self> {
         let previewer = Previewer {
-            requests,
+            requests: requests.clone(),
             visible: false,
             parent_handle: String::new(),
         };
         let conn = zbus::blocking::connection::Builder::session()?
             .serve_at(PATH, previewer)?
-            .name(NAME)?
             .build()?;
+        watch_callers(&conn, requests)?;
+        conn.request_name(NAME)?;
         Ok(Self { conn })
     }
 

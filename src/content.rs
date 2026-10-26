@@ -293,6 +293,37 @@ pub fn load(uri: &str, screen: Screen, wait_for_pixels: bool) -> Loaded {
     loaded
 }
 
+impl Loaded {
+    /// Nothing yet: what a window made ahead of its first file holds, at
+    /// the size of a long text file's, the commonest preview.
+    pub fn blank(screen: Screen) -> Self {
+        let rows = 44.0;
+        let (size, dock) = lines_window(usize::MAX, (860.0, rows * 21.0 + 40.0), screen);
+        Loaded {
+            facts: Facts {
+                uri: String::new(),
+                path: None,
+                name: String::new(),
+                size: 0,
+                modified: None,
+                content_type: String::new(),
+                kind: Kind::Other,
+            },
+            description: String::new(),
+            size,
+            dock: dock as f32,
+            packed: None,
+            body: Body::Info,
+            view: None,
+        }
+    }
+
+    /// Whether this is the blank of a window waiting for its next file.
+    pub fn is_blank(&self) -> bool {
+        self.facts.uri.is_empty()
+    }
+}
+
 fn missing(uri: &str, error: &str, screen: Screen) -> Loaded {
     let name = uri.rsplit('/').next().unwrap_or(uri).to_owned();
     Loaded {

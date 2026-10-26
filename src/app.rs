@@ -1,4 +1,10 @@
 //! The previewer's life: requests from Nautilus, the window, and leaving.
+//!
+//! Started by D-Bus, the previewer lives as long as its callers stay on the
+//! bus: Nautilus pings it as it starts, and it stays until Nautilus quits.
+//! Its one window is made ahead of the first file, with its GPU surface,
+//! swapchain and pipelines, and is withdrawn rather than destroyed when a
+//! preview closes, to be shown again for the next.
 
 use std::time::Duration;
 
@@ -21,6 +27,8 @@ pub enum Input {
     Intent(Intent),
     Loaded(u64, Box<Loaded>),
     Closed(WindowId),
+    /// The GPU device is made: the window for the next file can be.
+    Warm,
 }
 
 /// What a key in the window asks for.
@@ -40,6 +48,9 @@ pub enum Intent {
 
 /// How long a released name waits for calls that were already on their way.
 const LINGER: Duration = Duration::from_millis(50);
+/// How long the previewer waits, with nothing shown and no caller on the
+/// bus, before it leaves: a script that called and left may call again.
+const IDLE: Duration = Duration::from_secs(3);
 
 struct Shown {
     uri: String,
@@ -52,6 +63,8 @@ struct Open {
     handle: WindowHandle<Preview>,
     xid: Option<u32>,
     size: (i32, i32),
+    /// Mapped, showing a file; otherwise withdrawn, waiting for the next.
+    shown: bool,
 }
 
 struct Controller {
@@ -65,9 +78,12 @@ struct Controller {
     loading: bool,
     screen: Screen,
     rounded: bool,
+    /// The previewer's callers still on the bus.
+    callers: usize,
 }
 
-/// Runs the previewer until its last window has closed. `first` holds the
+/// Runs the previewer: with a bus, as long as its callers stay on it or a
+/// file is shown; without, until its window closes. `first` holds the
 /// requests that came before the toolkit started; their loading begins
 /// before the toolkit does.
 pub fn run(bus: Option<Bus>, requests: async_channel::Receiver<Request>, first: Vec<Request>) {
@@ -96,6 +112,7 @@ pub fn run(bus: Option<Bus>, requests: async_channel::Receiver<Request>, first: 
             scale: 1.0,
         },
         rounded,
+        callers: 0,
     };
     for request in first {
         if let Request::Show { .. } = request {
@@ -158,8 +175,11 @@ fn first_fonts() -> Vec<Font> {
 
 impl Controller {
     async fn serve(mut self, inputs: async_channel::Receiver<Input>, cx: &mut AsyncApp) {
+        if self.bus.is_some() {
+            self.warm_when_ready(cx);
+        }
         loop {
-            let input = if self.window.is_none() && !self.loading {
+            let input = if self.idle() {
                 match self.leave(&inputs, cx).await {
                     Some(input) => input,
                     None => break,
@@ -178,6 +198,7 @@ impl Controller {
                         self.loaded(*loaded, cx);
                     }
                 }
+                // Closed by the window manager: the next is made at once.
                 Input::Closed(id) => {
                     if self
                         .window
@@ -186,6 +207,16 @@ impl Controller {
                     {
                         self.window = None;
                         self.close(cx);
+                        if self.bus.is_some() {
+                            self.warm_when_ready(cx);
+                        }
+                    }
+                }
+                // The window for the next file, unless a file that came
+                // first has opened its own.
+                Input::Warm => {
+                    if self.window.is_none() && !self.loading {
+                        self.warm(cx);
                     }
                 }
             }
@@ -194,15 +225,31 @@ impl Controller {
         cx.update(|cx| cx.quit());
     }
 
-    /// Gives the name up, then serves whatever was already on its way.
+    /// Nothing shown or on its way, and no caller left on the bus.
+    fn idle(&self) -> bool {
+        !self.window.as_ref().is_some_and(|w| w.shown) && !self.loading && self.callers == 0
+    }
+
+    /// Waits a moment for a call, then gives the name up and serves whatever
+    /// was already on its way. Without a bus, it leaves at once.
     async fn leave(
         &mut self,
         inputs: &async_channel::Receiver<Input>,
         cx: &mut AsyncApp,
     ) -> Option<Input> {
         let bus = self.bus.as_ref()?;
-        let _ = bus.release();
         let executor = cx.background_executor().clone();
+        let waited = inputs
+            .recv()
+            .or(async {
+                executor.timer(IDLE).await;
+                Err(async_channel::RecvError)
+            })
+            .await;
+        if let Ok(input) = waited {
+            return Some(input);
+        }
+        let _ = bus.release();
         loop {
             let late = inputs
                 .recv()
@@ -227,6 +274,7 @@ impl Controller {
                 close_if_shown,
                 activation_token,
             } => {
+                trace::mark("request");
                 if self.shown.as_ref().is_some_and(|shown| shown.uri == uri) {
                     if close_if_shown && let Some(cx) = cx {
                         self.close(cx);
@@ -237,7 +285,7 @@ impl Controller {
                     let _ = bus.set_parent_handle(&window_handle);
                     let _ = bus.set_visible(true);
                 }
-                if self.window.is_none()
+                if !self.window.as_ref().is_some_and(|w| w.shown)
                     && let Some(x11) = &self.x11
                 {
                     self.screen = x11.screen_for(x11::parse_handle(&window_handle));
@@ -255,6 +303,7 @@ impl Controller {
                     self.close(cx);
                 }
             }
+            Request::Callers(count) => self.callers = count,
         }
     }
 
@@ -262,6 +311,8 @@ impl Controller {
         self.generation += 1;
         self.loading = true;
         let (generation, screen, input) = (self.generation, self.screen, self.input.clone());
+        // A window ready, shown or waiting, shows a picture once it has its
+        // pixels; only a window still to be made opens beside the decoding.
         let wait_for_pixels = self.window.is_some();
         std::thread::Builder::new()
             .name("load".into())
@@ -281,22 +332,65 @@ impl Controller {
         shown.folder = loaded.facts.kind == Kind::Folder;
         trace::mark("loaded");
         let size = loaded.size;
-        if let Some(open) = &mut self.window {
-            if open.size != size
-                && let (Some(x11), Some(xid)) = (&self.x11, open.xid)
-            {
-                let _ = x11.configure(xid, self.screen.centre(size));
-            }
-            open.size = size;
+        let Some(open) = &mut self.window else {
+            return self.open(loaded, true, cx);
+        };
+        if (!open.shown || open.size != size)
+            && let (Some(x11), Some(xid)) = (&self.x11, open.xid)
+        {
+            let _ = x11.configure(xid, self.screen.centre(size));
+        }
+        open.size = size;
+        if open.shown {
             let _ = open
                 .handle
                 .update(cx, |view, window, cx| view.show(loaded, window, cx));
-        } else {
-            self.open(loaded, cx);
+            return;
+        }
+        // The window waiting for this file: its content first, then on the
+        // screen, where the window manager centres it and gives it the focus.
+        let screen = self.screen;
+        let _ = open.handle.update(cx, |view, window, cx| {
+            view.reopen(loaded, screen, window, cx)
+        });
+        open.shown = true;
+        if let (Some(x11), Some(xid)) = (&self.x11, open.xid) {
+            if let Some(parent) = x11::parse_handle(&shown.window_handle) {
+                let _ = x11.set_transient_for(xid, parent);
+            }
+            let _ = x11.complete_startup(xid, &shown.activation_token);
+            trace::mark("map");
+            let _ = x11.map(xid);
         }
     }
 
-    fn open(&mut self, loaded: Loaded, cx: &mut AsyncApp) {
+    /// Asks for the window ahead of the first file once the GPU device is
+    /// made, which opening it would otherwise wait for, holding up a file
+    /// that came meanwhile.
+    fn warm_when_ready(&self, cx: &mut AsyncApp) {
+        let input = self.input.clone();
+        let executor = cx.background_executor().clone();
+        cx.background_executor()
+            .spawn(async move {
+                while !gpui_wgpu::WgpuContext::prepared() {
+                    executor.timer(Duration::from_millis(5)).await;
+                }
+                let _ = input.send(Input::Warm).await;
+            })
+            .detach();
+    }
+
+    /// Makes the window ahead of the first file, withdrawn, on the monitor
+    /// under the pointer.
+    fn warm(&mut self, cx: &mut AsyncApp) {
+        if let Some(x11) = &self.x11 {
+            self.screen = x11.screen_for(None);
+        }
+        self.open(Loaded::blank(self.screen), false, cx);
+    }
+
+    /// Opens the window with `loaded`, on the screen when `visible`.
+    fn open(&mut self, loaded: Loaded, visible: bool, cx: &mut AsyncApp) {
         let size = loaded.size;
         let rect = self.screen.centre(size);
         let scale = self.screen.scale as f32;
@@ -318,6 +412,7 @@ impl Controller {
                 WindowBackgroundAppearance::Opaque
             },
             app_id: Some("silent".into()),
+            show: visible,
             ..Default::default()
         };
         let (screen, rounded, input) = (self.screen, self.rounded, self.input.clone());
@@ -337,22 +432,45 @@ impl Controller {
         };
         trace::mark("window open");
         let xid = handle.update(cx, |_, window, _| xid(window)).ok().flatten();
-        if let (Some(x11), Some(xid), Some(shown)) = (&self.x11, xid, &self.shown) {
+        if let (Some(x11), Some(xid)) = (&self.x11, xid) {
             let _ = x11.undecorate(xid);
-            if let Some(parent) = x11::parse_handle(&shown.window_handle) {
-                let _ = x11.set_transient_for(xid, parent);
+            if let Some(shown) = self.shown.as_ref().filter(|_| visible) {
+                if let Some(parent) = x11::parse_handle(&shown.window_handle) {
+                    let _ = x11.set_transient_for(xid, parent);
+                }
+                let _ = x11.complete_startup(xid, &shown.activation_token);
             }
-            let _ = x11.complete_startup(xid, &shown.activation_token);
         }
-        self.window = Some(Open { handle, xid, size });
+        self.window = Some(Open {
+            handle,
+            xid,
+            size,
+            shown: visible,
+        });
     }
 
+    /// Ends the preview: the window lets its file go and is withdrawn, to be
+    /// shown again for the next.
     fn close(&mut self, cx: &mut AsyncApp) {
-        if let Some(open) = self.window.take() {
+        if let Some(open) = self.window.as_mut().filter(|w| w.shown) {
             let _ = open.handle.update(cx, |view, window, cx| {
-                view.leave(cx);
-                window.remove_window();
+                if window.is_fullscreen() {
+                    window.toggle_fullscreen();
+                }
+                view.clear(window, cx);
             });
+            if let (Some(x11), Some(xid)) = (&self.x11, open.xid) {
+                let _ = x11.unmap(xid);
+            }
+            open.shown = false;
+            if self.bus.is_some() {
+                // The heap the file took goes back to the system while
+                // silent waits for the next.
+                #[cfg(target_env = "gnu")]
+                unsafe {
+                    libc::malloc_trim(0);
+                }
+            }
         }
         self.shown = None;
         self.generation += 1;

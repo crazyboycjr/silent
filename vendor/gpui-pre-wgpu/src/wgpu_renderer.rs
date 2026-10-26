@@ -254,7 +254,7 @@ pub struct WgpuRenderer {
     surface_config: wgpu::SurfaceConfiguration,
     /// The size the surface was last configured for.
     configured_size: (u32, u32),
-    /// Whether the window has presented a frame.
+    /// Whether the window has shown a frame since it was last shown anew.
     presented: bool,
     atlas: Arc<WgpuAtlas>,
     transparent_alpha_mode: wgpu::CompositeAlphaMode,
@@ -1052,6 +1052,11 @@ impl WgpuRenderer {
         // before it cost no swapchain.
     }
 
+    /// silent: the window is about to be shown anew, as a new window is.
+    pub fn expect_first_frame(&mut self) {
+        self.presented = false;
+    }
+
     /// Reconfigures the surface for the size `update_drawable_size` recorded last.
     fn follow_drawable_size(&mut self) {
         let size = (self.surface_config.width, self.surface_config.height);
@@ -1211,7 +1216,7 @@ impl WgpuRenderer {
             self.failed_frame_count = 0;
         }
 
-        // silent: the first frame's steps are marked, for each window.
+        // silent: the first frame's steps are marked, for each showing of the window.
         let first = !self.presented;
         let acquired = surface.get_current_texture();
         if first {
