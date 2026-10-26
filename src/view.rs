@@ -1186,20 +1186,21 @@ impl Preview {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let mode = self.strip.mode;
+        // Above a workbook's sheet tabs, which are clicked where it would be.
+        let lift = match &self.pane {
+            Pane::Sheet(s) if s.read(cx).has_tabs() => px(grid::TABS),
+            _ => px(0.),
+        };
         if mode == StripMode::Off {
-            return self.notice_element(theme, window, cx);
+            return self.notice_line(lift, theme, window, cx);
         }
         // Before the pointer has moved there is nothing to fade.
         if mode == StripMode::Auto && self.strip.epoch == 0 {
             return None;
         }
         let shown = mode == StripMode::On || self.strip.shown;
-        let media = self.pane.media();
-        let (fade, band) = if media {
-            (
-                strip::PLAYBAR_FADE,
-                strip::TRACK + strip::LINE + strip::BELOW,
-            )
+        let (fade, band) = if self.pane.media() {
+            (strip::PLAYBAR_FADE, strip::TRACK + strip::ROW)
         } else {
             (strip::FADE, strip::ROW)
         };
@@ -1210,7 +1211,7 @@ impl Preview {
             .pending()
             .or_else(|| self.strip.note.clone())
             .or_else(|| self.scrub_label(cx))
-            .map(|aside| div().flex_none().font_family("JetBrains Mono").child(aside));
+            .map(|aside| div().flex_none().child(aside));
         let text = div()
             .flex_1()
             .min_w_0()
@@ -1223,19 +1224,6 @@ impl Preview {
             Pane::Audio(a) => Some(a.update(cx, |a, cx| media::playbar(a, shown, ink, cx))),
             _ => None,
         };
-        // Above a workbook's sheet tabs, which are clicked where it would be.
-        let lift = match &self.pane {
-            Pane::Sheet(s) if s.read(cx).has_tabs() => px(grid::TABS),
-            _ => px(0.),
-        };
-        let line = div()
-            .flex_none()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(16.))
-            .text_size(px(13.))
-            .text_color(ink);
         let strip = div()
             .id("strip")
             .absolute()
@@ -1257,33 +1245,21 @@ impl Preview {
             }));
         let strip = match playbar {
             Some(bar) => strip
-                .px(px(16.))
-                .pb(px(strip::BELOW))
                 // A shown playbar is a control: clicks on it do not reach
                 // the video. Occluding the video instead would also take
                 // the window's hover, which keeps the playbar.
                 .when(shown, |strip| {
                     strip.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 })
-                .child(bar.track)
+                .child(div().px(px(strip::INSET)).child(bar.track))
                 .child(
-                    line.h(px(strip::LINE))
-                        .child(
-                            div()
-                                .flex_none()
-                                .font_family("JetBrains Mono")
-                                .child(bar.times),
-                        )
+                    strip::line(ink)
+                        .child(div().flex_none().child(bar.times))
                         .child(text)
                         .children(aside)
                         .child(bar.volume),
                 ),
-            None => strip.child(
-                line.h(px(strip::ROW))
-                    .px(px(14.))
-                    .child(text)
-                    .children(aside),
-            ),
+            None => strip.child(strip::line(ink).child(text).children(aside)),
         };
         Some(if mode == StripMode::On {
             strip.into_any_element()
@@ -1298,11 +1274,12 @@ impl Preview {
         })
     }
 
-    /// A word from a key while the strip is off, on a veil of its own; what
-    /// is typed of a vim command and where the scrollbar has the view show
-    /// for as long as they last.
-    fn notice_element(
+    /// A word from a key while the strip is off, on a veil of its own, where
+    /// the strip's line would put it; what is typed of a vim command and
+    /// where the scrollbar has the view show for as long as they last.
+    fn notice_line(
         &mut self,
+        lift: Pixels,
         theme: Theme,
         window: &Window,
         cx: &mut Context<Self>,
@@ -1311,18 +1288,13 @@ impl Preview {
         let shown = live.is_some() || self.strip.notice_shown;
         let word = live.or_else(|| self.strip.notice.clone())?;
         let scrim = self.scrim(strip::ROW, theme, window, cx);
-        let notice = div()
+        let notice = strip::line(strip::hsla(scrim.ink(), 1.))
             .absolute()
-            .right(px(14.))
-            .bottom(px(10.))
-            .px(px(10.))
-            .py(px(4.))
-            .rounded(px(6.))
-            .bg(strip::hsla(scrim.veil(), scrim.alpha))
-            .text_size(px(13.))
-            .font_family("JetBrains Mono")
-            .text_color(strip::hsla(scrim.ink(), 1.))
-            .child(word);
+            .left_0()
+            .right_0()
+            .bottom(lift)
+            .justify_end()
+            .child(strip::chip(word, strip::hsla(scrim.veil(), scrim.alpha)));
         Some(
             notice
                 .with_animation(

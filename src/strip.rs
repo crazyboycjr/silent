@@ -3,6 +3,8 @@
 //! give their own pixels; text, documents and cards their theme's ground
 //! and ink, which are both under it.
 
+use std::sync::Arc;
+
 use gpui_kit::*;
 use silent::memory;
 use silent::scrim::{self, Rgb, Scrim};
@@ -10,15 +12,59 @@ use silent::scrim::{self, Rgb, Scrim};
 /// The strip's line, and the fade above it to nothing.
 pub const ROW: f32 = 34.;
 pub const FADE: f32 = 22.;
-/// A video's or a sound's playbar: the seek track over the line, a little
-/// above the window's edge, under a taller fade.
+/// A video's or a sound's playbar: the seek track over the same line,
+/// under a taller fade.
 pub const TRACK: f32 = 18.;
-pub const LINE: f32 = 30.;
-pub const BELOW: f32 = 6.;
 pub const PLAYBAR_FADE: f32 = 30.;
+/// The line's inset from the window's sides, and its letters.
+pub const INSET: f32 = 14.;
+const TEXT: f32 = 13.;
+const LEADING: f32 = 18.;
+/// How far a notice's veil reaches beyond its word.
+const CHIP: (f32, f32) = (8., 3.);
 /// The blocks a picture is averaged in, in logical pixels: about the
 /// height of the strip's letters.
 const CELL: f32 = 16.;
+
+/// The strip's line of text, the same in every mode: shown while the
+/// pointer moves or always, under a playbar's track, and as a notice while
+/// the strip is off. One face with figures of one width, one size and one
+/// leading, centred in one height at one inset, so that every word sits on
+/// the same baseline.
+pub fn line(ink: Hsla) -> Div {
+    div()
+        .flex_none()
+        .h(px(ROW))
+        .px(px(INSET))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(16.))
+        .font_family("Noto Sans")
+        .font_features(FontFeatures(Arc::new(vec![("tnum".into(), 1)])))
+        .text_size(px(TEXT))
+        .line_height(px(LEADING))
+        .text_color(ink)
+}
+
+/// `word` on a veil reaching a little past it, which leaves the word where
+/// it would be without one.
+pub fn chip(word: String, veil: Hsla) -> Div {
+    div()
+        .flex_none()
+        .relative()
+        .child(
+            div()
+                .absolute()
+                .left(px(-CHIP.0))
+                .right(px(-CHIP.0))
+                .top(px(-CHIP.1))
+                .bottom(px(-CHIP.1))
+                .rounded(px(6.))
+                .bg(veil),
+        )
+        .child(div().relative().child(word))
+}
 
 /// What i cycles through.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
