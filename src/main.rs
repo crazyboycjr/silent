@@ -60,6 +60,7 @@ fn main() -> ExitCode {
 fn serve() -> ExitCode {
     gpui_wgpu::WgpuContext::prepare();
     let (sender, requests) = async_channel::unbounded();
+    watch_executable(sender.clone());
     let bus = match Bus::start(sender) {
         Ok(bus) => bus,
         Err(e) => {
@@ -70,6 +71,69 @@ fn serve() -> ExitCode {
     trace::mark("bus");
     app::run(Some(bus), requests, Vec::new());
     ExitCode::SUCCESS
+}
+
+/// Tells the previewer when the executable it was started from is replaced
+/// or removed, which an upgrade does: it leaves once no preview is open, and
+/// the next call starts the new one. The directory is watched, since an
+/// install renames a new file over the old or unlinks it first.
+fn watch_executable(requests: async_channel::Sender<Request>) {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+
+    let (Ok(path), Ok(running)) = (std::env::current_exe(), std::fs::metadata("/proc/self/exe"))
+    else {
+        return;
+    };
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return;
+    };
+    let Ok(dir) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
+        return;
+    };
+    let name = name.to_owned();
+    let replaced = move || {
+        std::fs::metadata(&path).map_or(true, |now| {
+            (now.dev(), now.ino()) != (running.dev(), running.ino())
+        })
+    };
+    let _ = std::thread::Builder::new()
+        .name("executable".into())
+        .spawn(move || {
+            // SAFETY: plain system calls on a descriptor this thread owns.
+            let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
+            if fd < 0 {
+                return;
+            }
+            let mask = libc::IN_CREATE | libc::IN_MOVED_TO | libc::IN_CLOSE_WRITE
+                | libc::IN_DELETE | libc::IN_MOVED_FROM | libc::IN_ATTRIB;
+            if unsafe { libc::inotify_add_watch(fd, dir.as_ptr(), mask) } < 0 {
+                unsafe { libc::close(fd) };
+                return;
+            }
+            let mut buffer = [0u8; 4096];
+            loop {
+                let read = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
+                if read <= 0 {
+                    break;
+                }
+                let mut events = &buffer[..read as usize];
+                let header = std::mem::size_of::<libc::inotify_event>();
+                let mut ours = false;
+                while events.len() >= header {
+                    let len = u32::from_ne_bytes(events[12..16].try_into().unwrap()) as usize;
+                    let named = &events[header..(header + len).min(events.len())];
+                    let named = &named[..named.iter().position(|&b| b == 0).unwrap_or(named.len())];
+                    ours |= named == name.as_bytes();
+                    events = &events[(header + len).min(events.len())..];
+                }
+                if ours && replaced() {
+                    let _ = requests.send_blocking(Request::Replaced);
+                    break;
+                }
+            }
+            unsafe { libc::close(fd) };
+        });
 }
 
 fn standalone(path: &str) -> ExitCode {

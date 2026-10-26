@@ -177,7 +177,9 @@ makepkg -si
 This builds the release binary and installs `/usr/bin/silent` and the D-Bus
 service `org.gnome.NautilusPreviewer`, which is what Nautilus calls. The
 package replaces sushi; pacman offers to remove it. Nautilus starts silent on
-the next Space, with no restart.
+the next Space, with no restart. An upgrade takes over the same way: silent
+notices its file replaced and leaves as soon as no preview is open, and the
+next Space starts the new one.
 
 silent needs X11, a Vulkan driver, glycin's image loaders with bubblewrap,
 and GStreamer for video and audio. Its windows have the class `silent`;

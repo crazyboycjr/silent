@@ -31,6 +31,9 @@ pub enum Request {
     Close,
     /// How many of the previewer's callers are still on the bus.
     Callers(usize),
+    /// The executable on disk is not this process's any more: a new version
+    /// was installed, or this one removed.
+    Replaced,
 }
 
 /// `GtkDirectionType` values, which Nautilus expects in `SelectionEvent`.

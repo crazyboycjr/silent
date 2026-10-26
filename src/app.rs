@@ -80,6 +80,9 @@ struct Controller {
     rounded: bool,
     /// The previewer's callers still on the bus.
     callers: usize,
+    /// The executable was replaced: the previewer leaves once nothing is
+    /// shown, for the next call to start the new one.
+    replaced: bool,
 }
 
 /// Runs the previewer: with a bus, as long as its callers stay on it or a
@@ -113,6 +116,7 @@ pub fn run(bus: Option<Bus>, requests: async_channel::Receiver<Request>, first: 
         },
         rounded,
         callers: 0,
+        replaced: false,
     };
     for request in first {
         if let Request::Show { .. } = request {
@@ -227,13 +231,17 @@ impl Controller {
         cx.update(|cx| cx.quit());
     }
 
-    /// Nothing shown or on its way, and no caller left on the bus.
+    /// Nothing shown or on its way, and no caller left on the bus, or a new
+    /// version installed.
     fn idle(&self) -> bool {
-        !self.window.as_ref().is_some_and(|w| w.shown) && !self.loading && self.callers == 0
+        !self.window.as_ref().is_some_and(|w| w.shown)
+            && !self.loading
+            && (self.callers == 0 || self.replaced)
     }
 
-    /// Waits a moment for a call, then gives the name up and serves whatever
-    /// was already on its way. Without a bus, it leaves at once.
+    /// Waits a moment for a call, unless a new version waits, then gives the
+    /// name up and serves whatever was already on its way. Without a bus, it
+    /// leaves at once.
     async fn leave(
         &mut self,
         inputs: &async_channel::Receiver<Input>,
@@ -241,15 +249,17 @@ impl Controller {
     ) -> Option<Input> {
         let bus = self.bus.as_ref()?;
         let executor = cx.background_executor().clone();
-        let waited = inputs
-            .recv()
-            .or(async {
-                executor.timer(IDLE).await;
-                Err(async_channel::RecvError)
-            })
-            .await;
-        if let Ok(input) = waited {
-            return Some(input);
+        if !self.replaced {
+            let waited = inputs
+                .recv()
+                .or(async {
+                    executor.timer(IDLE).await;
+                    Err(async_channel::RecvError)
+                })
+                .await;
+            if let Ok(input) = waited {
+                return Some(input);
+            }
         }
         let _ = bus.release();
         loop {
@@ -306,6 +316,10 @@ impl Controller {
                 }
             }
             Request::Callers(count) => self.callers = count,
+            Request::Replaced => {
+                trace::mark("replaced");
+                self.replaced = true;
+            }
         }
     }
 
