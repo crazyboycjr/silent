@@ -603,6 +603,22 @@ word_doc(f"{root}/office/old.doc")
 power_point(f"{root}/office/old.ppt")
 PY
 
+    # Looking inside archives: an archive in another, with a document, a clip
+    # and a picture; an encrypted entry; a large one, taken out slowly to the
+    # cache; and five gigabytes, sparse, too large to take out.
+    local stage; stage=$(mktemp -d "$SCRATCH/stage.XXXXXX")
+    mkdir -p "$stage/inner/notes"
+    cp archives/project.zip office/report.docx video/clip-720p.webm images/vga-640x480.jpg "$stage/inner/"
+    printf 'Inside an archive inside the harness.\n' > "$stage/inner/notes/readme.txt"
+    (cd "$stage/inner" && "${HEAVY[@]}" zip -qr "$f/archives/nested.zip" .)
+    printf 'nothing to see\n' > "$stage/hidden.txt"
+    (cd "$stage" && zip -q -P silent "$f/archives/secret.zip" hidden.txt)
+    head -c 200000000 /dev/urandom > "$stage/large.bin"
+    (cd "$stage" && "${HEAVY[@]}" zip -q -1 "$f/archives/large.zip" large.bin)
+    truncate -s 5G "$stage/disk.img"
+    (cd "$stage" && "${HEAVY[@]}" tar --sparse -cf "$f/archives/sparse-5g.tar" disk.img)
+    rm -rf "$stage"
+
     # Everything else, binaries as hexdumps.
     head -c 300000 /dev/urandom > other/blob.bin
     cp /usr/bin/true other/program
