@@ -3,23 +3,27 @@
 //! The strip shows while the pointer moves, always, or never, as i cycles.
 //! A click inside content that has keys of its own engages it: the arrows
 //! then act on it instead of browsing Nautilus's files, until the window
-//! loses the focus or shows another file.
+//! loses the focus or shows another file. A file inside an archive is
+//! taken out and shown in the same window; Esc goes back to the archive.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use silent::decode::Event;
 use silent::detect::Kind;
+use silent::extract::{self, Extracted, Places, Refusal};
 use silent::format;
+use silent::geometry::Screen;
 use silent::memory::{self, Key, View};
 use silent::scrim::Scrim;
 use silent::vim::{Keys, Motion};
 
 use crate::app::{Input, Intent};
-use crate::archive::ArchivePane;
-use crate::content::{Body, Loaded, Totals};
+use crate::archive::{self, ArchivePane};
+use crate::content::{self, Body, Loaded, Totals};
 use crate::docview::{self, DocPane};
 use crate::grid::{self, SheetPane};
 use crate::keys::{self, Act, Mods};
@@ -43,6 +47,8 @@ const NOTICE: Duration = Duration::from_millis(1000);
 /// How long a dock waits for the window to make room before it docks
 /// anyway, as in a window manager that will not resize the window.
 const DOCK_WAIT: Duration = Duration::from_millis(400);
+/// An entry taken out of an archive shows its progress after this long.
+const SLOW: Duration = Duration::from_millis(150);
 
 pub struct Preview {
     loaded: Loaded,
@@ -77,9 +83,38 @@ pub struct Preview {
     /// fullscreen puts right if M changed it meanwhile.
     sized_docked: bool,
     was_fullscreen: bool,
+    /// The monitor and scale, for files taken out of archives.
+    screen: Screen,
+    /// The archives left for a file inside them, the outermost first.
+    levels: Vec<Level>,
+    /// The file shown, when it was taken out of an archive.
+    inside: Option<Extracted>,
+    /// An entry being taken out.
+    opening: Option<Opening>,
+    _archive: Option<Subscription>,
     _appearance: Subscription,
     _activation: Subscription,
     _bounds: Subscription,
+}
+
+/// An archive left for a file inside it, kept as it was for Esc.
+struct Level {
+    loaded: Loaded,
+    pane: Pane,
+    /// The file this archive was itself taken out to, when it was inside
+    /// another.
+    file: Option<Extracted>,
+}
+
+/// An entry being taken out of the archive in view.
+struct Opening {
+    name: String,
+    size: u64,
+    progress: Arc<AtomicU64>,
+    cancel: Arc<AtomicBool>,
+    since: Instant,
+    _work: Task<()>,
+    _tick: Task<()>,
 }
 
 struct Redock {
@@ -181,6 +216,7 @@ struct Strip {
 impl Preview {
     pub fn new(
         loaded: Loaded,
+        screen: Screen,
         rounded: bool,
         input: async_channel::Sender<Input>,
         window: &mut Window,
@@ -216,6 +252,11 @@ impl Preview {
             redock: None,
             sized_docked: false,
             was_fullscreen: false,
+            screen,
+            levels: Vec::new(),
+            inside: None,
+            opening: None,
+            _archive: None,
             _appearance: appearance,
             _activation: activation,
             _bounds: bounds,
@@ -234,37 +275,32 @@ impl Preview {
     }
 
     /// Remembers where the file was left, for coming back to it within the
-    /// hour, and the volume for the next sound.
+    /// hour, and the volume for the next sound. Inside an archive, that is
+    /// how the outermost archive was left; what was taken out goes.
     pub fn leave(&mut self, cx: &App) {
-        let view = match &self.pane {
-            Pane::Video(v) => {
-                let v = v.read(cx);
-                self.loudness = v.loudness();
-                memory::worth_resuming(v.position(), v.duration())
-                    .then(|| View::Media(v.position()))
-            }
-            Pane::Audio(a) => {
-                let a = a.read(cx);
-                self.loudness = a.loudness();
-                memory::worth_resuming(a.position(), a.duration())
-                    .then(|| View::Media(a.position()))
-            }
-            Pane::Pdf(p) => p.read(cx).view(),
-            Pane::Slides(s) => s.read(cx).view(),
-            Pane::Lines(t) => t.read(cx).view(),
-            Pane::Doc(d) => d.read(cx).view(),
-            Pane::Sheet(s) => s.read(cx).view(),
-            Pane::Archive(a) => a.read(cx).view(cx),
-            Pane::None => return,
-        };
-        let facts = &self.loaded.facts;
-        if let Some(key) = facts
-            .path
-            .as_deref()
-            .and_then(|path| Key::new(path, facts.size, facts.modified))
-        {
-            memory::remember(&key, view);
+        match &self.pane {
+            Pane::Video(v) => self.loudness = v.read(cx).loudness(),
+            Pane::Audio(a) => self.loudness = a.read(cx).loudness(),
+            _ => {}
         }
+        let (loaded, pane) = match self.levels.first() {
+            Some(outermost) => (&outermost.loaded, &outermost.pane),
+            None => (&self.loaded, &self.pane),
+        };
+        let facts = &loaded.facts;
+        if !matches!(pane, Pane::None)
+            && let Some(key) = facts
+                .path
+                .as_deref()
+                .and_then(|path| Key::new(path, facts.size, facts.modified))
+        {
+            memory::remember(&key, view_of(pane, cx));
+        }
+        if let Some(opening) = self.opening.take() {
+            opening.cancel.store(true, Ordering::Relaxed);
+        }
+        self.levels.clear();
+        self.inside = None;
     }
 
     fn mode(&mut self, family: Family) -> Mode {
@@ -280,6 +316,7 @@ impl Preview {
         self.totals = None;
         self.pane = Pane::None;
         self._pane_changes = None;
+        self._archive = None;
         self.keys = Keys::default();
         self.strip.note = None;
         self.strip.veil = None;
@@ -338,6 +375,15 @@ impl Preview {
             Pane::Slides(v) => Some(cx.observe(v, |_, _, cx| cx.notify())),
             _ => None,
         };
+        if let Pane::Archive(a) = &self.pane {
+            self._archive = Some(cx.subscribe_in(
+                a,
+                window,
+                |this, _, archive::Open(entry, size), window, cx| {
+                    this.take_out(entry.clone(), *size, window, cx);
+                },
+            ));
+        }
         let mut image = None;
         match &mut self.loaded.body {
             Body::Image(picture) => {
@@ -431,6 +477,20 @@ impl Preview {
         if m.alt || m.platform || m.function {
             return;
         }
+        // Esc stops an entry being taken out, then goes back to the archive.
+        if keystroke.key == "escape" && !m.control {
+            if let Some(opening) = self.opening.take() {
+                opening.cancel.store(true, Ordering::Relaxed);
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
+            if !self.levels.is_empty() && self.keys.pending().is_none() {
+                cx.stop_propagation();
+                self.back(window, cx);
+                return;
+            }
+        }
         let engaged = self.engaged(window, cx);
         let mods = Mods {
             ctrl: m.control,
@@ -472,9 +532,16 @@ impl Preview {
             Act::Pass | Act::Nothing | Act::Pending(_) | Act::Cancelled => {}
             Act::Close => self.intent(Intent::Close),
             Act::Select(direction) => self.intent(Intent::Select(direction)),
+            // These act on the file in Nautilus, the outermost archive.
+            Act::Open | Act::Rename | Act::Trash if self.inside.is_some() => {}
             Act::Open => self.intent(Intent::Open),
             Act::Rename => self.intent(Intent::Rename),
             Act::Trash => self.intent(Intent::Trash),
+            Act::Inside(otherwise) => {
+                if !self.look_inside(window, cx) {
+                    self.act(*otherwise, window, cx);
+                }
+            }
             Act::Fullscreen => window.toggle_fullscreen(),
             Act::Move(motion) => self.move_pane(motion, window, cx),
             Act::Sideways(right) => {
@@ -648,6 +715,234 @@ impl Preview {
         self.strip.shown = mode == StripMode::Auto;
         self.strip.epoch += 1;
         self.note(Some(mode.describe().into()), window, cx);
+    }
+
+    /// Looks inside the selected entry of the archive in view, or opens or
+    /// closes the selected folder; false when nothing is selected.
+    fn look_inside(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Pane::Archive(archive) = &self.pane else {
+            return false;
+        };
+        match archive.read(cx).selected(cx) {
+            Some((entry, Some(size))) => self.take_out(entry, size, window, cx),
+            Some((_, None)) => ArchivePane::toggle(window, cx),
+            None => return false,
+        }
+        true
+    }
+
+    /// Takes `entry`, `size` bytes, out of the archive in view, in the
+    /// background, and shows it once it is out.
+    fn take_out(&mut self, entry: String, size: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let name = entry.rsplit('/').next().unwrap_or(&entry).to_owned();
+        if size > extract::MOST {
+            let too_large = format!("{name} is {}, too large to open here", format::size(size));
+            self.note(Some(too_large), window, cx);
+            return;
+        }
+        let Some(archive) = self.loaded.facts.path.clone() else {
+            return;
+        };
+        if let Some(earlier) = self.opening.take() {
+            earlier.cancel.store(true, Ordering::Relaxed);
+        }
+        let (progress, cancel) = (
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let shown_as = format!(
+            "{} › {}",
+            self.loaded.facts.name,
+            extract::normalize(&entry)
+        );
+        let screen = self.screen;
+        let (written, stop) = (progress.clone(), cancel.clone());
+        let job = cx.background_executor().spawn(async move {
+            let file =
+                extract::extract(&archive, &entry, size, &written, &stop, &Places::standard())?;
+            let uri = gio::glib::filename_to_uri(&file.path, None)
+                .map_err(|e| Refusal::Failed(e.to_string()))?;
+            let mut loaded = content::load(&uri, screen, true);
+            loaded.facts.name = shown_as;
+            Ok((file, loaded))
+        });
+        let work = cx.spawn_in(window, async move |this, cx| {
+            let taken = job.await;
+            let _ = this.update_in(cx, |this, window, cx| this.taken_out(taken, window, cx));
+        });
+        // Redrawn while it takes, for the progress.
+        let tick = cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+                let going = this.update(cx, |this, cx| {
+                    cx.notify();
+                    this.opening.is_some()
+                });
+                if !matches!(going, Ok(true)) {
+                    break;
+                }
+            }
+        });
+        self.opening = Some(Opening {
+            name,
+            size,
+            progress,
+            cancel,
+            since: Instant::now(),
+            _work: work,
+            _tick: tick,
+        });
+    }
+
+    fn taken_out(
+        &mut self,
+        taken: Result<(Extracted, Loaded), Refusal>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Esc or another file came first.
+        let Some(opening) = self.opening.take() else {
+            return;
+        };
+        let name = opening.name;
+        let word = match taken {
+            Ok((file, loaded)) => return self.enter(file, loaded, window, cx),
+            Err(Refusal::Cancelled) => return,
+            Err(Refusal::Encrypted) => format!("{name} is encrypted"),
+            Err(Refusal::TooLarge(size)) => {
+                format!("{name} is {}, too large to open here", format::size(size))
+            }
+            Err(Refusal::Missing) => format!("{name} is not in the archive"),
+            Err(Refusal::Failed(why)) => {
+                eprintln!("silent: cannot take {name} out: {why}");
+                format!("{name} cannot be read")
+            }
+        };
+        self.note(Some(word), window, cx);
+    }
+
+    /// Shows a file taken out of the archive in view, which waits for Esc.
+    fn enter(
+        &mut self,
+        file: Extracted,
+        loaded: Loaded,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let size = loaded.size;
+        let pane = std::mem::replace(&mut self.pane, Pane::None);
+        let archive = std::mem::replace(&mut self.loaded, loaded);
+        self.levels.push(Level {
+            loaded: archive,
+            pane,
+            file: self.inside.replace(file),
+        });
+        self.attach(window, cx);
+        self.disengage(window, cx);
+        if !window.is_fullscreen() {
+            self.intent(Intent::Fit(size));
+        }
+    }
+
+    /// Esc: back to the archive the file was taken out of, as it was left,
+    /// and the file goes.
+    fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(level) = self.levels.pop() else {
+            return;
+        };
+        match &self.pane {
+            Pane::Video(v) => self.loudness = v.read(cx).loudness(),
+            Pane::Audio(a) => self.loudness = a.read(cx).loudness(),
+            _ => {}
+        }
+        self.feed = None;
+        self.totals = None;
+        self._pane_changes = None;
+        if let Some(old) = self.image.take() {
+            cx.drop_image(old, Some(window));
+        }
+        self.pane = level.pane;
+        self.loaded = level.loaded;
+        self.inside = level.file;
+        self.keys = Keys::default();
+        self.strip.note = None;
+        self.strip.veil = None;
+        self.redock = None;
+        self.strip.mode = StripMode::load(self.family());
+        if let Pane::Archive(a) = &self.pane {
+            let a = a.clone();
+            self._archive = Some(cx.subscribe_in(
+                &a,
+                window,
+                |this, _, archive::Open(entry, size), window, cx| {
+                    this.take_out(entry.clone(), *size, window, cx);
+                },
+            ));
+            // The tree had the keys when the file was opened, and has them again.
+            a.update(cx, |a, cx| a.engage(window, cx));
+        }
+        if !window.is_fullscreen() {
+            self.intent(Intent::Fit(self.loaded.size));
+        }
+        cx.notify();
+    }
+
+    /// An entry being taken out slowly: its name and how far it has come,
+    /// over the archive.
+    fn opening(&self, theme: Theme) -> Option<Div> {
+        let opening = self.opening.as_ref().filter(|o| o.since.elapsed() > SLOW)?;
+        let done = opening.progress.load(Ordering::Relaxed);
+        let fraction = if opening.size > 0 {
+            (done as f32 / opening.size as f32).clamp(0., 1.)
+        } else {
+            0.
+        };
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .w(px(380.))
+                        .px(px(20.))
+                        .py(px(16.))
+                        .rounded(px(10.))
+                        .bg(theme.surface)
+                        .border_1()
+                        .border_color(theme.rule)
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.))
+                        .text_size(px(13.))
+                        .text_color(theme.text)
+                        .child(div().truncate().child(format!("Opening {}", opening.name)))
+                        .child(
+                            div()
+                                .h(px(4.))
+                                .rounded(px(2.))
+                                .bg(theme.muted.opacity(0.25))
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .w(relative(fraction))
+                                        .rounded(px(2.))
+                                        .bg(crate::theme::progress()),
+                                ),
+                        )
+                        .child(div().text_color(theme.muted).child(format!(
+                            "{} of {} · Esc stops it",
+                            format::size(done),
+                            format::size(opening.size)
+                        ))),
+                ),
+        )
     }
 
     fn toggle_pause(&self, cx: &App) {
@@ -1220,7 +1515,29 @@ impl Render for Preview {
             }))
             .child(content)
             .children(strip)
+            .children(self.opening(theme))
             .children(ring)
+    }
+}
+
+/// Where a file was left in `pane`, to come back to.
+fn view_of(pane: &Pane, cx: &App) -> Option<View> {
+    match pane {
+        Pane::Video(v) => {
+            let v = v.read(cx);
+            memory::worth_resuming(v.position(), v.duration()).then(|| View::Media(v.position()))
+        }
+        Pane::Audio(a) => {
+            let a = a.read(cx);
+            memory::worth_resuming(a.position(), a.duration()).then(|| View::Media(a.position()))
+        }
+        Pane::Pdf(p) => p.read(cx).view(),
+        Pane::Slides(s) => s.read(cx).view(),
+        Pane::Lines(t) => t.read(cx).view(),
+        Pane::Doc(d) => d.read(cx).view(),
+        Pane::Sheet(s) => s.read(cx).view(),
+        Pane::Archive(a) => a.read(cx).view(cx),
+        Pane::None => None,
     }
 }
 

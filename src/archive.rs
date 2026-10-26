@@ -1,12 +1,15 @@
 //! An archive's entries as a tree, in gpui-component's tree view. Coming
 //! back to an archive within the hour opens the same folders, selects the
-//! same entry and scrolls to the same place.
+//! same entry and scrolls to the same place. A double-click on a file asks
+//! for it to be looked inside.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
+use gpui_kit::base::actions::Confirm;
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::tree::{TreeItem, TreeState, tree};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use silent::format;
 use silent::memory::View;
@@ -28,6 +31,11 @@ pub struct ArchivePane {
     files: u64,
     bytes: u64,
 }
+
+/// A file in the archive to look inside: its path there, and its size.
+pub struct Open(pub String, pub u64);
+
+impl EventEmitter<Open> for ArchivePane {}
 
 #[derive(Default)]
 struct Node {
@@ -136,8 +144,21 @@ impl ArchivePane {
         })
     }
 
+    /// The selected entry's path in the archive, and its size when it is
+    /// a file.
+    pub fn selected(&self, cx: &App) -> Option<(String, Option<u64>)> {
+        let item = self.tree.read(cx).selected_item()?;
+        let size = (!item.is_folder()).then(|| self.sizes.get(&item.id).copied().unwrap_or(0));
+        Some((item.id.to_string(), size))
+    }
+
+    /// Opens or closes the selected folder of the tree that has the keys.
+    pub fn toggle(window: &mut Window, cx: &mut App) {
+        window.dispatch_action(Box::new(Confirm { secondary: false }), cx);
+    }
+
     /// The tree takes the keys after a click anywhere in the archive.
-    fn engage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn engage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.tree.update(cx, |tree, cx| tree.focus(window, cx));
         window.prevent_default();
     }
@@ -177,9 +198,20 @@ impl Render for ArchivePane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(window.appearance());
         let sizes = self.sizes.clone();
+        let pane = cx.entity().downgrade();
         let rows = tree(&self.tree, move |ix, entry, _, _, _| {
             let item = entry.item();
             let (folder, open) = (entry.is_folder(), entry.is_expanded());
+            let looked = (!folder).then(|| {
+                let (pane, id) = (pane.clone(), item.id.clone());
+                let size = sizes.get(&id).copied().unwrap_or(0);
+                move |event: &ClickEvent, _: &mut Window, cx: &mut App| {
+                    if event.click_count() == 2 {
+                        let open = Open(id.to_string(), size);
+                        let _ = pane.update(cx, |_, cx| cx.emit(open));
+                    }
+                }
+            });
             let marker = match (folder, open) {
                 (true, true) => "▾",
                 (true, false) => "▸",
@@ -190,44 +222,46 @@ impl Render for ArchivePane {
                 .get(&item.id)
                 .map(|s| format::size(*s))
                 .unwrap_or_default();
-            ListItem::new(ix).child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .w_full()
-                    .pl(px(entry.depth() as f32 * 18.))
-                    .child(
-                        div()
-                            .w(px(16.))
-                            .flex_none()
-                            .text_color(theme.muted)
-                            .child(marker),
-                    )
-                    .child(
-                        svg()
-                            .path(icon)
-                            .flex_none()
-                            .size(px(16.))
-                            .mr(px(8.))
-                            .text_color(color),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_color(theme.text)
-                            .child(item.label.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .pl(px(12.))
-                            .text_color(theme.muted)
-                            .child(size),
-                    ),
-            )
+            ListItem::new(ix)
+                .when_some(looked, |row, looked| row.on_click(looked))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .w_full()
+                        .pl(px(entry.depth() as f32 * 18.))
+                        .child(
+                            div()
+                                .w(px(16.))
+                                .flex_none()
+                                .text_color(theme.muted)
+                                .child(marker),
+                        )
+                        .child(
+                            svg()
+                                .path(icon)
+                                .flex_none()
+                                .size(px(16.))
+                                .mr(px(8.))
+                                .text_color(color),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(theme.text)
+                                .child(item.label.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .pl(px(12.))
+                                .text_color(theme.muted)
+                                .child(size),
+                        ),
+                )
         });
         div()
             .size_full()

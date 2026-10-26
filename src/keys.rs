@@ -65,6 +65,10 @@ pub enum Act {
     Overview,
     /// i: the strip goes to its next mode.
     Strip,
+    /// Enter or Space in an engaged archive: look inside the selected
+    /// entry, or open or close the selected folder; with nothing selected,
+    /// the key's usual act.
+    Inside(Box<Act>),
     SelectAll,
     Copy,
     /// The previous or next sheet of a workbook.
@@ -149,6 +153,12 @@ pub fn route(kind: Kind, engaged: bool, key: &str, mods: Mods, held: bool, vim: 
     }
     let once = |act: Act| if held { Act::Nothing } else { act };
     match (shift, key) {
+        (false, "space") if engaged && kind == Kind::Archive => {
+            once(Act::Inside(Box::new(Act::Close)))
+        }
+        (false, "enter") if engaged && kind == Kind::Archive => {
+            once(Act::Inside(Box::new(Act::Open)))
+        }
         // Shift may still be down from Shift with an arrow.
         (_, "space" | "escape") => once(Act::Close),
         (false, "enter") => once(Act::Open),
@@ -384,6 +394,22 @@ mod tests {
         }
         // Sheets and archives take no vim keys.
         assert_eq!(press(Kind::Sheet, false, "j"), Act::Pass);
+    }
+
+    #[test]
+    fn enter_and_space_look_inside_an_engaged_archive() {
+        assert_eq!(
+            press(Kind::Archive, true, "enter"),
+            Act::Inside(Box::new(Act::Open))
+        );
+        assert_eq!(
+            press(Kind::Archive, true, "space"),
+            Act::Inside(Box::new(Act::Close))
+        );
+        // Not engaged, they open the archive and close the preview.
+        assert_eq!(press(Kind::Archive, false, "enter"), Act::Open);
+        assert_eq!(press(Kind::Archive, false, "space"), Act::Close);
+        assert_eq!(press(Kind::Lines, true, "space"), Act::Close);
     }
 
     #[test]

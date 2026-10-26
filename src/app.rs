@@ -7,6 +7,7 @@ use gpui_kit::*;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use silent::dbus::{Bus, Direction, Request};
 use silent::detect::Kind;
+use silent::extract::{self, Places};
 use silent::geometry::{self, Rect, Screen};
 use silent::x11::{self, X11};
 
@@ -32,6 +33,9 @@ pub enum Intent {
     /// The overview's dock grows by this many logical pixels at the
     /// window's right, or shrinks when it is negative.
     Redock(f32),
+    /// The window takes this size about its centre, for a file taken out of
+    /// an archive and back.
+    Fit((i32, i32)),
 }
 
 /// How long a released name waits for calls that were already on their way.
@@ -67,6 +71,10 @@ struct Controller {
 /// requests that came before the toolkit started; their loading begins
 /// before the toolkit does.
 pub fn run(bus: Option<Bus>, requests: async_channel::Receiver<Request>, first: Vec<Request>) {
+    // What a crashed preview took out of archives; nothing waits for it.
+    let _ = std::thread::Builder::new()
+        .name("sweep".into())
+        .spawn(|| extract::sweep(&Places::standard()));
     let x11 = X11::connect().ok();
     let rounded = x11.as_ref().is_some_and(X11::compositing);
     let (input, inputs) = async_channel::unbounded();
@@ -153,6 +161,7 @@ impl Controller {
                 }
             }
         }
+        extract::clear(&Places::standard());
         cx.update(|cx| cx.quit());
     }
 
@@ -281,10 +290,10 @@ impl Controller {
             app_id: Some("silent".into()),
             ..Default::default()
         };
-        let (rounded, input) = (self.rounded, self.input.clone());
+        let (screen, rounded, input) = (self.screen, self.rounded, self.input.clone());
         let opened = cx.update(|cx| {
             cx.open_window(options, |window, cx| {
-                cx.new(|cx| Preview::new(loaded, rounded, input, window, cx))
+                cx.new(|cx| Preview::new(loaded, screen, rounded, input, window, cx))
             })
         });
         let handle = match opened {
@@ -323,9 +332,10 @@ impl Controller {
     }
 
     async fn intent(&mut self, intent: Intent, cx: &mut AsyncApp) {
-        if let Intent::Redock(by) = intent {
-            self.redock(by);
-            return;
+        match intent {
+            Intent::Redock(by) => return self.redock(by),
+            Intent::Fit(size) => return self.fit(size),
+            _ => {}
         }
         let Some(shown) = &self.shown else {
             return;
@@ -366,8 +376,23 @@ impl Controller {
                     let _ = bus.trash(&uri);
                 }
             }
-            Intent::Redock(_) => {}
+            Intent::Redock(_) | Intent::Fit(_) => {}
         }
+    }
+
+    /// Resizes the window about its centre.
+    fn fit(&mut self, size: (i32, i32)) {
+        let (Some(x11), Some(open)) = (&self.x11, &mut self.window) else {
+            return;
+        };
+        let Some(frame) = open.xid.and_then(|xid| x11.frame(xid)) else {
+            return;
+        };
+        let rect = self.screen.around(frame.centre(), size);
+        if let Some(xid) = open.xid {
+            let _ = x11.configure(xid, rect);
+        }
+        open.size = (rect.width, rect.height);
     }
 
     /// Widens or narrows the window at its right edge, so that the content
