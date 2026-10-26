@@ -46,7 +46,11 @@ pub enum Act {
     Pass,
     /// Taken, with nothing to do, so that it does not browse either.
     Nothing,
+    /// Esc: every preview goes, and the window with them.
     Close,
+    /// Space: the top preview goes, showing the one beneath it, the archive
+    /// a file was taken out of, or the window closes if it was the last.
+    Off,
     Select(Direction),
     Open,
     Rename,
@@ -66,8 +70,8 @@ pub enum Act {
     /// i: the strip goes to its next mode.
     Strip,
     /// Enter or Space in an engaged archive: look inside the selected
-    /// entry, or open or close the selected folder; with nothing selected,
-    /// the key's usual act.
+    /// entry, which goes on top, or open or close the selected folder;
+    /// with nothing selected, the key's usual act.
     Inside(Box<Act>),
     SelectAll,
     Copy,
@@ -86,6 +90,18 @@ pub enum Act {
     },
     /// Louder or quieter by a step.
     Volume(bool),
+}
+
+/// What taking the top preview off does, with `beneath` previews under it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Off {
+    /// The preview beneath shows again, as it was left.
+    Back,
+    Close,
+}
+
+pub fn off(beneath: usize) -> Off {
+    if beneath == 0 { Off::Close } else { Off::Back }
 }
 
 /// What J and L skip.
@@ -153,14 +169,17 @@ pub fn route(kind: Kind, engaged: bool, key: &str, mods: Mods, held: bool, vim: 
     }
     let once = |act: Act| if held { Act::Nothing } else { act };
     match (shift, key) {
+        // Space toggles the preview of the selection, as in Nautilus: on
+        // for an archive's selected entry, off for the preview on top.
         (false, "space") if engaged && kind == Kind::Archive => {
-            once(Act::Inside(Box::new(Act::Close)))
+            once(Act::Inside(Box::new(Act::Off)))
         }
         (false, "enter") if engaged && kind == Kind::Archive => {
             once(Act::Inside(Box::new(Act::Open)))
         }
         // Shift may still be down from Shift with an arrow.
-        (_, "space" | "escape") => once(Act::Close),
+        (_, "space") => once(Act::Off),
+        (_, "escape") => once(Act::Close),
         (false, "enter") => once(Act::Open),
         (false, "f2") => once(Act::Rename),
         (false, "delete") => once(Act::Trash),
@@ -404,12 +423,34 @@ mod tests {
         );
         assert_eq!(
             press(Kind::Archive, true, "space"),
-            Act::Inside(Box::new(Act::Close))
+            Act::Inside(Box::new(Act::Off))
         );
-        // Not engaged, they open the archive and close the preview.
+        // Not engaged, they open the archive and take its preview off.
         assert_eq!(press(Kind::Archive, false, "enter"), Act::Open);
-        assert_eq!(press(Kind::Archive, false, "space"), Act::Close);
-        assert_eq!(press(Kind::Lines, true, "space"), Act::Close);
+        assert_eq!(press(Kind::Archive, false, "space"), Act::Off);
+        assert_eq!(press(Kind::Lines, true, "space"), Act::Off);
+        assert_eq!(press(Kind::Archive, true, "escape"), Act::Close);
+    }
+
+    #[test]
+    fn space_takes_previews_off_the_stack_one_by_one_and_escape_all() {
+        // A file inside an archive inside an archive: two lie beneath it.
+        let mut stack = vec!["outer.zip", "inner.tar"];
+        let mut top = "notes.txt";
+        let mut shown = Vec::new();
+        loop {
+            shown.push(top);
+            assert_eq!(press(Kind::Lines, false, "space"), Act::Off);
+            match off(stack.len()) {
+                Off::Back => top = stack.pop().unwrap(),
+                Off::Close => break,
+            }
+        }
+        assert_eq!(shown, ["notes.txt", "inner.tar", "outer.zip"]);
+        // Esc from two deep closes everything at once.
+        assert_eq!(press(Kind::Lines, false, "escape"), Act::Close);
+        assert_eq!(off(0), Off::Close);
+        assert_eq!(off(2), Off::Back);
     }
 
     #[test]
@@ -425,8 +466,9 @@ mod tests {
             route(Kind::Pdf, false, "escape", mods, false, &mut vim),
             Act::Close
         );
-        assert_eq!(press(Kind::Video, true, "space"), Act::Close);
-        assert_eq!(shifted(Kind::Lines, "space"), Act::Close);
+        assert_eq!(press(Kind::Video, true, "space"), Act::Off);
+        assert_eq!(shifted(Kind::Lines, "space"), Act::Off);
+        assert_eq!(shifted(Kind::Lines, "escape"), Act::Close);
     }
 
     #[test]

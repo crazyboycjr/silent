@@ -4,7 +4,8 @@
 //! A click inside content that has keys of its own engages it: the arrows
 //! then act on it instead of browsing Nautilus's files, until the window
 //! loses the focus or shows another file. A file inside an archive is
-//! taken out and shown in the same window; Esc goes back to the archive.
+//! taken out and shown in the same window, over the archive; Space takes
+//! it off again, and Esc closes them all.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -97,7 +98,7 @@ pub struct Preview {
     _bounds: Subscription,
 }
 
-/// An archive left for a file inside it, kept as it was for Esc.
+/// An archive left for a file inside it, kept as it was for Space.
 struct Level {
     loaded: Loaded,
     pane: Pane,
@@ -488,19 +489,15 @@ impl Preview {
         if m.alt || m.platform || m.function {
             return;
         }
-        // Esc stops an entry being taken out, then goes back to the archive.
-        if keystroke.key == "escape" && !m.control {
-            if let Some(opening) = self.opening.take() {
-                opening.cancel.store(true, Ordering::Relaxed);
-                cx.stop_propagation();
-                cx.notify();
-                return;
-            }
-            if !self.levels.is_empty() && self.keys.pending().is_none() {
-                cx.stop_propagation();
-                self.back(window, cx);
-                return;
-            }
+        // Space stops an entry being taken out, and the archive stays.
+        if keystroke.key == "space"
+            && !m.control
+            && let Some(opening) = self.opening.take()
+        {
+            opening.cancel.store(true, Ordering::Relaxed);
+            cx.stop_propagation();
+            cx.notify();
+            return;
         }
         let engaged = self.engaged(window, cx);
         let mods = Mods {
@@ -542,6 +539,10 @@ impl Preview {
         match act {
             Act::Pass | Act::Nothing | Act::Pending(_) | Act::Cancelled => {}
             Act::Close => self.intent(Intent::Close),
+            Act::Off => match keys::off(self.levels.len()) {
+                keys::Off::Back => self.back(window, cx),
+                keys::Off::Close => self.intent(Intent::Close),
+            },
             Act::Select(direction) => self.intent(Intent::Select(direction)),
             // These act on the file in Nautilus, the outermost archive.
             Act::Open | Act::Rename | Act::Trash if self.inside.is_some() => {}
@@ -813,7 +814,7 @@ impl Preview {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Esc or another file came first.
+        // Space, Esc or another file came first.
         let Some(opening) = self.opening.take() else {
             return;
         };
@@ -834,7 +835,7 @@ impl Preview {
         self.note(Some(word), window, cx);
     }
 
-    /// Shows a file taken out of the archive in view, which waits for Esc.
+    /// Shows a file taken out of the archive in view, over it until Space.
     fn enter(
         &mut self,
         file: Extracted,
@@ -857,8 +858,8 @@ impl Preview {
         }
     }
 
-    /// Esc: back to the archive the file was taken out of, as it was left,
-    /// and the file goes.
+    /// Space: back to the archive the file was taken out of, as it was
+    /// left, and the file goes.
     fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(level) = self.levels.pop() else {
             return;
@@ -937,7 +938,7 @@ impl Preview {
                                 ),
                         )
                         .child(div().text_color(theme.muted).child(format!(
-                            "{} of {} · Esc stops it",
+                            "{} of {} · Space stops it",
                             format::size(done),
                             format::size(opening.size)
                         ))),

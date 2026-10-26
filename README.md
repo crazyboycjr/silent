@@ -83,19 +83,24 @@ double-click on it in the tree, once a click has given the tree the keys.
 silent takes it out on the fly, into `$XDG_RUNTIME_DIR/silent/extract`
 while it is small and `$XDG_CACHE_HOME/silent/extract` past 64 MB, and
 shows it as it shows any file, the window taking its size about the same
-centre; the strip names it by its place, `project.zip › src/main.rs`. Esc
-goes back to the archive with its folders, its selection and its scroll as
-they were, one archive at a time when one was inside another, and the file
-taken out is gone at once. A slow one shows how far it has come, and Esc
-stops it; encrypted entries and anything over 4 GB are not taken out, and
-the strip says why. What a crashed preview left there is cleared at the
-next start.
+centre; the strip names it by its place, `project.zip › src/main.rs`.
+Previews lie on each other this way, and Space toggles the preview of the
+selection, as in Nautilus: on the archive's selected entry it puts that
+entry's preview on top, and anywhere else it takes the top preview off,
+back to the archive with its folders, its selection and its scroll as they
+were, one archive at a time when one was inside another, until the last
+closes. Esc closes everything. The file taken out is gone at once. A slow
+one shows how far it has come; Space stops it and stays in the archive,
+Esc stops it and closes. Encrypted entries and anything over 4 GB are not
+taken out, and the strip says why. What a crashed preview left there is
+cleared at the next start.
 
 ## Keys
 
 | Key | Action |
 | --- | --- |
-| Space, Esc | Close; Esc first drops a half-typed vim command, stops a file being taken out of an archive, or goes back to the archive it was taken out of |
+| Space | Toggles the preview of the selection: closes it, or, over the archive a file was taken out of, goes back to the archive; stops a file being taken out |
+| Esc | Closes everything, after first dropping a half-typed vim command |
 | Arrow keys | The previous or next file in Nautilus; after a click inside the content, see below |
 | Enter | Open with the default application; for a folder, go into it |
 | F2 | Rename in Nautilus |
@@ -137,7 +142,7 @@ engages a video only engages it; the next one pauses.
 | Text, code, hexdumps, documents | Sideways | A line |
 | PDF, slides | The previous or next page | Scroll |
 | Spreadsheets | The cell cursor | The cell cursor |
-| Archives | Close or open a folder | The previous or next entry; Enter or Space opens the file, or opens or closes the folder |
+| Archives | Close or open a folder | The previous or next entry; Enter or Space shows the file over the archive, or opens or closes the folder |
 | Video, audio | Back or forward five seconds | Louder or quieter; the playbar shows the volume, and the next sound or video keeps it, and the mute |
 
 The minimap, the rail and a document's miniature show where the view is
