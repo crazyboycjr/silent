@@ -28,6 +28,9 @@ use silent::decode::{self, Event, MemoryFormatSelection};
 use silent::detect::{self, Kind};
 use silent::x11::X11;
 
+/// How long a process D-Bus started waits for something to show.
+const IDLE: Duration = Duration::from_secs(3);
+
 fn main() -> ExitCode {
     trace::start();
     trace::mark("main");
@@ -48,11 +51,10 @@ fn main() -> ExitCode {
 }
 
 /// Owns Nautilus's previewer name and shows what it asks for. D-Bus starts
-/// this process for a call, so that call is waited for before anything else.
+/// this process for a call, so that call is waited for before anything else;
+/// a call that shows nothing, such as Nautilus's ping, leaves it idle, and it
+/// goes after a moment.
 fn serve() -> ExitCode {
-    // The GPU's instance and device take longer than anything else before
-    // the window: they are made beside the bus, the toolkit and the loading.
-    gpui_wgpu::WgpuContext::prepare();
     let (sender, requests) = async_channel::unbounded();
     let bus = match Bus::start(sender) {
         Ok(bus) => bus,
@@ -63,7 +65,7 @@ fn serve() -> ExitCode {
     };
     trace::mark("bus");
     let first = async_io::block_on(requests.recv().or(async {
-        async_io::Timer::after(Duration::from_secs(10)).await;
+        async_io::Timer::after(IDLE).await;
         Err(async_channel::RecvError)
     }));
     let Ok(first) = first else {
@@ -71,6 +73,11 @@ fn serve() -> ExitCode {
         return ExitCode::SUCCESS;
     };
     trace::mark("request");
+    if matches!(first, Request::Show { .. }) {
+        // The GPU's instance and device take longer than anything else before
+        // the window: they are made beside the toolkit and the loading.
+        gpui_wgpu::WgpuContext::prepare();
+    }
     app::run(Some(bus), requests, vec![first]);
     ExitCode::SUCCESS
 }
