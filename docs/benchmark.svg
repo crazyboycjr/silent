@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="710" height="666" viewBox="0 0 710 666" font-family="Noto Sans, sans-serif" font-size="12">
+<style>.bg{fill:#fcfcfb}text{fill:#0b0b0b}.muted{fill:#52514e}.grid{stroke:#e4e2dc}.s1{fill:#2a78d6}.s2{fill:#eb6834}.s3{fill:#1baf7a}@media (prefers-color-scheme: dark){.bg{fill:#1a1a19}text{fill:#f0efec}.muted{fill:#c3c2b7}.grid{stroke:#34332f}.s1{fill:#3987e5}.s2{fill:#d95926}.s3{fill:#199e70}}</style>
+<rect class="bg" width="710" height="666"/>
+<rect class="s1" x="150" y="14" width="10" height="10" rx="2"/>
+<text x="165" y="23">silent, cold</text>
+<rect class="s2" x="275" y="14" width="10" height="10" rx="2"/>
+<text x="290" y="23">sushi, warm</text>
+<rect class="s3" x="393" y="14" width="10" height="10" rx="2"/>
+<text x="408" y="23">sushi, cold</text>
+<line class="grid" x1="150.0" y1="42" x2="150.0" y2="644"/>
+<text class="muted" x="150.0" y="658" text-anchor="middle">0</text>
+<line class="grid" x1="220.2" y1="42" x2="220.2" y2="644"/>
+<text class="muted" x="220.2" y="658" text-anchor="middle">100</text>
+<line class="grid" x1="290.3" y1="42" x2="290.3" y2="644"/>
+<text class="muted" x="290.3" y="658" text-anchor="middle">200</text>
+<line class="grid" x1="360.5" y1="42" x2="360.5" y2="644"/>
+<text class="muted" x="360.5" y="658" text-anchor="middle">300</text>
+<line class="grid" x1="430.6" y1="42" x2="430.6" y2="644"/>
+<text class="muted" x="430.6" y="658" text-anchor="middle">400</text>
+<line class="grid" x1="500.8" y1="42" x2="500.8" y2="644"/>
+<text class="muted" x="500.8" y="658" text-anchor="middle">500</text>
+<line class="grid" x1="571.0" y1="42" x2="571.0" y2="644"/>
+<text class="muted" x="571.0" y="658" text-anchor="middle">600</text>
+<line class="grid" x1="641.1" y1="42" x2="641.1" y2="644"/>
+<text class="muted" x="641.1" y="658" text-anchor="middle">700</text>
+<text class="muted" x="706" y="658" text-anchor="end">ms</text>
+<text x="140" y="69.0" text-anchor="end">JPEG, 12 MP</text>
+<path class="s1" d="M150,50H313.0A4,4 0 0 1 317.0,54.0V54.0A4,4 0 0 1 313.0,58H150Z"><title>JPEG, 12 MP, silent, cold: 238 ms, median of 5</title></path>
+<path class="s2" d="M150,60H240.5A4,4 0 0 1 244.5,64.0V64.0A4,4 0 0 1 240.5,68H150Z"><title>JPEG, 12 MP, sushi, warm: 135 ms, median of 5</title></path>
+<path class="s3" d="M150,70H406.7A4,4 0 0 1 410.7,74.0V74.0A4,4 0 0 1 406.7,78H150Z"><title>JPEG, 12 MP, sushi, cold: 372 ms, median of 5</title></path>
+<text x="140" y="111.0" text-anchor="end">PNG, 3840×2160</text>
+<path class="s1" d="M150,92H322.8A4,4 0 0 1 326.8,96.0V96.0A4,4 0 0 1 322.8,100H150Z"><title>PNG, 3840×2160, silent, cold: 252 ms, median of 5</title></path>
+<path class="s2" d="M150,102H257.6A4,4 0 0 1 261.6,106.0V106.0A4,4 0 0 1 257.6,110H150Z"><title>PNG, 3840×2160, sushi, warm: 159 ms, median of 5</title></path>
+<path class="s3" d="M150,112H424.4A4,4 0 0 1 428.4,116.0V116.0A4,4 0 0 1 424.4,120H150Z"><title>PNG, 3840×2160, sushi, cold: 397 ms, median of 5</title></path>
+<text x="140" y="153.0" text-anchor="end">Animated GIF</text>
+<path class="s1" d="M150,134H349.1A4,4 0 0 1 353.1,138.0V138.0A4,4 0 0 1 349.1,142H150Z"><title>Animated GIF, silent, cold: 289 ms, median of 5</title></path>
+<path class="s2" d="M150,144H183.4A4,4 0 0 1 187.4,148.0V148.0A4,4 0 0 1 183.4,152H150Z"><title>Animated GIF, sushi, warm: 53 ms, median of 5</title></path>
+<path class="s3" d="M150,154H328.6A4,4 0 0 1 332.6,158.0V158.0A4,4 0 0 1 328.6,162H150Z"><title>Animated GIF, sushi, cold: 260 ms, median of 5</title></path>
+<text x="140" y="195.0" text-anchor="end">PDF, 3 pages</text>
+<path class="s1" d="M150,176H371.3A4,4 0 0 1 375.3,180.0V180.0A4,4 0 0 1 371.3,184H150Z"><title>PDF, 3 pages, silent, cold: 321 ms, median of 5</title></path>
+<path class="s2" d="M150,186H202.6A4,4 0 0 1 206.6,190.0V190.0A4,4 0 0 1 202.6,194H150Z"><title>PDF, 3 pages, sushi, warm: 81 ms, median of 5</title></path>
+<path class="s3" d="M150,196H359.5A4,4 0 0 1 363.5,200.0V200.0A4,4 0 0 1 359.5,204H150Z"><title>PDF, 3 pages, sushi, cold: 304 ms, median of 5</title></path>
+<text x="140" y="237.0" text-anchor="end">PDF, 42 pages</text>
+<path class="s1" d="M150,218H312.4A4,4 0 0 1 316.4,222.0V222.0A4,4 0 0 1 312.4,226H150Z"><title>PDF, 42 pages, silent, cold: 237 ms, median of 5</title></path>
+<path class="s2" d="M150,228H184.1A4,4 0 0 1 188.1,232.0V232.0A4,4 0 0 1 184.1,236H150Z"><title>PDF, 42 pages, sushi, warm: 54 ms, median of 5</title></path>
+<path class="s3" d="M150,238H334.1A4,4 0 0 1 338.1,242.0V242.0A4,4 0 0 1 334.1,246H150Z"><title>PDF, 42 pages, sushi, cold: 268 ms, median of 5</title></path>
+<text x="140" y="279.0" text-anchor="end">Video, 1080p</text>
+<path class="s1" d="M150,260H466.9A4,4 0 0 1 470.9,264.0V264.0A4,4 0 0 1 466.9,268H150Z"><title>Video, 1080p, silent, cold: 457 ms, median of 5</title></path>
+<path class="s2" d="M150,270H552.0A4,4 0 0 1 556.0,274.0V274.0A4,4 0 0 1 552.0,278H150Z"><title>Video, 1080p, sushi, warm: 579 ms, median of 5</title></path>
+<path class="s3" d="M150,280H641.2A4,4 0 0 1 645.2,284.0V284.0A4,4 0 0 1 641.2,288H150Z"><title>Video, 1080p, sushi, cold: 706 ms, median of 5</title></path>
+<text x="140" y="321.0" text-anchor="end">MP3 with cover</text>
+<path class="s1" d="M150,302H482.1A4,4 0 0 1 486.1,306.0V306.0A4,4 0 0 1 482.1,310H150Z"><title>MP3 with cover, silent, cold: 479 ms, median of 5</title></path>
+<path class="s3" d="M150,322H444.8A4,4 0 0 1 448.8,326.0V326.0A4,4 0 0 1 444.8,330H150Z"><title>MP3 with cover, sushi, cold: 426 ms, median of 1</title></path>
+<text x="140" y="363.0" text-anchor="end">Source file, 9 KB</text>
+<path class="s1" d="M150,344H277.1A4,4 0 0 1 281.1,348.0V348.0A4,4 0 0 1 277.1,352H150Z"><title>Source file, 9 KB, silent, cold: 187 ms, median of 5</title></path>
+<path class="s2" d="M150,354H183.1A4,4 0 0 1 187.1,358.0V358.0A4,4 0 0 1 183.1,362H150Z"><title>Source file, 9 KB, sushi, warm: 53 ms, median of 5</title></path>
+<path class="s3" d="M150,364H316.7A4,4 0 0 1 320.7,368.0V368.0A4,4 0 0 1 316.7,372H150Z"><title>Source file, 9 KB, sushi, cold: 243 ms, median of 5</title></path>
+<text x="140" y="405.0" text-anchor="end">Text, 2 MB</text>
+<path class="s1" d="M150,386H272.5A4,4 0 0 1 276.5,390.0V390.0A4,4 0 0 1 272.5,394H150Z"><title>Text, 2 MB, silent, cold: 180 ms, median of 5</title></path>
+<path class="s2" d="M150,396H179.5A4,4 0 0 1 183.5,400.0V400.0A4,4 0 0 1 179.5,404H150Z"><title>Text, 2 MB, sushi, warm: 48 ms, median of 5</title></path>
+<path class="s3" d="M150,406H320.6A4,4 0 0 1 324.6,410.0V410.0A4,4 0 0 1 320.6,414H150Z"><title>Text, 2 MB, sushi, cold: 249 ms, median of 5</title></path>
+<text x="140" y="447.0" text-anchor="end">Zip archive</text>
+<path class="s1" d="M150,428H275.7A4,4 0 0 1 279.7,432.0V432.0A4,4 0 0 1 275.7,436H150Z"><title>Zip archive, silent, cold: 185 ms, median of 5</title></path>
+<path class="s2" d="M150,438H183.5A4,4 0 0 1 187.5,442.0V442.0A4,4 0 0 1 183.5,446H150Z"><title>Zip archive, sushi, warm: 53 ms, median of 2</title></path>
+<path class="s3" d="M150,448H332.5A4,4 0 0 1 336.5,452.0V452.0A4,4 0 0 1 332.5,456H150Z"><title>Zip archive, sushi, cold: 266 ms, median of 5</title></path>
+<text x="140" y="489.0" text-anchor="end">Folder</text>
+<path class="s1" d="M150,470H271.7A4,4 0 0 1 275.7,474.0V474.0A4,4 0 0 1 271.7,478H150Z"><title>Folder, silent, cold: 179 ms, median of 5</title></path>
+<path class="s3" d="M150,490H324.0A4,4 0 0 1 328.0,494.0V494.0A4,4 0 0 1 324.0,498H150Z"><title>Folder, sushi, cold: 254 ms, median of 5</title></path>
+<text x="140" y="531.0" text-anchor="end">Word document</text>
+<path class="s1" d="M150,512H285.4A4,4 0 0 1 289.4,516.0V516.0A4,4 0 0 1 285.4,520H150Z"><title>Word document, silent, cold: 199 ms, median of 5</title></path>
+<text class="muted" x="156" y="536" font-size="11">sushi can't show it</text>
+<text x="140" y="573.0" text-anchor="end">Spreadsheet</text>
+<path class="s1" d="M150,554H269.5A4,4 0 0 1 273.5,558.0V558.0A4,4 0 0 1 269.5,562H150Z"><title>Spreadsheet, silent, cold: 176 ms, median of 5</title></path>
+<text class="muted" x="156" y="578" font-size="11">sushi can't show it</text>
+<text x="140" y="615.0" text-anchor="end">Presentation</text>
+<path class="s1" d="M150,596H267.0A4,4 0 0 1 271.0,600.0V600.0A4,4 0 0 1 267.0,604H150Z"><title>Presentation, silent, cold: 172 ms, median of 5</title></path>
+<text class="muted" x="156" y="620" font-size="11">sushi can't show it</text>
+</svg>

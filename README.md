@@ -190,5 +190,18 @@ scripts/harness cold "$PWD/target/release/silent" ~/.cache/claude-scratch/silent
 ```
 
 `silent FILE` previews a file without D-Bus; `silent --probe FILE...` prints
-what a preview would be and how long decoding takes. `SILENT_TRACE=1` prints
-start-up timings.
+what a preview would be and how long decoding takes. `SILENT_TRACE=1` prints a
+mark at each step of the start-up on stderr, with the wall clock: the bus, the
+fonts, the X11 window, the GPU's instance, device, swapchain and pipelines,
+the first frame and its present.
+
+`scripts/bench` times silent against sushi on the desktop, from the ShowFile
+call to the first frame that shows the file, read back from the X server:
+cold, with sushi's process kept warm, and switching files in an open window.
+It switches previewers with a service file of the user's and always puts the
+user's back. The results are in [docs/benchmark.md](docs/benchmark.md):
+
+```sh
+scripts/bench fixtures
+scripts/bench run --n 5
+```

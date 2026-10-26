@@ -1,0 +1,649 @@
+#!/usr/bin/env python3
+"""silent against sushi: from Nautilus's ShowFile call to the first frame that
+shows the file, timed from outside both, the way the user sees them.
+
+    scripts/bench fixtures              make the files it shows (synthetic, fixed lengths)
+    scripts/bench run [OPTIONS]         time both previewers, write docs/benchmark.md
+    scripts/bench report RESULTS.json   write docs/benchmark.md again from earlier results
+
+Each run calls ShowFile as Nautilus does and watches the previewer's window
+from the X server: the first frame counts once the window's pixels have come
+three quarters of the way from what they were (nothing, or the file before) to
+what they settle on. A previewer is timed to its content, not to the map of its
+window. Cold runs start with no previewer process; sushi's warm
+runs keep its process alive between previews, as it normally lives; a switch
+shows the next file in an open window, as the arrow keys do.
+
+The previewer that answers is chosen with a D-Bus service file of the user's,
+~/.local/share/dbus-1/services/org.gnome.NautilusPreviewer.service: the user's
+own file is moved aside for the run, a capped one with a silent audio sink takes
+its place, and the user's file is always put back, with ReloadConfig, however
+the run ends. --test uses a private bus and whatever DISPLAY names instead.
+"""
+
+import argparse
+import json
+import os
+import pathlib
+import shutil
+import signal
+import statistics
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+import numpy as np
+from gi.repository import Gio, GLib
+from Xlib import X, Xatom, display
+from Xlib.error import XError
+
+NAME = "org.gnome.NautilusPreviewer"
+OBJECT = "/org/gnome/NautilusPreviewer"
+IFACE = "org.gnome.NautilusPreviewer2"
+REPO = pathlib.Path(__file__).resolve().parent.parent
+SCRATCH = pathlib.Path(os.environ.get("SILENT_SCRATCH", pathlib.Path.home() / ".cache/claude-scratch/silent"))
+FIXTURES = pathlib.Path(os.environ.get("SILENT_FIXTURES", SCRATCH / "fixtures"))
+USER_SERVICE = pathlib.Path.home() / ".local/share/dbus-1/services" / f"{NAME}.service"
+SUSHI = "/usr/lib/org.gnome.NautilusPreviewer"
+CAP = ["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=6G", "-p", "MemorySwapMax=0"]
+# Sound goes to a null sink of the audio server's, made for the run.
+NULL_SINK = "silent_bench"
+QUIET = f"PULSE_SINK={NULL_SINK}"
+
+# (key, what it is, path under FIXTURES, whether sushi shows it)
+KINDS = [
+    ("jpeg", "JPEG, 12 MP", "images/photo-4032x3024.jpg", True),
+    ("png", "PNG, 3840×2160", "images/uhd-3840x2160.png", True),
+    ("gif", "Animated GIF", "bench/animated.gif", True),
+    ("pdf", "PDF, 3 pages", "docs/pictures.pdf", True),
+    ("pdf40", "PDF, 42 pages", "docs/color-management.pdf", True),
+    ("video", "Video, 1080p", "bench/video-1080p.mp4", True),
+    ("mp3", "MP3 with cover", "audio/song.mp3", True),
+    ("code", "Source file, 9 KB", "text/geometry.rs", True),
+    ("text", "Text, 2 MB", "bench/text-2mb.txt", True),
+    ("zip", "Zip archive", "archives/project.zip", True),
+    ("folder", "Folder", "folder/project", True),
+    ("docx", "Word document", "office/report.docx", False),
+    ("xlsx", "Spreadsheet", "office/sales.xlsx", False),
+    ("pptx", "Presentation", "office/deck.pptx", False),
+]
+# Pixels count as unchanged within this, per channel.
+TOLERANCE = 24
+# The window has settled once it has not changed for this long, and no
+# sooner than this after the call: a previewer may show a still, empty window
+# while it loads.
+SETTLED = 0.35
+WATCHED = {"open": 1.2, "switch": 1.0}
+
+
+def fixtures():
+    """The bench's own files, beside the harness's: a picture and a video that
+    stay still but for a small square, so that their frames settle, and 2 MB
+    of text."""
+    if not (FIXTURES / "images/photo-4032x3024.jpg").exists():
+        subprocess.run([str(REPO / "scripts/harness"), "fixtures"], check=True)
+    bench = FIXTURES / "bench"
+    bench.mkdir(parents=True, exist_ok=True)
+    ff = CAP + ["nice", "-n", "19", "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-threads", "4"]
+    subprocess.run(ff + [
+        "-f", "lavfi", "-i", "smptebars=s=640x480:r=10:d=3",
+        "-f", "lavfi", "-i", "color=c=white:s=40x40:r=10:d=3",
+        "-filter_complex", "[0][1]overlay=x='20+t*100':y=16:shortest=1,split[a][b];[a]palettegen[p];[b][p]paletteuse",
+        "-loop", "0", str(bench / "animated.gif")], check=True)
+    subprocess.run(ff + [
+        "-f", "lavfi", "-i", "smptehdbars=s=1920x1080:r=30:d=10",
+        "-f", "lavfi", "-i", "color=c=white:s=64x64:r=30:d=10",
+        "-f", "lavfi", "-i", "sine=f=330:d=10",
+        "-filter_complex", "[0][1]overlay=x='40+t*150':y=40:shortest=1[v]",
+        "-map", "[v]", "-map", "2", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-shortest", str(bench / "video-1080p.mp4")], check=True)
+    with open(FIXTURES / "text/long.txt", "rb") as src, open(bench / "text-2mb.txt", "wb") as out:
+        out.write(src.read(2_000_000))
+    print(f"bench fixtures in {bench}")
+
+
+class Bus:
+    def __init__(self):
+        self.conn = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+
+    def call(self, dest, path, iface, method, args=None, timeout=15000):
+        reply = self.conn.call_sync(dest, path, iface, method, args, None,
+                                    Gio.DBusCallFlags.NONE, timeout, None)
+        return reply.unpack() if reply else ()
+
+    def dbus(self, method, *args, signature=""):
+        variant = GLib.Variant(f"({signature})", args) if signature else None
+        return self.call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", method, variant)
+
+    def owner_pid(self):
+        try:
+            return self.dbus("GetConnectionUnixProcessID", NAME, signature="s")[0]
+        except GLib.Error:
+            return None
+
+    def show(self, path):
+        uri = pathlib.Path(path).resolve().as_uri()
+        self.call(NAME, OBJECT, IFACE, "ShowFile", GLib.Variant("(ssbs)", (uri, "x11:0", False, "")))
+
+    def close(self):
+        try:
+            self.call(NAME, OBJECT, IFACE, "Close", None, timeout=5000)
+        except GLib.Error:
+            pass
+
+    def reload(self):
+        self.dbus("ReloadConfig")
+
+
+class Screen:
+    """The previewer's windows as the X server has them, and their pixels."""
+
+    def __init__(self):
+        self.d = display.Display()
+        self.root = self.d.screen().root
+        self.root.change_attributes(event_mask=X.SubstructureNotifyMask)
+        self.pid_atom = self.d.intern_atom("_NET_WM_PID")
+        self.mapped = {}  # window id -> monotonic ns of its map
+        self.d.sync()
+
+    def pump(self):
+        while self.d.pending_events():
+            e = self.d.next_event()
+            t = time.monotonic_ns()
+            if e.type == X.MapNotify:
+                self.mapped[e.window.id] = t
+            elif e.type in (X.UnmapNotify, X.DestroyNotify):
+                self.mapped.pop(e.window.id, None)
+
+    def window_of(self, pid):
+        """The previewer's newest mapped top-level window and when it mapped."""
+        best = None
+        for wid, at in list(self.mapped.items()):
+            try:
+                w = self.d.create_resource_object("window", wid)
+                prop = w.get_full_property(self.pid_atom, Xatom.CARDINAL)
+                if prop is None or prop.value[0] != pid:
+                    continue
+                if w.get_attributes().override_redirect:
+                    continue
+            except XError:
+                self.mapped.pop(wid, None)
+                continue
+            if best is None or at > best[1]:
+                best = (w, at)
+        return best
+
+    def sample(self, w):
+        """Three rows and three columns of the window's pixels, and its size."""
+        try:
+            g = w.get_geometry()
+            width, height = g.width, g.height
+            rows = [w.get_image(0, int(height * f), width, 1, X.ZPixmap, 0xFFFFFFFF).data for f in (0.3, 0.5, 0.7)]
+            cols = [w.get_image(int(width * f), 0, 1, height, X.ZPixmap, 0xFFFFFFFF).data for f in (0.3, 0.5, 0.7)]
+        except XError:
+            return None
+        pixels = np.frombuffer(b"".join(rows + cols), dtype=np.uint8).reshape(-1, 4)[:, :3]
+        return (width, height), pixels.astype(np.int16)
+
+
+def differs(a, b):
+    """The share of sampled pixels that differ between two samples."""
+    if a is None or b is None or a[0] != b[0]:
+        return 1.0
+    return float(np.mean(np.abs(a[1] - b[1]).max(axis=1) > TOLERANCE))
+
+
+def watch(screen, pid_of, before, called, phase, window_at=None):
+    """Samples the previewer's window until it settles; returns the samples,
+    each (monotonic ns, window id, sample), and when its window mapped."""
+    samples, mapped = [], None
+    deadline, until = called + 8e9, called + WATCHED[phase] * 1e9
+    while time.monotonic_ns() < deadline:
+        screen.pump()
+        pid = pid_of()
+        found = screen.window_of(pid) if pid else None
+        if found is None:
+            time.sleep(0.002)
+            continue
+        w, at = found
+        if mapped is None or (window_at is not None and at > window_at):
+            mapped = at
+        t = time.monotonic_ns()
+        s = screen.sample(w)
+        if s is None:
+            continue
+        samples.append((t, w.id, s))
+        # Settled: unchanged for SETTLED seconds, and not what was there before.
+        recent = [x for x in samples if x[0] >= t - SETTLED * 1e9]
+        if (t >= until and recent[0][0] <= t - (SETTLED - 0.05) * 1e9
+                and all(differs(x[2], s) < 0.01 for x in recent)
+                and (before is None or differs(before, s) > 0.02)):
+            break
+        time.sleep(0.003)
+    return samples, mapped
+
+
+def shown_at(samples, before):
+    """When the window came three quarters of the way from `before` to where it settled;
+    none if it never left `before`."""
+    if not samples:
+        return None
+    final = samples[-1][2]
+    start = before if before is not None else samples[0][2]
+    span = differs(start, final)
+    if span < 0.02:
+        return None if before is not None else samples[0][0]
+    for t, _, s in samples:
+        if differs(s, final) <= 0.25 * span:
+            return t
+    return samples[-1][0]
+
+
+def timeline(samples, before, called):
+    """How far each sample was from where the window settled, for checking a run."""
+    if not samples:
+        return []
+    final = samples[-1][2]
+    points = [(-1.0, round(differs(before, final), 3))] if before is not None else []
+    return points + [(round((t - called) / 1e6, 1), round(differs(s, final), 3)) for t, _, s in samples[::3]]
+
+
+def alive(pid):
+    return pathlib.Path(f"/proc/{pid}").exists()
+
+
+def rss_mb(pid):
+    try:
+        for line in open(f"/proc/{pid}/status"):
+            if line.startswith("VmRSS:"):
+                return int(line.split()[1]) / 1024
+    except OSError:
+        pass
+    return None
+
+
+def vram_mib(pid):
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    for line in out.splitlines():
+        p, _, mem = line.partition(",")
+        if p.strip() == str(pid):
+            return float(mem)
+    return None
+
+
+class NullSink:
+    """A sink of the audio server's that plays to nowhere, for the run's sound."""
+
+    def __init__(self):
+        self.module = subprocess.run(
+            ["pactl", "load-module", "module-null-sink", f"sink_name={NULL_SINK}",
+             "sink_properties=device.description=silent-bench"],
+            capture_output=True, text=True, check=True).stdout.strip()
+
+    def close(self):
+        subprocess.run(["pactl", "unload-module", self.module], check=False)
+
+
+class Previewers:
+    """Puts one previewer or the other behind Nautilus's name, and the user's back."""
+
+    def __init__(self, bus, services, real, silent):
+        self.bus, self.services, self.real, self.silent = bus, services, real, silent
+        self.file = services / f"{NAME}.service"
+        self.saved = None
+        if real and self.file.exists():
+            self.saved = self.file.with_name(f"{NAME}.service.bench-saved")
+            shutil.move(self.file, self.saved)
+
+    def use(self, which):
+        program = self.silent if which == "silent" else SUSHI
+        command = (CAP if self.real else []) + ["/usr/bin/env", QUIET, program]
+        self.services.mkdir(parents=True, exist_ok=True)
+        self.file.write_text(f"[D-BUS Service]\nName={NAME}\nExec={' '.join(command)}\n")
+        self.bus.reload()
+
+    def restore(self):
+        if not self.real:
+            return
+        if self.saved is not None and self.saved.exists():
+            shutil.move(self.saved, self.file)
+        elif self.saved is None:
+            self.file.unlink(missing_ok=True)
+        self.bus.reload()
+
+
+def stop(bus, pid):
+    """Ends the previewer process, for a cold start."""
+    if pid:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    for _ in range(200):
+        if not bus.dbus("NameHasOwner", NAME, signature="s")[0]:
+            return
+        time.sleep(0.02)
+
+
+def run_one(bus, screen, which, mode, path, after, results):
+    """One preview: ShowFile on `path`, then a switch to `after`, then Close."""
+    pid_before = bus.owner_pid()
+    if mode == "cold" and pid_before:
+        stop(bus, pid_before)
+        pid_before = None
+    owner = {"pid": pid_before}
+
+    def pid_of():
+        if owner["pid"] is None:
+            owner["pid"] = bus.owner_pid()
+        return owner["pid"]
+
+    def call(target):
+        called = {}
+
+        def go():
+            called["t"] = time.monotonic_ns()
+            try:
+                bus.show(target)
+            except GLib.Error as e:
+                called["error"] = str(e)
+        thread = threading.Thread(target=go, daemon=True)
+        thread.start()
+        while "t" not in called:
+            time.sleep(0.0005)
+        return called
+
+    called = call(path)
+    samples, mapped = watch(screen, pid_of, None, called["t"], "open")
+    shown = shown_at(samples, None)
+    pid = pid_of()
+    if pid and not alive(pid):
+        called["error"] = "the previewer died"
+        shown = None
+    record = {"previewer": which, "mode": mode, "file": path.name, "warm_process": pid_before is not None,
+              "ms": None if shown is None else (shown - called["t"]) / 1e6,
+              "mapped_ms": None if mapped is None else (mapped - called["t"]) / 1e6,
+              "rss_mb": rss_mb(pid) if pid else None, "pid": pid, "error": called.get("error"),
+              "trace": timeline(samples, None, called["t"])}
+    results.append(record)
+    if after is not None and samples:
+        before = samples[-1][2]
+        window_at = samples[-1][0]
+        called = call(after)
+        samples2, _ = watch(screen, pid_of, before, called["t"], "switch", window_at)
+        shown2 = shown_at(samples2, before)
+        if pid and not alive(pid):
+            called["error"] = "the previewer died"
+            shown2 = None
+        elif shown2 is None:
+            called.setdefault("error", "the window kept showing the file before")
+        results.append({"previewer": which, "mode": "switch", "file": after.name, "warm_process": True,
+                        "ms": None if shown2 is None else (shown2 - called["t"]) / 1e6,
+                        "rss_mb": rss_mb(pid) if pid else None, "pid": pid, "error": called.get("error"),
+                        "trace": timeline(samples2, before, called["t"])})
+    bus.close()
+    # Gone, or at least closed, before the next.
+    for _ in range(150):
+        screen.pump()
+        if pid is None or screen.window_of(pid) is None:
+            break
+        time.sleep(0.02)
+    return record
+
+
+def private_bus(tmp):
+    services = tmp / "services"
+    services.mkdir()
+    conf = tmp / "session.conf"
+    conf.write_text(f"""<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <listen>unix:tmpdir={tmp}</listen>
+  <auth>EXTERNAL</auth>
+  <servicedir>{services}</servicedir>
+  <policy context="default"><allow send_destination="*" eavesdrop="true"/><allow eavesdrop="true"/><allow own="*"/></policy>
+</busconfig>
+""")
+    daemon = subprocess.Popen(["dbus-daemon", "--config-file", str(conf), "--nofork", "--print-address=1"],
+                              stdout=subprocess.PIPE, text=True)
+    os.environ["DBUS_SESSION_BUS_ADDRESS"] = daemon.stdout.readline().strip()
+    return daemon, services
+
+
+def run(args):
+    real = not args.test
+    if real and os.environ.get("DISPLAY", "").split(".")[0] not in (":0", ""):
+        sys.exit("bench: the real run is for the desktop's display and bus; --test for others")
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="speed-bench.", dir=SCRATCH))
+    daemon = None
+    if real:
+        services = USER_SERVICE.parent
+    else:
+        daemon, services = private_bus(tmp)
+    bus = Bus()
+    if real and bus.dbus("NameHasOwner", NAME, signature="s")[0]:
+        sys.exit("bench: a previewer is showing something; close it first")
+    null_sink = NullSink()
+    previewers = Previewers(bus, services, real, args.silent)
+    # Whatever ends the run, the user's previewer comes back.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
+    signal.signal(signal.SIGINT, lambda *_: sys.exit(1))
+    screen = Screen()
+    kinds = [k for k in KINDS if not args.only or k[0] in args.only.split(",")]
+    files = [(key, FIXTURES / rel, sushi_can) for key, _, rel, sushi_can in kinds]
+    for _, path, _ in files:
+        if not path.exists():
+            sys.exit(f"bench: {path} is missing; run 'scripts/bench fixtures'")
+    results = []
+    out = pathlib.Path(args.out)
+    try:
+        for which, mode in (("silent", "cold"), ("sushi", "cold"), ("sushi", "warm")):
+            if which not in args.previewers.split(","):
+                continue
+            previewers.use(which)
+            shown = [(k, p) for k, p, can in files if which == "silent" or can]
+            # An untimed first preview: the previewer starts, or the run stops here.
+            if run_one(bus, screen, which, "cold", shown[0][1], None, [])["ms"] is None:
+                sys.exit(f"bench: {which} showed nothing; is its service file right?")
+            for i, (key, path) in enumerate(shown):
+                after = shown[(i + 1) % len(shown)][1]
+                for n in range(args.n):
+                    if mode == "warm" and not bus.owner_pid():
+                        # A first preview starts the process; it is not timed.
+                        run_one(bus, screen, which, "cold", path, None, [])
+                    record = run_one(bus, screen, which, mode, path, after, results)
+                    if n == 0 and record["pid"]:
+                        record["vram_mib"] = vram_mib(record["pid"])
+                    # Every run is kept as it comes, should the run be stopped.
+                    out.write_text(json.dumps(results, indent=1))
+                    print(f"{which} {mode} {key}: {record['ms']} ms", file=sys.stderr)
+                    time.sleep(0.15)
+            stop(bus, bus.owner_pid())
+    finally:
+        try:
+            stop(bus, bus.owner_pid())
+        finally:
+            previewers.restore()
+            null_sink.close()
+            if daemon:
+                daemon.terminate()
+    out.write_text(json.dumps(results, indent=1))
+    if real:
+        check_silent(bus)
+    report(results, args.markdown)
+
+
+def check_silent(bus):
+    """After the run: the user's own previewer answers Nautilus's name again."""
+    bus.dbus("StartServiceByName", NAME, 0, signature="su")
+    pid = bus.owner_pid()
+    exe = os.readlink(f"/proc/{pid}/exe") if pid else None
+    print(f"bench: {NAME} answers again, from {exe}", file=sys.stderr)
+
+
+def percentile(values, q):
+    return float(np.percentile(values, q)) if values else None
+
+
+def report(results, markdown, note=None):
+    cells, failed = {}, {}
+    for r in results:
+        key = (r["file"], r["previewer"], r["mode"])
+        if r["ms"] is None or (r["mode"] == "warm" and not r["warm_process"]):
+            failed.setdefault(key, []).append(r.get("error") or "no frame")
+            continue
+        cells.setdefault(key, []).append(r)
+    by_file = {(FIXTURES / rel).name: (key, label, can) for key, label, rel, can in KINDS}
+    columns = [("silent", "cold"), ("sushi", "cold"), ("sushi", "warm"), ("silent", "switch"), ("sushi", "switch")]
+    rows = []
+    for name, (key, label, can) in by_file.items():
+        row = {"key": key, "label": label, "sushi_can": can}
+        for which, mode in columns:
+            runs = cells.get((name, which, mode), [])
+            times = [r["ms"] for r in runs]
+            row[f"{which} {mode}"] = (statistics.median(times), percentile(times, 95), len(times)) if times else None
+        for which in ("silent", "sushi"):
+            opens = [r for (n, w, m), rs in cells.items() if n == name and w == which and m != "switch" for r in rs]
+            rss = [r["rss_mb"] for r in opens if r.get("rss_mb")]
+            vram = [r["vram_mib"] for r in opens if r.get("vram_mib")]
+            row[f"{which} rss"] = statistics.median(rss) if rss else None
+            row[f"{which} vram"] = statistics.median(vram) if vram else None
+        rows.append(row)
+    notes = []
+    for (name, which, mode), errors in sorted(failed.items()):
+        label = by_file.get(name, (None, name))[1]
+        total = len(errors) + len(cells.get((name, which, mode), []))
+        reasons = ", ".join(sorted(set(errors)))
+        notes.append(f"{which}, {mode}, {label}: {len(errors)} of {total} runs without a frame ({reasons})")
+    write_markdown(rows, columns, results, notes, note, pathlib.Path(markdown))
+
+
+def cell(value):
+    if value is None:
+        return "–"
+    median, p95, n = value
+    return f"{median:.0f} ({p95:.0f})"
+
+
+def write_markdown(rows, columns, results, notes, note, path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    n = max((v[2] for r in rows for c in columns if (v := r[f"{c[0]} {c[1]}"])), default=0)
+    lines = [
+        "# silent against sushi",
+        "",
+        f"From Nautilus's ShowFile call to the first frame that shows the file, in ms: the median, and in brackets the 95th percentile, of {n} runs a cell. Measured by `scripts/bench run` on {time.strftime('%Y-%m-%d')}, from outside both previewers: a call as Nautilus makes it, and the window's pixels read back from the X server until they settle. Each previewer is timed to the content, not to its window's map, which comes a little before it in both. Cold: no previewer process before the call. Warm: sushi's process kept alive between previews, as it normally lives; silent has no resident process, so it is always cold. Switch: the next file in an open window, as the arrow keys show it.",
+        "",
+        "![Time to the first frame of each file](benchmark.svg)",
+        "",
+    ] + ([note, ""] if note else []) + [
+        "| File | silent, cold | sushi, cold | sushi, warm | silent, switch | sushi, switch | RSS, silent / sushi (MB) | VRAM, silent / sushi (MiB) |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for r in rows:
+        mb = lambda v: "–" if v is None else f"{v:.0f}"
+        sushi = lambda c: cell(r[c]) if r["sushi_can"] else "sushi can't"
+        lines.append(f"| {r['label']} | {cell(r['silent cold'])} | {sushi('sushi cold')} | {sushi('sushi warm')} "
+                     f"| {cell(r['silent switch'])} | {sushi('sushi switch')} "
+                     f"| {mb(r['silent rss'])} / {mb(r['sushi rss']) if r['sushi_can'] else '–'} "
+                     f"| {mb(r['silent vram'])} / {mb(r['sushi vram']) if r['sushi_can'] else '–'} |")
+    lines += ["", "Office documents: sushi shows them only with LibreOffice installed, which is not."]
+    if notes:
+        lines += ["", "Runs left out of the medians:", ""] + [f"- {note}" for note in notes]
+    lines.append("")
+    path.write_text("\n".join(lines))
+    kept = [{k: v for k, v in r.items() if k != "trace"} for r in results]
+    (path.parent / "benchmark.json").write_text(json.dumps(kept, indent=1))
+    write_chart(rows, path.with_suffix(".svg"))
+    print(f"bench: {path}", file=sys.stderr)
+
+
+def write_chart(rows, path):
+    """Grouped horizontal bars of the medians, silent cold beside sushi warm and
+    cold, in the first three categorical slots of the dataviz reference palette,
+    which tell apart for every colour vision in light and dark."""
+    series = [("silent cold", "silent, cold", 1), ("sushi warm", "sushi, warm", 2),
+              ("sushi cold", "sushi, cold", 3)]
+    bar, gap, group_gap, label_w, plot_w, top = 8, 2, 12, 150, 520, 50
+    group = (bar + gap) * len(series) + group_gap
+    height = top + group * len(rows) + 28
+    width = label_w + plot_w + 40
+    most = max((r[k][0] for r in rows for k, _, _ in series if r[k]), default=1)
+    scale = plot_w / (most * 1.05)
+
+    def data_bar(x, y, w, h):
+        # Square at the baseline, rounded 4 px at the value's end.
+        r = min(4, h / 2, w)
+        return (f"M{x},{y}H{x + w - r:.1f}A{r},{r} 0 0 1 {x + w:.1f},{y + r:.1f}"
+                f"V{y + h - r:.1f}A{r},{r} 0 0 1 {x + w - r:.1f},{y + h}H{x}Z")
+
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+           f'viewBox="0 0 {width} {height}" font-family="Noto Sans, sans-serif" font-size="12">',
+           "<style>"
+           ".bg{fill:#fcfcfb}text{fill:#0b0b0b}.muted{fill:#52514e}.grid{stroke:#e4e2dc}"
+           ".s1{fill:#2a78d6}.s2{fill:#eb6834}.s3{fill:#1baf7a}"
+           "@media (prefers-color-scheme: dark){.bg{fill:#1a1a19}text{fill:#f0efec}.muted{fill:#c3c2b7}"
+           ".grid{stroke:#34332f}.s1{fill:#3987e5}.s2{fill:#d95926}.s3{fill:#199e70}}"
+           "</style>",
+           f'<rect class="bg" width="{width}" height="{height}"/>']
+    x = label_w
+    for _, name, slot in series:
+        out.append(f'<rect class="s{slot}" x="{x}" y="14" width="10" height="10" rx="2"/>')
+        out.append(f'<text x="{x + 15}" y="23">{name}</text>')
+        x += 15 + 7 * len(name) + 26
+    step = 100 if most < 900 else 250
+    for v in range(0, int(most * 1.05) + 1, step):
+        gx = label_w + v * scale
+        out.append(f'<line class="grid" x1="{gx:.1f}" y1="{top - 8}" x2="{gx:.1f}" y2="{height - 22}"/>')
+        out.append(f'<text class="muted" x="{gx:.1f}" y="{height - 8}" text-anchor="middle">{v}</text>')
+    out.append(f'<text class="muted" x="{width - 4}" y="{height - 8}" text-anchor="end">ms</text>')
+    for i, r in enumerate(rows):
+        y = top + i * group
+        middle = y + (group - group_gap) / 2 + 4
+        out.append(f'<text x="{label_w - 10}" y="{middle:.1f}" text-anchor="end">{r["label"]}</text>')
+        for j, (key, name, slot) in enumerate(series):
+            by = y + j * (bar + gap)
+            value = r[key]
+            if value:
+                out.append(f'<path class="s{slot}" d="{data_bar(label_w, by, max(value[0] * scale, 1), bar)}">'
+                           f'<title>{r["label"]}, {name}: {value[0]:.0f} ms, median of {value[2]}</title></path>')
+            elif not r["sushi_can"]:
+                out.append(f'<text class="muted" x="{label_w + 6}" y="{by + bar + 6}" font-size="11">sushi can\'t show it</text>')
+                break
+    out.append("</svg>")
+    path.write_text("\n".join(out))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("fixtures")
+    r = sub.add_parser("run")
+    r.add_argument("--n", type=int, default=5, help="runs a cell (5)")
+    r.add_argument("--only", help="kinds, comma-separated: " + ",".join(k[0] for k in KINDS))
+    r.add_argument("--previewers", default="silent,sushi")
+    r.add_argument("--silent", default=str(pathlib.Path.home() / ".local/bin/silent"), help="the silent to time")
+    r.add_argument("--test", action="store_true", help="on a private bus and the DISPLAY given, not the desktop's")
+    r.add_argument("--out", default=str(SCRATCH / "bench-results.json"))
+    r.add_argument("--markdown", default=str(REPO / "docs/benchmark.md"))
+    p = sub.add_parser("report")
+    p.add_argument("results")
+    p.add_argument("--note", help="a paragraph about the run, above the table")
+    p.add_argument("--markdown", default=str(REPO / "docs/benchmark.md"))
+    args = parser.parse_args()
+    if args.command == "fixtures":
+        fixtures()
+    elif args.command == "run":
+        run(args)
+    else:
+        report(json.loads(pathlib.Path(args.results).read_text()), args.markdown, args.note)
+
+
+if __name__ == "__main__":
+    main()
