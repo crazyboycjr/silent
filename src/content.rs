@@ -671,9 +671,16 @@ pub fn columns(line: &str) -> usize {
     })
 }
 
+/// Wrapped text is as tall as the rows its lines wrap into at the window's
+/// width.
 fn text_size(text: &Text, screen: Screen) -> ((i32, i32), f64) {
-    let rows = text.lines.len().clamp(8, 44) as f64;
-    lines_window(text.lines.len(), (860.0, rows * 21.0 + 40.0), screen)
+    let width = f64::from(screen.card(860.0, 0.0, 0.0).0) / screen.scale;
+    let rows = crate::lines::rows_for(text, width as f32);
+    lines_window(
+        rows,
+        (860.0, rows.clamp(8, 44) as f64 * 21.0 + 40.0),
+        screen,
+    )
 }
 
 /// The window for `lines` lines of text or a hexdump in `size` logical

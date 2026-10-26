@@ -18,7 +18,7 @@ use gpui_kit::component::highlighter::HighlightTheme;
 use gpui_kit::*;
 use silent::memory::{self, View};
 use silent::vim::Motion;
-use silent::wrap::{Anchor, Layout, Measure};
+use silent::wrap::{self, Anchor, Layout, Measure};
 use silent::{format, hexdump};
 use smallvec::SmallVec;
 use unicode_width::UnicodeWidthChar;
@@ -405,6 +405,15 @@ fn measure(window: &Window) -> Measure {
     }
 }
 
+/// How the code's face measures at its size, for sizing a window before
+/// there is a text system to ask.
+const NOMINAL: Measure = Measure {
+    column: 7.5,
+    wide: 12.5,
+    emoji: 15.,
+    tab: TAB,
+};
+
 /// Whether text wraps, as w last chose, until the next reboot.
 fn wraps() -> bool {
     memory::setting(WRAP).as_deref() == Some("on")
@@ -413,6 +422,38 @@ fn wraps() -> bool {
 /// The line numbers' gutter for a text of `lines` lines.
 fn gutter_width(lines: usize) -> f32 {
     lines.to_string().len() as f32 * 8.4 + 22.
+}
+
+/// The rows `text` takes in a view `width` logical pixels wide, to size its
+/// window: its lines, or the rows they wrap into while text wraps.
+pub fn rows_for(text: &Text, width: f32) -> usize {
+    if wraps() {
+        wrapped_rows(text, width)
+    } else {
+        text.lines.len()
+    }
+}
+
+/// The rows `text`'s lines wrap into, counted until the view would scroll
+/// anyway.
+fn wrapped_rows(text: &Text, width: f32) -> usize {
+    const ENOUGH: usize = 64;
+    let lines = text.lines.len();
+    if lines >= ENOUGH {
+        return lines;
+    }
+    let width = (width - gutter_width(lines) - PAD_SIDE).max(8. * NOMINAL.column);
+    let mut rows = 0;
+    let mut starts = Vec::new();
+    for line in &text.lines {
+        wrap::breaks(&text.text[line.clone()], width, &NOMINAL, &mut starts);
+        rows += 1 + starts.len();
+        starts.clear();
+        if rows >= ENOUGH {
+            break;
+        }
+    }
+    rows
 }
 
 /// How many lines a view `height` tall holds, a part line as a part.
@@ -1462,7 +1503,7 @@ mod tests {
 
     use super::{
         Doc, MINI_COLUMNS, Mini, Pitch, Pos, Rows, SHOWN, Shown, Span, Text, covered, hex_runs,
-        ink, scrolls, word,
+        ink, scrolls, word, wrapped_rows,
     };
 
     #[test]
@@ -1653,6 +1694,26 @@ mod tests {
         let line = doc.line(1);
         assert_eq!(span(1, 10, MAX).of(&line), "brown fox");
         assert_eq!(span(1, 0, 10).of(&line), "the quick ");
+    }
+
+    #[test]
+    fn wrapped_text_is_as_tall_as_its_rows() {
+        let words = "word ".repeat(20);
+        let Doc::Text(t) = text(&format!("title\n{words}\nend")) else {
+            unreachable!()
+        };
+        // 300 px less the line numbers and the margin hold 33 columns: six
+        // words a row.
+        assert_eq!(wrapped_rows(&t, 300.), 1 + 4 + 1);
+        // Counting stops once the view would scroll anyway.
+        let Doc::Text(long) = text(&"x".repeat(3000)) else {
+            unreachable!()
+        };
+        assert!(wrapped_rows(&long, 300.) > 64);
+        let Doc::Text(many) = text(&"line\n".repeat(99)) else {
+            unreachable!()
+        };
+        assert_eq!(wrapped_rows(&many, 300.), 100);
     }
 
     #[test]

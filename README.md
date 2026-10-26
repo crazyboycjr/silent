@@ -75,7 +75,8 @@ Wrapped, a line's number stands at its first row, the keys that move by a
 line move by a row, 20G still goes to line 20, the minimap and the
 scrollbar show the rows, and copying gives the lines without the breaks.
 Text wraps again when the window changes size, and the next text file
-wraps too, until w again. Hexdumps keep their width.
+wraps too, until w again, in a window as tall as its rows. Hexdumps keep
+their width.
 
 A file you leave, by moving to another or closing the preview, comes back
 as you left it if you return within the hour: video and sound play on from
