@@ -11,10 +11,12 @@ pub struct Theme {
     pub backdrop: Hsla,
     pub text: Hsla,
     pub muted: Hsla,
-    pub strip: Hsla,
+    /// Text on a video's dark row.
     pub strip_text: Hsla,
     /// Behind selected text.
     pub selection: Hsla,
+    /// The hairline between the content and the row or column beside it.
+    pub rule: Hsla,
 }
 
 impl Theme {
@@ -25,18 +27,18 @@ impl Theme {
                 backdrop: rgb(0x1c1916).into(),
                 text: rgb(0xede5d9).into(),
                 muted: rgb(0xa5998b).into(),
-                strip: rgba(0x0f0c0ac0).into(),
                 strip_text: rgb(0xf3ebdf).into(),
                 selection: rgba(0x9a6a3f8c).into(),
+                rule: rgba(0xa5998b40).into(),
             },
             _ => Self {
                 surface: rgb(0xf6f1e9).into(),
                 backdrop: rgb(0xebe4d8).into(),
                 text: rgb(0x2b2520).into(),
                 muted: rgb(0x85786b).into(),
-                strip: rgba(0x1d1813b8).into(),
                 strip_text: rgb(0xf8f2e9).into(),
                 selection: rgba(0xe8b07a80).into(),
+                rule: rgba(0x85786b40).into(),
             },
         }
     }

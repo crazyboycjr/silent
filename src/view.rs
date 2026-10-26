@@ -1,7 +1,8 @@
-//! The preview window's content: a picture or a card, and the info strip.
-//! A click inside content that has keys of its own engages it: the arrows
-//! then act on it instead of browsing Nautilus's files, until the window
-//! loses the focus or shows another file.
+//! The preview window: the content, a picture or a card, and below it the
+//! row of the info strip, which a video's seek bar shares. A click inside
+//! content that has keys of its own engages it: the arrows then act on it
+//! instead of browsing Nautilus's files, until the window loses the focus
+//! or shows another file.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,6 +21,7 @@ use crate::content::{Body, Loaded, Totals};
 use crate::docview::DocPane;
 use crate::grid::SheetPane;
 use crate::keys::{self, Act, Mods};
+use crate::layout::{ROW, STRIP_ALWAYS};
 use crate::lines::{Doc, LinesPane};
 use crate::media::{AudioPane, Loudness, VideoPane};
 use crate::overview::Mode;
@@ -32,8 +34,6 @@ use crate::trace;
 pub const RADIUS: f32 = 11.0;
 const STRIP_FADE: Duration = Duration::from_millis(180);
 const STRIP_LINGER: Duration = Duration::from_millis(1500);
-/// The video's seek bar, which a note in the strip goes above.
-const SEEK_BAR: f32 = 44.;
 
 pub struct Preview {
     loaded: Loaded,
@@ -115,6 +115,8 @@ struct Strip {
     epoch: usize,
     /// A word from a key, such as the volume, at the right for a moment.
     note: Option<String>,
+    /// The pointer is on the row, which keeps the strip.
+    hovered: bool,
 }
 
 impl Preview {
@@ -426,7 +428,10 @@ impl Preview {
                 by,
                 accurate,
             } => match &self.pane {
-                Pane::Video(v) => v.update(cx, |v, cx| v.seek(forward, by, accurate, cx)),
+                Pane::Video(v) => {
+                    v.update(cx, |v, cx| v.seek(forward, by, accurate, cx));
+                    self.note(None, window, cx);
+                }
                 Pane::Audio(a) => {
                     a.read(cx).seek(forward, by, accurate);
                     self.note(None, window, cx);
@@ -448,8 +453,8 @@ impl Preview {
         match &self.pane {
             Pane::Lines(t) => t.update(cx, |t, cx| t.motion(motion, cx)),
             Pane::Doc(d) => d.update(cx, |d, cx| d.motion(motion, window, cx)),
-            Pane::Pdf(p) => p.update(cx, |p, cx| p.motion(motion, window, cx)),
-            Pane::Slides(s) => s.update(cx, |s, cx| s.motion(motion, window, cx)),
+            Pane::Pdf(p) => p.update(cx, |p, cx| p.motion(motion, cx)),
+            Pane::Slides(s) => s.update(cx, |s, cx| s.motion(motion, cx)),
             Pane::Sheet(s) => s.update(cx, |s, cx| s.motion(motion, cx)),
             _ => {}
         }
@@ -508,12 +513,13 @@ impl Preview {
         self.linger_strip(window, cx);
     }
 
-    /// Hides the strip 1.5 s from now, unless a vim command is unfinished.
+    /// Hides the strip 1.5 s from now, unless a vim command is unfinished
+    /// or the pointer is on the row then.
     fn linger_strip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.hide = Some(cx.spawn_in(window, async move |this, cx| {
             cx.background_executor().timer(STRIP_LINGER).await;
             let _ = this.update(cx, |this, cx| {
-                if this.keys.pending().is_none() {
+                if this.keys.pending().is_none() && !this.strip.hovered {
                     this.set_strip(false, cx);
                 }
             });
@@ -544,7 +550,8 @@ impl Preview {
         let facts = &self.loaded.facts;
         let mut parts = vec![facts.name.clone(), self.sizes()];
         match &self.pane {
-            Pane::Video(v) => parts.push(v.read(cx).status()),
+            // The times are on the seek bar beside this.
+            Pane::Video(v) => parts.extend(v.read(cx).flags().map(str::to_owned)),
             Pane::Audio(a) => parts.push(a.read(cx).status()),
             Pane::Pdf(p) => {
                 let p = p.read(cx);
@@ -599,40 +606,50 @@ impl Preview {
         parts.join(" · ")
     }
 
-    fn strip(&self, theme: Theme, radius: Pixels, cx: &App) -> AnyElement {
-        let bar = matches!(&self.pane, Pane::Video(v) if v.read(cx).bar_shown());
-        // Above a workbook's sheet tabs, which are clicked where it would be,
-        // and with a note above the seek bar.
-        let lift = match &self.pane {
-            Pane::Sheet(s) if s.read(cx).has_tabs() => px(crate::grid::TABS),
-            Pane::Video(_) if bar => px(SEEK_BAR),
-            _ => px(0.),
+    /// Where the scrollbar has the view, while it is held or pointed at.
+    fn scrub_label(&self, cx: &App) -> Option<String> {
+        match &self.pane {
+            Pane::Lines(t) => t.read(cx).scrub_label(),
+            Pane::Doc(d) => d.read(cx).scrub_label(),
+            _ => None,
+        }
+    }
+
+    /// The row along the bottom: the strip's line, a video's seek bar, and
+    /// at the right what is typed of a vim command or a word from a key.
+    /// The row keeps its place while the strip fades.
+    fn row(&self, theme: Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        // Below a video the row is as dark as the video's ground.
+        let ink = match &self.pane {
+            Pane::Video(_) => Theme::of(WindowAppearance::Dark),
+            _ => theme,
         };
-        // What is typed of a vim command, or a word from a key.
-        let aside = self.keys.pending().or_else(|| self.strip.note.clone());
-        let strip = div()
-            .absolute()
-            .left_0()
-            .right_0()
-            .bottom(lift)
-            .px(px(14.))
-            .py(px(7.))
-            .when(lift == px(0.), |strip| strip.rounded_b(radius))
-            .bg(theme.strip)
-            .text_color(theme.strip_text)
-            .text_size(px(13.))
+        let live = STRIP_ALWAYS || self.strip.shown;
+        let seek = match &self.pane {
+            Pane::Video(v) => Some(v.update(cx, |v, cx| v.seek_bar(live, cx))),
+            _ => None,
+        };
+        let text = div()
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis_middle()
+            .when(seek.is_some(), |text| text.max_w(relative(0.5)))
+            .when(seek.is_none(), |text| text.flex_1())
+            .child(self.strip_text(cx));
+        let aside = self
+            .keys
+            .pending()
+            .or_else(|| self.strip.note.clone())
+            .or_else(|| self.scrub_label(cx));
+        let line = div()
+            .size_full()
             .flex()
             .flex_row()
+            .items_center()
             .gap(px(16.))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis_middle()
-                    .child(self.strip_text(cx)),
-            )
+            .child(text)
+            .children(seek)
             .children(aside.map(|aside| {
                 div()
                     .flex_none()
@@ -640,18 +657,52 @@ impl Preview {
                     .text_color(progress())
                     .child(aside)
             }));
-        let hidden = bar && self.strip.note.is_none() && self.keys.pending().is_none();
-        if self.strip.epoch == 0 || hidden {
-            return strip.opacity(0.).into_any_element();
-        }
-        let shown = self.strip.shown;
-        strip
-            .with_animation(
+        let line = if STRIP_ALWAYS {
+            line.into_any_element()
+        } else if self.strip.epoch == 0 {
+            line.opacity(0.).into_any_element()
+        } else {
+            let shown = self.strip.shown;
+            line.with_animation(
                 ("strip", self.strip.epoch),
                 Animation::new(STRIP_FADE).with_easing(ease_in_out),
-                move |strip, t| strip.opacity(if shown { t } else { 1. - t }),
+                move |line, t| line.opacity(if shown { t } else { 1. - t }),
             )
             .into_any_element()
+        };
+        // Flat content gets a hairline; pictures and pages end on their own.
+        let rule = matches!(
+            self.pane,
+            Pane::Lines(_) | Pane::Doc(_) | Pane::Sheet(_) | Pane::Archive(_)
+        );
+        div()
+            .id("row")
+            .flex_none()
+            .h(px(ROW))
+            .px(px(14.))
+            .text_size(px(13.))
+            .text_color(ink.muted)
+            .when(rule, |row| row.border_t_1().border_color(theme.rule))
+            // Not content: a click here leaves the content engaged or not.
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+            .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
+                this.strip.hovered = *hovered;
+                if !*hovered {
+                    this.linger_strip(window, cx);
+                }
+            }))
+            .child(line)
+    }
+
+    /// What the window shows behind the content and in the row.
+    fn ground(&self, theme: Theme) -> Hsla {
+        match (&self.pane, &self.loaded.body) {
+            (Pane::Video(_), _) => rgb(0x000000).into(),
+            (Pane::Pdf(_) | Pane::Slides(_), _) | (Pane::None, Body::Image(_) | Body::Still(_)) => {
+                theme.backdrop
+            }
+            _ => theme.surface,
+        }
     }
 
     fn card(&self, theme: Theme) -> Div {
@@ -761,31 +812,36 @@ impl Render for Preview {
         }
         let engaged = self.engaged(window, cx);
         let body = match (&self.loaded.body, &self.image) {
-            _ if let Some(pane) = self.pane.view() => div()
-                .id("content")
-                .size_full()
-                .rounded(radius)
-                .overflow_hidden()
-                .when(self.pane.kind().engages(), |body| {
-                    body.track_focus(&self.content)
-                })
-                .child(pane)
-                .into_any_element(),
+            _ if let Some(pane) = self.pane.view() => pane.into_any_element(),
             (Body::Image(_) | Body::Still(_), Some(image)) => {
                 img(ImageSource::Render(image.clone()))
                     .size_full()
                     .object_fit(ObjectFit::Contain)
-                    .rounded(radius)
+                    .rounded_t(radius)
                     .into_any_element()
             }
             (Body::Image(_), None) => div().size_full().into_any_element(),
-            _ => self.card(theme).rounded(radius).into_any_element(),
+            _ => self.card(theme).rounded_t(radius).into_any_element(),
         };
-        let backdrop = match (&self.pane, &self.loaded.body) {
-            (Pane::Video(_), _) => rgb(0x000000).into(),
-            (Pane::None, Body::Image(_) | Body::Still(_)) => theme.backdrop,
-            _ => theme.surface,
-        };
+        let content = div()
+            .id("content")
+            .flex_1()
+            .min_h_0()
+            .rounded_t(radius)
+            .overflow_hidden()
+            .when(self.pane.kind().engages(), |content| {
+                content.track_focus(&self.content)
+            })
+            .capture_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                this.engaged_at_press = this.engaged(window, cx);
+            }))
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                // The click that engages a video or a sound only engages it.
+                if this.engaged_at_press {
+                    this.toggle_pause(cx);
+                }
+            }))
+            .child(body);
         // Engaged content wears a thin warm ring, inside the window's edge.
         let ring = engaged.then(|| {
             div()
@@ -802,8 +858,10 @@ impl Render for Preview {
             .track_focus(&self.focus)
             .size_full()
             .relative()
+            .flex()
+            .flex_col()
             .font_family("Noto Sans")
-            .bg(backdrop)
+            .bg(self.ground(theme))
             .rounded(radius)
             .on_key_down(cx.listener(Self::key))
             .on_mouse_move(cx.listener(Self::pointer_moved))
@@ -813,18 +871,9 @@ impl Render for Preview {
                     this.set_strip(false, cx);
                 }
             }))
-            .capture_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, window, cx| {
-                this.engaged_at_press = this.engaged(window, cx);
-            }))
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                // The click that engages a video or a sound only engages it.
-                if this.engaged_at_press {
-                    this.toggle_pause(cx);
-                }
-            }))
-            .child(body)
+            .child(content)
+            .child(self.row(theme, cx))
             .children(ring)
-            .child(self.strip(theme, radius, cx))
     }
 }
 

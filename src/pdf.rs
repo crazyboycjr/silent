@@ -1,6 +1,6 @@
 //! PDF pages in a vertical scroll, rendered by gpui-pdf (hayro) around
-//! what is in view, with a rail of thumbnails at the right edge. Text on a
-//! page can be selected by dragging.
+//! what is in view, with a rail of thumbnails in a column at the right.
+//! Text on a page can be selected by dragging.
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -12,6 +12,7 @@ use silent::memory::View;
 use silent::vim::Motion;
 
 use crate::content::Pdf;
+use crate::layout;
 use crate::overview::{self, Geometry, Mode, Overview, Overviewed, Shown};
 use crate::paged::{GAP, Pages, RAIL, THUMB};
 use crate::pdftext::{Area, PageText};
@@ -30,7 +31,8 @@ pub struct PdfPane {
     pending: HashSet<usize>,
     /// The device width pages were last rendered at.
     width: f32,
-    /// The window's size when last drawn.
+    /// The pages' area when last drawn: the window above the row, less the
+    /// rail's column.
     viewport: Size<Pixels>,
     /// Text layers read so far; `None` while one is being read.
     texts: HashMap<usize, Option<PageText>>,
@@ -54,7 +56,6 @@ struct Drag {
 
 impl PdfPane {
     pub fn new(pdf: Pdf, mode: Mode, view: Option<View>, window: &Window) -> Self {
-        let width = window.viewport_size().width.to_f64() as f32 * window.scale_factor();
         let mut rendered = HashMap::new();
         if let Some((page, image)) = pdf.first {
             rendered.insert(page, image);
@@ -64,8 +65,8 @@ impl PdfPane {
             pages: Pages::new(pdf.pages),
             rendered,
             pending: HashSet::new(),
-            width,
-            viewport: window.viewport_size(),
+            width: pdf.width,
+            viewport: layout::above_row(window),
             texts: HashMap::new(),
             selecting: None,
             overview: Overview::new(mode),
@@ -88,8 +89,8 @@ impl PdfPane {
         self.pages.view()
     }
 
-    pub fn motion(&mut self, motion: Motion, window: &Window, cx: &mut Context<Self>) {
-        self.pages.motion(motion, window);
+    pub fn motion(&mut self, motion: Motion, cx: &mut Context<Self>) {
+        self.pages.motion(motion, f32::from(self.viewport.height));
         overview::reveal(self, cx);
     }
 
@@ -203,7 +204,7 @@ impl PdfPane {
     }
 
     fn render_around_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let viewport = window.viewport_size();
+        let viewport = self.viewport;
         let width = f32::from(viewport.width);
         let device_width = width * window.scale_factor();
         if (device_width - self.width).abs() > 1. {
@@ -373,7 +374,10 @@ impl Overviewed for PdfPane {
 
 impl Render for PdfPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.viewport = window.viewport_size();
+        let (column, viewport) = self
+            .pages
+            .fit_rail(layout::above_row(window), self.overview.mode);
+        self.viewport = viewport;
         if let Some(view) = self.restore.take() {
             self.pages.restore(&view, f32::from(self.viewport.width));
         }
@@ -433,42 +437,57 @@ impl Render for PdfPane {
             },
         )
         .absolute();
-        let height = f32::from(self.viewport.height);
-        let overview = match self.overview.shown(self.geometry(1.).scrollable()) {
-            Shown::Panel => {
-                let g = self.geometry(f64::from(height));
-                let content = self.rail(g, window, cx);
-                Some(overview::panel(&self.overview, g, RAIL, content, theme, cx))
-            }
-            Shown::Bar => {
-                let g = self.geometry(overview::bar_track(height));
-                let label = format!("page {} of {}", self.current_page(), self.page_count());
-                Some(overview::scrollbar(&self.overview, g, label, theme, cx))
-            }
-            Shown::Nothing => None,
-        };
+        let column = column.map(|width| {
+            let height = f32::from(self.viewport.height);
+            let shown = match self.overview.shown(true) {
+                Shown::Panel => {
+                    let g = self.geometry(f64::from(height));
+                    let content = self.rail(g, window, cx);
+                    Some(overview::panel(&self.overview, g, content, cx))
+                }
+                Shown::Bar => {
+                    let g = self.geometry(overview::bar_track(height));
+                    Some(overview::scrollbar(&self.overview, g, theme, cx))
+                }
+                Shown::Nothing => None,
+            };
+            overview::column(width, None, shown, cx).on_scroll_wheel(cx.listener(
+                |this, event: &ScrollWheelEvent, window, cx| {
+                    this.pages.wheel(event, window);
+                    overview::reveal(this, cx);
+                },
+            ))
+        });
         div()
             .size_full()
-            .relative()
+            .flex()
+            .flex_row()
+            .bg(theme.backdrop)
             .child(
                 div()
-                    .id("pages")
-                    .size_full()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.pages.scroll)
-                    .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
-                        overview::reveal(this, cx);
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                            this.press(event, window, cx)
-                        }),
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .relative()
+                    .child(
+                        div()
+                            .id("pages")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.pages.scroll)
+                            .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
+                                overview::reveal(this, cx);
+                            }))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                    this.press(event, window, cx)
+                                }),
+                            )
+                            .child(div().flex().flex_col().gap(px(GAP)).children(pages)),
                     )
-                    .bg(theme.backdrop)
-                    .child(div().flex().flex_col().gap(px(GAP)).children(pages)),
+                    .child(follow),
             )
-            .child(follow)
-            .children(overview)
+            .children(column)
     }
 }

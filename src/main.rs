@@ -5,6 +5,7 @@ mod docview;
 mod grid;
 mod icons;
 mod keys;
+mod layout;
 mod lines;
 mod media;
 mod overview;

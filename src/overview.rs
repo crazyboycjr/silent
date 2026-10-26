@@ -1,25 +1,29 @@
-//! The overview at the right edge of a long view: a minimap of text, a rail
-//! of page thumbnails, or a slim scrollbar once M has turned those off. It
-//! shows while the view scrolls and fades 1.5 s after, unless M has pinned
-//! it; it stays while the pointer is on it, and pressing or dragging on it
-//! moves the view.
+//! The overview of a long view, in a column of its own at the view's right:
+//! a minimap of text, a rail of page thumbnails, or a slim scrollbar once M
+//! has turned those off. It shows while the view scrolls and fades 1.5 s
+//! after, unless M has pinned it or [`COLUMN_ALWAYS`] keeps it; the column
+//! keeps its width meanwhile, so the content never moves. Pointing at the
+//! column shows the overview, and pressing or dragging on it moves the view.
 
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use silent::memory;
 
+use crate::layout::COLUMN_ALWAYS;
 use crate::theme::{Theme, progress};
 
 /// How long the overview stays after the view stops moving.
 const LINGER: Duration = Duration::from_millis(1500);
 const FADE: Duration = Duration::from_millis(180);
-/// The scrollbar's inset from the window's edges, and its thumb's least height.
+/// The scrollbar's inset from the column's ends, and its thumb's least height.
 const INSET: f32 = 12.;
 const MIN_THUMB: f64 = 28.;
-const BAR_WIDTH: f32 = 22.;
+/// The scrollbar's column.
+pub const BAR: f32 = 16.;
 
 /// What M cycles through.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -36,9 +40,19 @@ pub enum Mode {
 impl Mode {
     pub fn next(self) -> Self {
         match self {
+            // Kept in view anyway, Auto is On.
+            Mode::Auto if COLUMN_ALWAYS => Mode::Off,
             Mode::Auto => Mode::On,
             Mode::On => Mode::Off,
             Mode::Off => Mode::Auto,
+        }
+    }
+
+    /// The column's width beside a minimap or rail `panel` wide.
+    pub fn column(self, panel: f32) -> f32 {
+        match self {
+            Mode::Off => BAR,
+            Mode::Auto | Mode::On => panel,
         }
     }
 
@@ -63,8 +77,8 @@ impl Mode {
     /// `Minimap while scrolling`, for the strip.
     pub fn describe(self, what: &str) -> String {
         match self {
-            Mode::Auto => format!("{what} while scrolling"),
-            Mode::On => format!("{what} on"),
+            Mode::Auto if !COLUMN_ALWAYS => format!("{what} while scrolling"),
+            Mode::Auto | Mode::On => format!("{what} on"),
             Mode::Off => format!("{what} off"),
         }
     }
@@ -177,7 +191,7 @@ pub struct Overview {
     timer: Option<Task<()>>,
 }
 
-/// What shows at the right edge now.
+/// What the column shows now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shown {
     Nothing,
@@ -195,7 +209,7 @@ impl Overview {
     }
 
     pub fn shown(&self, scrollable: bool) -> Shown {
-        let up = self.up || self.fading || self.grip.is_some();
+        let up = COLUMN_ALWAYS || self.up || self.fading || self.grip.is_some();
         match self.mode {
             _ if !scrollable => Shown::Nothing,
             Mode::On => Shown::Panel,
@@ -205,9 +219,15 @@ impl Overview {
         }
     }
 
+    /// Whether the pointer holds or points at the scrollbar, so that the
+    /// strip says where the view is.
+    pub fn scrubbing(&self) -> bool {
+        self.mode == Mode::Off && (self.hovered || self.grip.is_some())
+    }
+
     /// Fades the element in or out with the overview; pinned, it just shows.
     fn fade(&self, element: Stateful<Div>) -> AnyElement {
-        if self.mode == Mode::On {
+        if COLUMN_ALWAYS || self.mode == Mode::On {
             return element.into_any_element();
         }
         let up = self.up || self.grip.is_some();
@@ -336,9 +356,9 @@ fn release<V: Overviewed>(view: &mut V, cx: &mut Context<V>) {
     }
 }
 
-/// The frame both kinds of overview share: the track's place, and the
-/// pointer on it. Mouse moves and releases are listened to on the whole
-/// window, so that a drag carries on outside the track.
+/// The frame both kinds of overview share, across its column: the track's
+/// place, and the pointer on it. Mouse moves and releases are listened to
+/// on the whole window, so that a drag carries on outside the track.
 fn frame<V: Overviewed>(
     overview: &Overview,
     id: &'static str,
@@ -367,28 +387,12 @@ fn frame<V: Overviewed>(
     )
     .absolute()
     .size_full();
-    let live = overview.up || overview.grip.is_some() || overview.mode == Mode::On;
-    let element = div()
+    div()
         .id(id)
         .absolute()
-        .top_0()
-        .bottom_0()
+        .left_0()
         .right_0()
-        .child(follow);
-    if !live {
-        // Fading out: drawn, but no longer in the pointer's way.
-        return element;
-    }
-    element
-        .block_mouse_except_scroll()
-        .cursor(CursorStyle::Arrow)
-        .on_hover(cx.listener(|this: &mut V, hovered: &bool, _, cx| {
-            let overview = this.overview();
-            overview.hovered = *hovered;
-            if !*hovered {
-                linger(this, cx);
-            }
-        }))
+        .child(follow)
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this: &mut V, event: &MouseDownEvent, window, cx| {
@@ -398,14 +402,12 @@ fn frame<V: Overviewed>(
         )
 }
 
-/// The minimap or the rail, `width` pixels wide. `content` draws what the
-/// track shows: the overview from the geometry's shift down.
+/// The minimap or the rail. `content` draws what the track shows: the
+/// overview from the geometry's shift down.
 pub fn panel<V: Overviewed>(
     overview: &Overview,
     g: Geometry,
-    width: f32,
     content: AnyElement,
-    theme: Theme,
     cx: &mut Context<V>,
 ) -> AnyElement {
     let thumb = div()
@@ -418,72 +420,80 @@ pub fn panel<V: Overviewed>(
         .border_y_1()
         .border_color(progress().opacity(0.7));
     let element = frame(overview, "overview", false, cx)
-        .w(px(width))
-        .bg(theme.surface.opacity(0.9))
-        .border_l_1()
-        .border_color(theme.muted.opacity(0.25))
+        .top_0()
+        .bottom_0()
         .overflow_hidden()
         .child(content)
         .child(thumb);
     overview.fade(element)
 }
 
-/// The slim scrollbar, with `label` beside its thumb while it is held or
-/// pointed at.
+/// The slim scrollbar. Where the view is shows in the strip while the
+/// scrollbar is held or pointed at.
 pub fn scrollbar<V: Overviewed>(
     overview: &Overview,
     g: Geometry,
-    label: String,
     theme: Theme,
     cx: &mut Context<V>,
 ) -> AnyElement {
     let g = g.bar();
     let active = overview.grip.is_some() || overview.hovered;
     let (top, height) = (g.thumb_top() as f32, g.thumb_height() as f32);
+    let width = if active { 8. } else { 6. };
     let thumb = div()
         .absolute()
         .top(px(top))
         .h(px(height))
-        .right(px(7.))
-        .w(px(if active { 8. } else { 6. }))
+        .left(px((BAR - width) / 2.))
+        .w(px(width))
         .rounded(px(4.))
         .bg(if active {
             progress()
         } else {
             theme.muted.opacity(0.6)
         });
-    let tag = active.then(|| {
-        div()
-            .absolute()
-            .top(px(top + height / 2. - 13.))
-            .right(px(BAR_WIDTH + 4.))
-            .px(px(10.))
-            .py(px(4.))
-            .rounded(px(6.))
-            .bg(theme.strip)
-            .text_color(theme.strip_text)
-            .text_size(px(12.5))
-            .whitespace_nowrap()
-            .child(label)
-    });
     let element = frame(overview, "scrollbar", true, cx)
         .top(px(INSET))
         .bottom(px(INSET))
-        .w(px(BAR_WIDTH))
-        .child(thumb)
-        .children(tag);
-    // The label hangs outside the track, to the left.
+        .child(thumb);
     overview.fade(element)
 }
 
-/// The track a scrollbar has in a view `height` pixels tall.
+/// The column at a view's right, `width` wide, with what its overview
+/// shows now; `rule` sets it off from the content. Pointing at the column
+/// shows the overview, for as long as the pointer stays.
+pub fn column<V: Overviewed>(
+    width: f32,
+    rule: Option<Hsla>,
+    shown: Option<AnyElement>,
+    cx: &mut Context<V>,
+) -> Stateful<Div> {
+    div()
+        .id("column")
+        .flex_none()
+        .relative()
+        .w(px(width))
+        .cursor(CursorStyle::Arrow)
+        .when_some(rule, |column, rule| column.border_l_1().border_color(rule))
+        .on_hover(cx.listener(|this: &mut V, hovered: &bool, _, cx| {
+            this.overview().hovered = *hovered;
+            if *hovered {
+                reveal(this, cx);
+            } else {
+                linger(this, cx);
+            }
+        }))
+        .children(shown)
+}
+
+/// The track a scrollbar has in a column `height` pixels tall.
 pub fn bar_track(height: f32) -> f64 {
     f64::from((height - 2. * INSET).max(1.))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Geometry, MIN_THUMB, Mode, Overview, Shown};
+    use super::{BAR, COLUMN_ALWAYS, Geometry, MIN_THUMB, Mode, Overview, Shown};
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-6
@@ -537,11 +547,17 @@ mod tests {
 
     #[test]
     fn m_cycles_through_the_modes() {
-        assert_eq!(Mode::Auto.next(), Mode::On);
+        let after_auto = if COLUMN_ALWAYS { Mode::Off } else { Mode::On };
+        assert_eq!(Mode::Auto.next(), after_auto);
         assert_eq!(Mode::On.next(), Mode::Off);
         assert_eq!(Mode::Off.next(), Mode::Auto);
         let mut overview = Overview::new(Mode::Auto);
-        assert_eq!(overview.shown(true), Shown::Nothing);
+        let resting = if COLUMN_ALWAYS {
+            Shown::Panel
+        } else {
+            Shown::Nothing
+        };
+        assert_eq!(overview.shown(true), resting);
         overview.up = true;
         assert_eq!(overview.shown(true), Shown::Panel);
         assert_eq!(overview.shown(false), Shown::Nothing);
@@ -550,5 +566,12 @@ mod tests {
         overview.up = false;
         overview.mode = Mode::On;
         assert_eq!(overview.shown(true), Shown::Panel);
+    }
+
+    #[test]
+    fn the_column_is_as_wide_as_what_the_mode_puts_in_it() {
+        assert_eq!(Mode::Auto.column(122.), 122.);
+        assert_eq!(Mode::On.column(108.), 108.);
+        assert_eq!(Mode::Off.column(122.), BAR);
     }
 }
