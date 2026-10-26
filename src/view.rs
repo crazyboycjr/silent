@@ -685,6 +685,7 @@ impl Preview {
             .when(rule, |row| row.border_t_1().border_color(theme.rule))
             // Not content: a click here leaves the content engaged or not.
             .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+            .hover_listener_mode(HoverListenerMode::InputModalityIndependent)
             .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
                 this.strip.hovered = *hovered;
                 if !*hovered {
@@ -865,6 +866,9 @@ impl Render for Preview {
             .rounded(radius)
             .on_key_down(cx.listener(Self::key))
             .on_mouse_move(cx.listener(Self::pointer_moved))
+            // Where the pointer is, not whether a key came last: by default
+            // a key ends the hover, and the strip it showed would go with it.
+            .hover_listener_mode(HoverListenerMode::InputModalityIndependent)
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 if !hovered {
                     this.hide = None;

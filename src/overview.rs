@@ -475,6 +475,7 @@ pub fn column<V: Overviewed>(
         .w(px(width))
         .cursor(CursorStyle::Arrow)
         .when_some(rule, |column, rule| column.border_l_1().border_color(rule))
+        .hover_listener_mode(HoverListenerMode::InputModalityIndependent)
         .on_hover(cx.listener(|this: &mut V, hovered: &bool, _, cx| {
             this.overview().hovered = *hovered;
             if *hovered {
