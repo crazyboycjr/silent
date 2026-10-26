@@ -5,9 +5,11 @@ screen, at a size you can see. It takes the place of GNOME's sushi.
 
 - **No border.** No title bar, no frame, no buttons: the window is the
   picture, or a card, and nothing else.
-- **Minimal.** One line of facts about the file fades in when the pointer
-  moves and fades out when it rests. The window follows the desktop's light
-  or dark preference, in warm tones.
+- **Minimal.** One line of facts about the file fades in over the bottom
+  of the picture when the pointer moves and out when it rests, on a veil
+  only as dark or as light as its letters need to stay readable over what
+  is under them. The window follows the desktop's light or dark
+  preference, in warm tones.
 - **Blazing fast.** The window opens at its final size, centred, with the
   content already in it, well under a quarter of a second after the key
   press. Decoding runs beside the start of the toolkit and the GPU, and
@@ -27,15 +29,15 @@ screen, at a size you can see. It takes the place of GNOME's sushi.
 | Kind | Shown as |
 | --- | --- |
 | Images | The picture at its own aspect, as large as the screen allows; animations play |
-| Video | Plays at its own aspect, with sound; hardware decoding when GStreamer has it; a seek bar after each seek and while the pointer is near the bottom |
-| Audio | A card with the cover art, title, artist and album, playing |
-| PDF | The pages in a scroll, shaped by the first page, rendered as they come into view; a rail of page thumbnails at the right while it scrolls; text can be selected and copied |
-| Text and code | Highlighted, with line numbers; a minimap at the right while it scrolls; long lines scroll sideways instead of wrapping; select with the mouse and copy; UTF-8, UTF-16 and GB18030 (GBK) text; minified JSON laid out; the first 2 MB of large files |
+| Video | Plays at its own aspect, with sound; hardware decoding when GStreamer has it; a playbar over the bottom of the picture, with the seek track, the times and the volume, while the pointer moves and after each seek |
+| Audio | A card with the cover art, title, artist and album, playing, with the same playbar |
+| PDF | The pages in a scroll, shaped by the first page, rendered as they come into view; a rail of page thumbnails docked at the right; text can be selected and copied |
+| Text and code | Highlighted, with line numbers; a minimap over the right edge while it scrolls, or docked beside the text; long lines scroll sideways instead of wrapping; select with the mouse and copy; UTF-8, UTF-16 and GB18030 (GBK) text; minified JSON laid out; the first 2 MB of large files |
 | Binary files | As `hexdump -C` prints them, read from a memory map, so a dump of gigabytes opens at once, minimap and all; select and copy as text |
 | Compressed files | gzip, xz, zstd, bzip2, lz4 and lzma files show what is inside: text and code as above, a tar as its listing, anything else as a hexdump; the strip gives both sizes when the format records them |
-| Word documents | docx, odt and the older doc of Word 97 to 2003 (and WPS Writer's wps) as a column on a page: headings, paragraphs with their bold, italic, underline and colour, bulleted and numbered lists, tables, and the pictures of docx and odt |
+| Word documents | docx, odt and the older doc of Word 97 to 2003 (and WPS Writer's wps) as a column on a page: headings, paragraphs with their bold, italic, underline and colour, bulleted and numbered lists, tables, and the pictures of docx and odt; docked at the right, the whole column drawn small |
 | Spreadsheets | xlsx, xls and ods as a grid with column letters and row numbers, numbers and dates formatted, a tab for each worksheet, opening on the one that was in front; a click puts a cell cursor down, and the strip shows its cell in full; chart and hidden sheets get no tab; old .xls written as a bare BIFF stream too; the first 5,000 rows |
-| Presentations | pptx as its slides in a scroll, with text, pictures, tables and shapes where the deck puts them and what they inherit from the layout and master, and a rail of the slides drawn small while it scrolls; odp as its thumbnail and text; the older ppt as an outline of each slide's title and text |
+| Presentations | pptx as its slides in a scroll, with text, pictures, tables and shapes where the deck puts them and what they inherit from the layout and master, and a rail of the slides drawn small docked at the right; odp as its thumbnail and text; the older ppt as an outline of each slide's title and text |
 | Keynote, Pages, Numbers | The preview picture the file carries, as Quick Look shows it |
 | Archives | The entries as a tree with file-type icons and their sizes, and the total unpacked; zip, tar (gz, bz2, xz, zstd), 7z, rar, ISO and more |
 | Folders | A card with the item count and the total size, counted in the background |
@@ -45,14 +47,36 @@ The Office files are read the way macOS Quick Look reads them: silent opens
 the package and parses its XML itself, or the binary streams of the formats
 of Office 97 to 2003, with no office suite, and draws the result natively. Rendered Markdown and HTML, and fonts, come later.
 
+The strip of facts lies over the bottom of the content, and i says when:
+while the pointer moves (it fades 1.5 s after it rests, a playbar 1 s
+after), never, or always. Its colours are worked out, not chosen: silent
+looks at what is under the strip, the picture's own pixels, a video's
+frames a few times a second, or the paper and the ink of text and
+documents, and lays down a dark veil under white letters or a light one
+under near-black letters, whichever needs less, as faint as it can be
+while the letters keep a contrast of 4.5:1 (WCAG AA) against everything
+under them. Over a dark or a pale picture that is no veil at all.
+
+An overview that is always shown never covers the content: it is docked
+beside it, and the window is wider by the overview, at its right, so that
+pressing M to dock or undock it leaves the content where it was on the
+screen, as large as it was; near the screen's right edge the window moves
+left just enough. Text shows its minimap over its right edge only while
+it scrolls, unless M docks it. PDFs, slides and documents open with their
+rail docked, within 85% of the screen with the page; M takes it away, and
+the window narrows by as much. Without an overview, a slim scrollbar shows
+while the view scrolls.
+
 A file you leave, by moving to another or closing the preview, comes back
 as you left it if you return within the hour: video and sound play on from
 there (unless they were nearly over), PDFs and slides open at the page,
 text at the line, documents at the paragraph, spreadsheets on the sheet and
 the cell, archives with the same folders open and the same entry selected.
-That, and the mode M last chose for the minimap and the thumbnail rail, is
-all silent remembers: two small files in `$XDG_RUNTIME_DIR/silent`, gone at
-the next boot.
+That, and the modes M and i last chose, for the minimap, for the rail of
+pages and documents, and for the strip of each family of files (pictures,
+video and sound, text, pages, sheets, archives, cards), is all silent
+remembers: two small files in `$XDG_RUNTIME_DIR/silent`, gone at the next
+boot.
 
 ## Keys
 
@@ -64,7 +88,8 @@ the next boot.
 | F2 | Rename in Nautilus |
 | Delete | Move to the trash |
 | F | Fullscreen |
-| M | The minimap of text, or the thumbnail rail of a PDF or slides: shown while scrolling, always, or never (a slim scrollbar instead); mute video and audio |
+| M | The minimap of text: shown while scrolling, docked beside the text, or none (a slim scrollbar instead); the rail of a PDF, slides or a document: docked or none; mute video and audio |
+| i | The strip: shown while the pointer moves, never, or always; while it is never shown, a key that changes something (M, i, the volume, a seek, a pause) still answers with a word at the bottom right for a second |
 | K or a click | Pause or play video and audio |
 | J, L | Back or forward ten seconds |
 | Shift+← , Shift+→ | Half a screen sideways in text; back or forward thirty seconds in video and audio; the previous or next sheet of a spreadsheet |
@@ -100,10 +125,13 @@ engages a video only engages it; the next one pauses.
 | PDF, slides | The previous or next page | Scroll |
 | Spreadsheets | The cell cursor | The cell cursor |
 | Archives | Close or open a folder | The previous or next entry |
-| Video, audio | Back or forward five seconds | Louder or quieter; the strip shows the volume, and the next sound or video keeps it, and the mute |
+| Video, audio | Back or forward five seconds | Louder or quieter; the playbar shows the volume, and the next sound or video keeps it, and the mute |
 
-The minimap and the rail show where the view is as a box: a click there
-brings that part into view, and a drag carries the view along.
+The minimap, the rail and a document's miniature show where the view is
+as a box: a click there brings that part into view, and a drag carries
+the view along. Pointing at the slim scrollbar of text or a document puts
+the line or the place in the strip. On the playbar, a click or a drag on
+the track seeks, and on the volume sets it; the speaker mutes.
 
 ## Install
 
