@@ -6963,6 +6963,7 @@ dependencies = [
  "hayro",
  "image",
  "kurbo 0.13.1",
+ "libc",
  "lofty",
  "log",
  "memmap2",

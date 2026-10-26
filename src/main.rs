@@ -32,6 +32,13 @@ use silent::x11::X11;
 const IDLE: Duration = Duration::from_secs(3);
 
 fn main() -> ExitCode {
+    // Pictures and pages are mapped and given back when freed. Left to itself,
+    // glibc raises this threshold after the first large free, and the heap of
+    // a previewer that stays grows with every picture it has shown.
+    #[cfg(target_env = "gnu")]
+    unsafe {
+        libc::mallopt(libc::M_MMAP_THRESHOLD, 1 << 20);
+    }
     trace::start();
     trace::mark("main");
     let args: Vec<String> = std::env::args().skip(1).collect();

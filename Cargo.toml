@@ -48,6 +48,7 @@ gstreamer = "0.25"
 hayro = "0.7"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 kurbo = "0.13"
+libc = "0.2"
 lofty = "0.25"
 log = "0.4"
 memmap2 = "0.9"
