@@ -50,6 +50,13 @@ fixtures() {
         -fill '#f6e7c8' -draw 'point 6,6 point 9,6 point 6,9 point 7,10 point 8,10 point 9,9' images/icon-16.png
     "${mk[@]}" images/icon-16.png -filter point -resize 400% images/icon-64.png
     "${mk[@]}" -size 900x600 radial-gradient:'#e8a87c'-none images/transparent.png
+    # For the strip's colours: a pale picture, a dark one, and a busy one.
+    "${ff[@]}" -f lavfi -i "gradients=s=2400x1600:c0=0xf6efe2:c1=0xfffbf3:c2=0xeee3cf:n=3:seed=5:d=1" \
+        -frames:v 1 -q:v 3 images/pale-2400x1600.jpg
+    "${ff[@]}" -f lavfi -i "gradients=s=2400x1600:c0=0x0b0f1a:c1=0x1d2433:c2=0x05070c:n=3:seed=9:d=1" \
+        -frames:v 1 -q:v 3 images/night-2400x1600.jpg
+    "${ff[@]}" -t 1 -f lavfi -i "mandelbrot=s=2400x1600:start_scale=0.12:end_scale=0.12:outer=normalized_iteration_count" \
+        -vf "noise=alls=20:allf=t" -frames:v 1 -q:v 3 images/busy-2400x1600.jpg
     "${mk[@]}" images/fhd-1920x1080.jpg -quality 60 images/photo.heic
     "${mk[@]}" images/fhd-1920x1080.jpg -quality 60 images/photo.avif
     "${mk[@]}" images/fhd-1920x1080.jpg -quality 80 images/photo.jxl
