@@ -23,6 +23,8 @@ use crate::theme::{Theme, accent, progress};
 
 /// Volume steps, in percent of a cubic scale, as the ear hears loudness.
 const VOLUME_STEP: i32 = 5;
+/// How long a seek's target is shown at most, should the pipeline not settle.
+const SEEK_HOLD: Duration = Duration::from_secs(2);
 /// How often the frames under the playbar are looked at for its colours.
 const SAMPLE: Duration = Duration::from_millis(300);
 /// The volume's slider.
@@ -55,6 +57,43 @@ fn stepped(volume: f64, louder: bool) -> f64 {
     let step = if louder { VOLUME_STEP } else { -VOLUME_STEP };
     let percent = (percent(volume) + step).clamp(0, 100);
     (f64::from(percent) / 100.).powi(3)
+}
+
+/// A seek on its way. While a flushing seek runs, GStreamer reports no
+/// position, or 0, until the pipeline has prerolled at the new place; until
+/// then the playbar, the strip and the next seek's start use the target.
+#[derive(Default)]
+pub struct Seeking(Cell<Option<(Duration, Instant)>>);
+
+impl Seeking {
+    pub fn start(&self, target: Duration) {
+        self.0.set(Some((target, Instant::now())));
+    }
+
+    /// The target of a seek on its way, else what the pipeline reports;
+    /// `settled` is whether the pipeline has no state change pending.
+    pub fn position(&self, reported: Option<Duration>, settled: bool) -> Duration {
+        self.at(reported, settled, Instant::now())
+    }
+
+    fn at(&self, reported: Option<Duration>, settled: bool, now: Instant) -> Duration {
+        if let Some((target, since)) = self.0.get() {
+            let done = settled && reported.is_some();
+            if !done && now.duration_since(since) < SEEK_HOLD {
+                return target;
+            }
+            self.0.set(None);
+        }
+        reported.unwrap_or_default()
+    }
+}
+
+/// Where `pipeline` is, if it says, and whether it has settled there.
+fn reported(pipeline: &impl IsA<gst::Element>) -> (Option<Duration>, bool) {
+    let position = pipeline
+        .query_position::<gst::ClockTime>()
+        .map(|t| Duration::from_nanos(t.nseconds()));
+    (position, pipeline.pending_state() == gst::State::VoidPending)
 }
 
 /// What a playbar needs of a player.
@@ -291,6 +330,7 @@ pub struct VideoPane {
     frame: Option<Arc<RenderImage>>,
     _feed: Task<()>,
     bar: Bar,
+    seeking: Seeking,
     /// The playbar's veil, and when the frames were last looked at for it.
     veil: Option<(Instant, Scrim)>,
 }
@@ -329,6 +369,7 @@ impl VideoPane {
             frame: None,
             _feed: feed,
             bar: Bar::default(),
+            seeking: Seeking::default(),
             veil: None,
         }
     }
@@ -363,13 +404,13 @@ impl VideoPane {
 
     /// Back or on by `by`, to the frame or to the nearest keyframe.
     pub fn seek(&mut self, forward: bool, by: Duration, accurate: bool, cx: &mut Context<Self>) {
-        let position = self.video.position();
+        let position = self.position();
         let target = if forward {
             (position + by).min(self.video.duration())
         } else {
             position.saturating_sub(by)
         };
-        let _ = self.video.seek(target, accurate);
+        self.seek_to(target, accurate);
         cx.notify();
     }
 
@@ -404,7 +445,8 @@ impl VideoPane {
 
 impl Player for VideoPane {
     fn position(&self) -> Duration {
-        self.video.position()
+        let (position, settled) = reported(&self.video.pipeline());
+        self.seeking.position(position, settled)
     }
 
     fn duration(&self) -> Option<Duration> {
@@ -412,7 +454,9 @@ impl Player for VideoPane {
     }
 
     fn seek_to(&mut self, target: Duration, accurate: bool) {
-        let _ = self.video.seek(target, accurate);
+        if self.video.seek(target, accurate).is_ok() {
+            self.seeking.start(target);
+        }
     }
 
     fn volume(&self) -> f64 {
@@ -511,6 +555,7 @@ pub struct AudioPane {
     /// pipeline's paused state.
     paused: bool,
     bar: Bar,
+    seeking: Seeking,
     _tick: Task<()>,
 }
 
@@ -540,6 +585,7 @@ impl AudioPane {
             name,
             paused: false,
             bar: Bar::default(),
+            seeking: Seeking::default(),
             _tick: tick,
         }
     }
@@ -597,10 +643,8 @@ impl AudioPane {
 
 impl Player for AudioPane {
     fn position(&self) -> Duration {
-        self.audio
-            .playbin
-            .query_position::<gst::ClockTime>()
-            .map_or(Duration::ZERO, |t| Duration::from_nanos(t.nseconds()))
+        let (position, settled) = reported(&self.audio.playbin);
+        self.seeking.position(position, settled)
     }
 
     fn duration(&self) -> Option<Duration> {
@@ -618,10 +662,14 @@ impl Player for AudioPane {
         } else {
             gst::SeekFlags::KEY_UNIT
         };
-        let _ = self
+        if self
             .audio
             .playbin
-            .seek_simple(gst::SeekFlags::FLUSH | how, clock(target));
+            .seek_simple(gst::SeekFlags::FLUSH | how, clock(target))
+            .is_ok()
+        {
+            self.seeking.start(target);
+        }
     }
 
     fn volume(&self) -> f64 {
@@ -740,7 +788,41 @@ impl Render for AudioPane {
 
 #[cfg(test)]
 mod tests {
-    use super::{percent, stepped};
+    use std::time::{Duration, Instant};
+
+    use super::{SEEK_HOLD, Seeking, percent, stepped};
+
+    #[test]
+    fn a_seek_shows_its_target_until_the_pipeline_is_there() {
+        let s = Duration::from_secs;
+        let seeking = Seeking::default();
+        let start = Instant::now();
+        assert_eq!(seeking.at(Some(s(12)), true, start), s(12));
+        seeking.0.set(Some((s(20), start)));
+        // Flushing: no position, then 0, then the old one, all unsettled.
+        assert_eq!(seeking.at(None, false, start), s(20));
+        assert_eq!(seeking.at(Some(s(0)), false, start), s(20));
+        assert_eq!(seeking.at(Some(s(10)), false, start), s(20));
+        // Settled but not yet answering.
+        assert_eq!(seeking.at(None, true, start), s(20));
+        // There, at the keyframe after the target; the hold is gone.
+        let there = Duration::from_millis(21_300);
+        assert_eq!(seeking.at(Some(there), true, start), there);
+        assert_eq!(seeking.at(Some(s(0)), false, start), s(0));
+        // A pipeline that never settles lets go after a while.
+        seeking.0.set(Some((s(40), start)));
+        assert_eq!(seeking.at(Some(s(3)), false, start + SEEK_HOLD), s(3));
+    }
+
+    #[test]
+    fn a_second_seek_starts_from_the_first_ones_target() {
+        let seeking = Seeking::default();
+        seeking.start(Duration::from_secs(20));
+        // While the first is on its way, the position read for the next is its target.
+        assert_eq!(seeking.position(None, false), Duration::from_secs(20));
+        seeking.start(Duration::from_secs(30));
+        assert_eq!(seeking.position(Some(Duration::ZERO), false), Duration::from_secs(30));
+    }
 
     #[test]
     fn volume_steps_are_even_to_the_ear() {
