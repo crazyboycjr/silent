@@ -50,6 +50,9 @@ fn main() -> ExitCode {
 /// Owns Nautilus's previewer name and shows what it asks for. D-Bus starts
 /// this process for a call, so that call is waited for before anything else.
 fn serve() -> ExitCode {
+    // The GPU's instance and device take longer than anything else before
+    // the window: they are made beside the bus, the toolkit and the loading.
+    gpui_wgpu::WgpuContext::prepare();
     let (sender, requests) = async_channel::unbounded();
     let bus = match Bus::start(sender) {
         Ok(bus) => bus,
@@ -73,6 +76,7 @@ fn serve() -> ExitCode {
 }
 
 fn standalone(path: &str) -> ExitCode {
+    gpui_wgpu::WgpuContext::prepare();
     let path = std::path::absolute(path).unwrap_or_else(|_| path.into());
     let Ok(uri) = glib::filename_to_uri(&path, None) else {
         eprintln!("silent: {} is not a local file", path.display());

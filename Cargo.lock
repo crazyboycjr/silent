@@ -6957,6 +6957,7 @@ dependencies = [
  "gpui-kit",
  "gpui-kit-assets",
  "gpui-pdf",
+ "gpui-pre-wgpu",
  "gpui-video-player",
  "gstreamer",
  "hayro",

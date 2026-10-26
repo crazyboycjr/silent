@@ -81,6 +81,10 @@ impl DeviceErrorState {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
+static PREPARED: Mutex<Option<std::thread::JoinHandle<anyhow::Result<WgpuContext>>>> =
+    Mutex::new(None);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WgpuBackend {
     BrowserWebGpu,
@@ -314,6 +318,59 @@ impl WgpuContext {
             color_texture_format,
             errors,
         }
+    }
+
+    /// silent: starts making a Vulkan instance, adapter and device on a thread of their own,
+    /// for the first window to take instead of making them while it opens.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn prepare() {
+        let thread = std::thread::Builder::new()
+            .name("gpu".into())
+            .spawn(Self::create_prepared);
+        if let Ok(thread) = thread {
+            *PREPARED.lock() = Some(thread);
+        }
+    }
+
+    /// The context `prepare` made, once it is done.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn take_prepared() -> Option<Self> {
+        let thread = PREPARED.lock().take()?;
+        let context = thread.join().ok()?.log_err();
+        log::info!(target: "silent::trace", "prepared GPU taken");
+        context
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn create_prepared() -> anyhow::Result<Self> {
+        // Vulkan's instance needs no display; the window's surface brings its own.
+        let instance = Self::instance(None);
+        let (adapter, device, queue, dual_source_blending, color_texture_format) =
+            gpui::block_on(async {
+                let mut adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
+                Self::sort_adapters(&mut adapters, Self::device_id_filter(), None);
+                let adapter = adapters
+                    .into_iter()
+                    .find(|adapter| adapter.get_info().device_type != wgpu::DeviceType::Cpu)
+                    .context("no GPU adapter")?;
+                let (device, queue, dual_source_blending, format) =
+                    Self::create_device(&adapter).await?;
+                anyhow::Ok((adapter, device, queue, dual_source_blending, format))
+            })?;
+        log::info!(
+            target: "silent::trace",
+            "device on {} ({:?})",
+            adapter.get_info().name,
+            adapter.get_info().backend
+        );
+        Ok(Self::from_native_adapter_and_device(
+            instance,
+            adapter,
+            device,
+            queue,
+            dual_source_blending,
+            color_texture_format,
+        ))
     }
 
     #[cfg(not(target_family = "wasm"))]

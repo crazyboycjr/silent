@@ -302,11 +302,21 @@ impl WgpuRenderer {
             .window_handle()
             .map_err(|e| anyhow::anyhow!("Failed to get window handle: {e}"))?;
 
+        let display_handle = window
+            .display_handle()
+            .map_err(|e| anyhow::anyhow!("Failed to get display handle: {e}"))?;
         let target = wgpu::SurfaceTargetUnsafe::RawHandle {
-            // Fall back to the display handle already provided via InstanceDescriptor::display.
-            raw_display_handle: None,
+            // silent: given here too, since a prepared instance was made without one.
+            raw_display_handle: Some(display_handle.as_raw()),
             raw_window_handle: window_handle.as_raw(),
         };
+
+        // silent: the first window takes the device `WgpuContext::prepare` made.
+        if gpu_context.borrow().is_none()
+            && let Some(prepared) = WgpuContext::take_prepared()
+        {
+            *gpu_context.borrow_mut() = Some(prepared);
+        }
 
         // Use the existing context's instance if available, otherwise create a new one.
         // The surface must be created with the same instance that will be used for
