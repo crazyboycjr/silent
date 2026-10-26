@@ -60,7 +60,8 @@ pub enum Act {
     Pending(String),
     /// Esc dropped a pending vim command.
     Cancelled,
-    /// M: the minimap or the thumbnail rail goes to its next mode.
+    /// M: the minimap, the thumbnail rail or a document's overview goes to
+    /// its next mode.
     Overview,
     SelectAll,
     Copy,
@@ -158,7 +159,7 @@ pub fn route(kind: Kind, engaged: bool, key: &str, mods: Mods, held: bool, vim: 
             Motion::Top
         }),
         (false, "m") if kind.media() => once(Act::Mute),
-        (false, "m") if matches!(kind, Kind::Lines | Kind::Pdf | Kind::Slides) => {
+        (false, "m") if matches!(kind, Kind::Lines | Kind::Doc | Kind::Pdf | Kind::Slides) => {
             once(Act::Overview)
         }
         (false, "k") if kind.media() => once(Act::Pause),
@@ -366,7 +367,8 @@ mod tests {
         );
         assert_eq!(press(Kind::Lines, false, "m"), Act::Overview);
         assert_eq!(press(Kind::Pdf, false, "m"), Act::Overview);
-        assert_eq!(press(Kind::Doc, false, "m"), Act::Pass);
+        assert_eq!(press(Kind::Doc, false, "m"), Act::Overview);
+        assert_eq!(press(Kind::Sheet, false, "m"), Act::Pass);
         // Sheets and archives take no vim keys.
         assert_eq!(press(Kind::Sheet, false, "j"), Act::Pass);
     }

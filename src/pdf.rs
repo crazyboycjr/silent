@@ -1,6 +1,6 @@
 //! PDF pages in a vertical scroll, rendered by gpui-pdf (hayro) around
-//! what is in view, with a rail of thumbnails at the right edge. Text on a
-//! page can be selected by dragging.
+//! what is in view, with a rail of thumbnails docked at the right. Text on
+//! a page can be selected by dragging.
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -12,7 +12,7 @@ use silent::memory::View;
 use silent::vim::Motion;
 
 use crate::content::Pdf;
-use crate::overview::{self, Geometry, Mode, Overview, Overviewed, Shown};
+use crate::overview::{self, Docking, Geometry, Mode, Overview, Overviewed, Shown};
 use crate::paged::{GAP, Pages, RAIL, THUMB};
 use crate::pdftext::{Area, PageText};
 use crate::theme::Theme;
@@ -30,7 +30,7 @@ pub struct PdfPane {
     pending: HashSet<usize>,
     /// The device width pages were last rendered at.
     width: f32,
-    /// The window's size when last drawn.
+    /// The pages' area when last drawn: the window, less the rail's dock.
     viewport: Size<Pixels>,
     /// Text layers read so far; `None` while one is being read.
     texts: HashMap<usize, Option<PageText>>,
@@ -53,22 +53,22 @@ struct Drag {
 }
 
 impl PdfPane {
-    pub fn new(pdf: Pdf, mode: Mode, view: Option<View>, window: &Window) -> Self {
-        let width = window.viewport_size().width.to_f64() as f32 * window.scale_factor();
+    pub fn new(pdf: Pdf, mode: Mode, docked: bool, view: Option<View>, window: &Window) -> Self {
         let mut rendered = HashMap::new();
         if let Some((page, image)) = pdf.first {
             rendered.insert(page, image);
         }
+        let viewport = overview::beside(window, if docked { RAIL } else { 0. });
         Self {
             document: pdf.document,
             pages: Pages::new(pdf.pages),
             rendered,
             pending: HashSet::new(),
-            width,
-            viewport: window.viewport_size(),
+            width: f32::from(viewport.width) * window.scale_factor(),
+            viewport,
             texts: HashMap::new(),
             selecting: None,
-            overview: Overview::new(mode),
+            overview: Overview::new(mode, docked),
             thumbs: HashMap::new(),
             thumbs_pending: HashSet::new(),
             restore: view,
@@ -88,14 +88,31 @@ impl PdfPane {
         self.pages.view()
     }
 
-    pub fn motion(&mut self, motion: Motion, window: &Window, cx: &mut Context<Self>) {
-        self.pages.motion(motion, window);
+    pub fn motion(&mut self, motion: Motion, cx: &mut Context<Self>) {
+        self.pages.motion(motion, f32::from(self.viewport.height));
         overview::reveal(self, cx);
     }
 
     pub fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
         self.overview.mode = mode;
         overview::reveal(self, cx);
+    }
+
+    pub fn docking(&self) -> Docking {
+        Docking {
+            width: RAIL,
+            docked: self.overview.docked,
+            wanted: self.overview.mode == Mode::On && self.pages.count() > 1,
+        }
+    }
+
+    pub fn set_docked(&mut self, docked: bool, cx: &mut Context<Self>) {
+        self.overview.docked = docked;
+        cx.notify();
+    }
+
+    fn dock(&self) -> f32 {
+        if self.overview.docked { RAIL } else { 0. }
     }
 
     /// The page under a window position, and where on it, from 0 to 1.
@@ -203,7 +220,7 @@ impl PdfPane {
     }
 
     fn render_around_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let viewport = window.viewport_size();
+        let viewport = self.viewport;
         let width = f32::from(viewport.width);
         let device_width = width * window.scale_factor();
         if (device_width - self.width).abs() > 1. {
@@ -373,7 +390,7 @@ impl Overviewed for PdfPane {
 
 impl Render for PdfPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.viewport = window.viewport_size();
+        self.viewport = overview::beside(window, self.dock());
         if let Some(view) = self.restore.take() {
             self.pages.restore(&view, f32::from(self.viewport.width));
         }
@@ -434,41 +451,59 @@ impl Render for PdfPane {
         )
         .absolute();
         let height = f32::from(self.viewport.height);
-        let overview = match self.overview.shown(self.geometry(1.).scrollable()) {
-            Shown::Panel => {
+        let (dock, bar) = match self.overview.shown(self.geometry(1.).scrollable()) {
+            Shown::Docked => {
                 let g = self.geometry(f64::from(height));
                 let content = self.rail(g, window, cx);
-                Some(overview::panel(&self.overview, g, RAIL, content, theme, cx))
+                let panel = overview::panel(&self.overview, g, RAIL, content, theme, cx);
+                let dock = overview::dock(RAIL, theme.backdrop, None, Some(panel)).on_scroll_wheel(
+                    cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
+                        this.pages.wheel(event, window);
+                        cx.notify();
+                    }),
+                );
+                (Some(dock), None)
             }
             Shown::Bar => {
                 let g = self.geometry(overview::bar_track(height));
-                let label = format!("page {} of {}", self.current_page(), self.page_count());
-                Some(overview::scrollbar(&self.overview, g, label, theme, cx))
+                (
+                    None,
+                    Some(overview::scrollbar(&self.overview, g, theme, cx)),
+                )
             }
-            Shown::Nothing => None,
+            Shown::Overlay | Shown::Nothing => (None, None),
         };
         div()
             .size_full()
-            .relative()
+            .flex()
+            .flex_row()
+            .bg(theme.backdrop)
             .child(
                 div()
-                    .id("pages")
-                    .size_full()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.pages.scroll)
-                    .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
-                        overview::reveal(this, cx);
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                            this.press(event, window, cx)
-                        }),
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .relative()
+                    .child(
+                        div()
+                            .id("pages")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.pages.scroll)
+                            .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
+                                overview::reveal(this, cx);
+                            }))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                    this.press(event, window, cx)
+                                }),
+                            )
+                            .child(div().flex().flex_col().gap(px(GAP)).children(pages)),
                     )
-                    .bg(theme.backdrop)
-                    .child(div().flex().flex_col().gap(px(GAP)).children(pages)),
+                    .child(follow)
+                    .children(bar),
             )
-            .child(follow)
-            .children(overview)
+            .children(dock)
     }
 }

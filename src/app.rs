@@ -7,7 +7,7 @@ use gpui_kit::*;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use silent::dbus::{Bus, Direction, Request};
 use silent::detect::Kind;
-use silent::geometry::{Rect, Screen};
+use silent::geometry::{self, Rect, Screen};
 use silent::x11::{self, X11};
 
 use crate::content::{self, Loaded};
@@ -29,6 +29,9 @@ pub enum Intent {
     Open,
     Rename,
     Trash,
+    /// The overview's dock grows by this many logical pixels at the
+    /// window's right, or shrinks when it is negative.
+    Redock(f32),
 }
 
 /// How long a released name waits for calls that were already on their way.
@@ -320,6 +323,10 @@ impl Controller {
     }
 
     async fn intent(&mut self, intent: Intent, cx: &mut AsyncApp) {
+        if let Intent::Redock(by) = intent {
+            self.redock(by);
+            return;
+        }
         let Some(shown) = &self.shown else {
             return;
         };
@@ -359,7 +366,25 @@ impl Controller {
                     let _ = bus.trash(&uri);
                 }
             }
+            Intent::Redock(_) => {}
         }
+    }
+
+    /// Widens or narrows the window at its right edge, so that the content
+    /// stays where it is on the screen.
+    fn redock(&mut self, by: f32) {
+        let (Some(x11), Some(open)) = (&self.x11, &mut self.window) else {
+            return;
+        };
+        let Some(frame) = open.xid.and_then(|xid| x11.frame(xid)) else {
+            return;
+        };
+        let by = self.screen.pixels(f64::from(by));
+        let rect = geometry::redock(frame, self.screen.monitor, by);
+        if let Some(xid) = open.xid {
+            let _ = x11.configure(xid, rect);
+        }
+        open.size = (rect.width, rect.height);
     }
 }
 

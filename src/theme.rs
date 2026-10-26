@@ -15,6 +15,8 @@ pub struct Theme {
     pub strip_text: Hsla,
     /// Behind selected text.
     pub selection: Hsla,
+    /// The hairline between text and the minimap docked beside it.
+    pub rule: Hsla,
 }
 
 impl Theme {
@@ -28,6 +30,7 @@ impl Theme {
                 strip: rgba(0x0f0c0ac0).into(),
                 strip_text: rgb(0xf3ebdf).into(),
                 selection: rgba(0x9a6a3f8c).into(),
+                rule: rgba(0xa5998b40).into(),
             },
             _ => Self {
                 surface: rgb(0xf6f1e9).into(),
@@ -37,6 +40,7 @@ impl Theme {
                 strip: rgba(0x1d1813b8).into(),
                 strip_text: rgb(0xf8f2e9).into(),
                 selection: rgba(0xe8b07a80).into(),
+                rule: rgba(0x85786b40).into(),
             },
         }
     }

@@ -1,4 +1,6 @@
-//! How big a preview window is and where it goes.
+//! How big a preview window is and where it goes. The content fills the
+//! window, unless a minimap or a thumbnail rail is docked at its right: then
+//! the window is wider by the dock, and the content keeps its size and place.
 
 /// A rectangle in root-window pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +66,23 @@ impl Screen {
         )
     }
 
+    /// `logical` pixels in root-window pixels.
+    pub fn pixels(&self, logical: f64) -> i32 {
+        (logical * self.scale).round() as i32
+    }
+
+    /// The window around content of `size` with a dock `dock` logical
+    /// pixels wide at its right.
+    pub fn window(&self, size: (i32, i32), dock: f64) -> (i32, i32) {
+        (size.0 + self.pixels(dock), size.1)
+    }
+
+    /// The largest content beside a dock `dock` logical pixels wide.
+    fn room(&self, dock: f64) -> (f64, f64) {
+        let (bw, bh) = self.bounds();
+        ((bw - f64::from(self.pixels(dock))).max(1.0), bh)
+    }
+
     /// Display size for an image or video of `natural` pixels. It keeps the
     /// content's aspect, enlarges small content by the desktop scale (and up
     /// to twice that while it would still look small), and never leaves the
@@ -94,23 +113,26 @@ impl Screen {
         }
     }
 
-    /// Window size for a document whose first page measures `page` points:
-    /// the whole page in view, at most twice its actual size.
-    pub fn fit_page(&self, page: (f64, f64)) -> (i32, i32) {
+    /// Content size for a document whose first page measures `page` points,
+    /// beside a dock `dock` logical pixels wide: the whole page in view, at
+    /// most twice its actual size, and the page and the dock within the
+    /// bounds.
+    pub fn fit_page(&self, page: (f64, f64), dock: f64) -> (i32, i32) {
         let (pw, ph) = (page.0.max(1.0), page.1.max(1.0));
-        let (bw, bh) = self.bounds();
+        let (rw, rh) = self.room(dock);
         let actual = self.scale * 96.0 / 72.0;
-        let scale = (bw / pw).min(bh / ph).min(2.0 * actual);
+        let scale = (rw / pw).min(rh / ph).min(2.0 * actual);
         ((pw * scale).round() as i32, (ph * scale).round() as i32)
     }
 
-    /// A card of `width` × `height` logical pixels, scaled to the desktop
-    /// and kept within the bounds.
-    pub fn card(&self, width: f64, height: f64) -> (i32, i32) {
-        let (bw, bh) = self.bounds();
+    /// Content of `width` × `height` logical pixels beside a dock `dock`
+    /// logical pixels wide, scaled to the desktop and kept, with the dock,
+    /// within the bounds.
+    pub fn card(&self, width: f64, height: f64, dock: f64) -> (i32, i32) {
+        let (rw, rh) = self.room(dock);
         (
-            (width * self.scale).min(bw).round() as i32,
-            (height * self.scale).min(bh).round() as i32,
+            (width * self.scale).min(rw).round() as i32,
+            (height * self.scale).min(rh).round() as i32,
         )
     }
 
@@ -124,6 +146,33 @@ impl Screen {
             width,
             height,
         }
+    }
+
+    /// A window of `size` centred on `point`, moved onto the monitor where
+    /// it would leave it.
+    pub fn around(&self, (x, y): (i32, i32), size: (i32, i32)) -> Rect {
+        let m = self.monitor;
+        let (width, height) = (size.0.clamp(1, m.width), size.1.clamp(1, m.height));
+        Rect {
+            x: (x - width / 2).clamp(m.x, m.x + m.width - width),
+            y: (y - height / 2).clamp(m.y, m.y + m.height - height),
+            width,
+            height,
+        }
+    }
+}
+
+/// `frame` once the dock at its right has grown by `by` pixels, or shrunk
+/// when `by` is negative: the window keeps its left edge, so the content
+/// stays where it is, unless it would then cross the right edge of
+/// `monitor`; it moves left just enough not to.
+pub fn redock(frame: Rect, monitor: Rect, by: i32) -> Rect {
+    let width = (frame.width + by).clamp(1, monitor.width);
+    let right = monitor.x + monitor.width;
+    Rect {
+        x: frame.x.min(right - width).max(monitor.x),
+        width,
+        ..frame
     }
 }
 
@@ -156,6 +205,15 @@ mod tests {
 
     fn size(fit: Fit) -> (i32, i32) {
         (fit.width, fit.height)
+    }
+
+    fn rect(x: i32, y: i32, width: i32, height: i32) -> Rect {
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     #[test]
@@ -220,12 +278,7 @@ mod tests {
     #[test]
     fn without_a_desktop_scale_photos_still_fit() {
         let s = Screen {
-            monitor: Rect {
-                x: 0,
-                y: 0,
-                width: 1920,
-                height: 1080,
-            },
+            monitor: rect(0, 0, 1920, 1080),
             scale: 1.0,
         };
         assert_eq!(size(s.fit_media((4000, 3000))), (1224, 918));
@@ -233,61 +286,125 @@ mod tests {
     }
 
     #[test]
+    fn the_window_holds_the_content_and_its_dock() {
+        let s = screen();
+        assert_eq!(s.window((1000, 500), 0.0), (1000, 500));
+        assert_eq!(s.window((1000, 500), 108.0), (1183, 500));
+    }
+
+    #[test]
     fn pages_show_whole_and_small_pages_are_not_blown_up() {
         let s = screen();
-        assert_eq!(s.fit_page((595.0, 842.0)), (1297, 1836));
-        assert_eq!(s.fit_page((842.0, 595.0)), (2598, 1836));
+        assert_eq!(s.fit_page((595.0, 842.0), 0.0), (1297, 1836));
+        assert_eq!(s.fit_page((842.0, 595.0), 0.0), (2598, 1836));
         // A business card at twice its actual size.
-        assert_eq!(s.fit_page((252.0, 144.0)), (1141, 652));
+        assert_eq!(s.fit_page((252.0, 144.0), 0.0), (1141, 652));
+    }
+
+    #[test]
+    fn a_docked_rail_widens_the_window_and_leaves_the_page_alone() {
+        let s = screen();
+        // The rail's 108 logical pixels are 183 on this screen.
+        assert_eq!(s.pixels(108.0), 183);
+        // A portrait page is as tall as the bounds either way: the window
+        // takes the rail on, and turning the rail off takes it away again.
+        let page = s.fit_page((595.0, 842.0), 108.0);
+        assert_eq!(page, s.fit_page((595.0, 842.0), 0.0));
+        assert_eq!(s.window(page, 108.0), (1480, 1836));
+        assert_eq!(s.window(page, 0.0), (1297, 1836));
+        // A page too wide for the rail beside it gives way, just enough.
+        assert_eq!(s.fit_page((1600.0, 400.0), 0.0), (3264, 816));
+        assert_eq!(s.fit_page((1600.0, 400.0), 108.0), (3081, 770));
+        assert_eq!(s.window((3081, 770), 108.0), (3264, 770));
+    }
+
+    #[test]
+    fn docked_windows_stay_within_the_bounds() {
+        let s = screen();
+        let (bw, bh) = s.bounds();
+        let within = |(w, h): (i32, i32)| w as f64 <= bw.ceil() && h as f64 <= bh.ceil();
+        for dock in [0.0, 108.0, 122.0] {
+            for page in [
+                (595.0, 842.0),
+                (842.0, 595.0),
+                (960.0, 540.0),
+                (100.0, 9000.0),
+                (9000.0, 100.0),
+            ] {
+                let content = s.fit_page(page, dock);
+                assert!(within(s.window(content, dock)), "{page:?} {dock}");
+            }
+            for card in [(860.0, 964.0), (4000.0, 300.0), (300.0, 4000.0)] {
+                let content = s.card(card.0, card.1, dock);
+                assert!(within(s.window(content, dock)), "{card:?} {dock}");
+            }
+        }
     }
 
     #[test]
     fn cards_scale_with_the_desktop_and_stay_within_the_bounds() {
         let s = screen();
-        assert_eq!(s.card(600.0, 360.0), (1019, 611));
-        assert_eq!(s.card(4000.0, 4000.0), (3264, 1836));
+        assert_eq!(s.card(600.0, 360.0, 0.0), (1019, 611));
+        assert_eq!(s.card(4000.0, 4000.0, 0.0), (3264, 1836));
+        // Text as wide as the bounds makes room for its minimap.
+        assert_eq!(s.card(4000.0, 300.0, 122.0), (3057, 509));
+    }
+
+    #[test]
+    fn docking_keeps_the_content_in_place() {
+        let frame = rect(1000, 500, 800, 600);
+        let grown = redock(frame, UHD, 207);
+        assert_eq!(grown, rect(1000, 500, 1007, 600));
+        // Undocking gives the same window back.
+        assert_eq!(redock(grown, UHD, -207), frame);
+    }
+
+    #[test]
+    fn a_dock_at_the_monitors_edge_moves_the_window_left_just_enough() {
+        let grown = redock(rect(3000, 500, 800, 600), UHD, 207);
+        assert_eq!(grown, rect(2833, 500, 1007, 600));
+        // Undocking leaves it where it moved to.
+        assert_eq!(redock(grown, UHD, -207), rect(2833, 500, 800, 600));
+        // On a monitor to the right of another.
+        let right = rect(3840, 0, 3840, 2160);
+        assert_eq!(
+            redock(rect(7000, 100, 600, 400), right, 300),
+            rect(6780, 100, 900, 400)
+        );
+        // Never wider than the monitor, nor off its left edge.
+        assert_eq!(
+            redock(rect(100, 0, 3800, 600), UHD, 207),
+            rect(0, 0, 3840, 600)
+        );
     }
 
     #[test]
     fn windows_are_centred_on_their_monitor() {
         let mut s = screen();
-        assert_eq!(
-            s.centre((1000, 500)),
-            Rect {
-                x: 1420,
-                y: 830,
-                width: 1000,
-                height: 500
-            }
-        );
-        s.monitor = Rect {
-            x: 3840,
-            y: 200,
-            width: 2560,
-            height: 1440,
-        };
-        assert_eq!(
-            s.centre((1001, 501)),
-            Rect {
-                x: 4619,
-                y: 669,
-                width: 1001,
-                height: 501
-            }
-        );
+        assert_eq!(s.centre((1000, 500)), rect(1420, 830, 1000, 500));
+        s.monitor = rect(3840, 200, 2560, 1440);
+        assert_eq!(s.centre((1001, 501)), rect(4619, 669, 1001, 501));
         // Larger than the monitor: clamped onto it.
         assert_eq!(s.centre((9000, 9000)), s.monitor);
     }
 
     #[test]
+    fn a_window_resized_around_its_centre_stays_on_the_monitor() {
+        let s = screen();
+        let shown = rect(1420, 830, 1000, 500);
+        assert_eq!(
+            s.around(shown.centre(), (600, 300)),
+            rect(1620, 930, 600, 300)
+        );
+        assert_eq!(s.around(shown.centre(), (1000, 500)), shown);
+        // Near a corner a larger window is pushed back onto the monitor.
+        assert_eq!(s.around((3700, 100), (1000, 800)), rect(2840, 0, 1000, 800));
+    }
+
+    #[test]
     fn the_monitor_is_the_one_holding_the_point_or_the_nearest() {
         let left = UHD;
-        let right = Rect {
-            x: 3840,
-            y: 0,
-            width: 1920,
-            height: 1080,
-        };
+        let right = rect(3840, 0, 1920, 1080);
         let monitors = [left, right];
         assert_eq!(monitor_at(&monitors, (100, 100)), Some(left));
         assert_eq!(monitor_at(&monitors, (4000, 500)), Some(right));

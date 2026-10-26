@@ -1,13 +1,16 @@
-//! The overview at the right edge of a long view: a minimap of text, a rail
-//! of page thumbnails, or a slim scrollbar once M has turned those off. It
-//! shows while the view scrolls and fades 1.5 s after, unless M has pinned
-//! it; it stays while the pointer is on it, and pressing or dragging on it
-//! moves the view.
+//! The overview of a long view: a minimap of text, a rail of page
+//! thumbnails, or a miniature of a document's column. Text shows its minimap
+//! over its right edge while it scrolls, fading 1.5 s after, or docked
+//! beside it once M has pinned it; pages and documents keep theirs docked
+//! until M takes it away. A docked overview widens the window rather than
+//! covering the content. Without one, a slim scrollbar shows while the view
+//! scrolls. Pressing or dragging on any of them moves the view.
 
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use silent::memory;
 
@@ -21,43 +24,63 @@ const INSET: f32 = 12.;
 const MIN_THUMB: f64 = 28.;
 const BAR_WIDTH: f32 = 22.;
 
-/// What M cycles through.
+/// Which overview a view has, and so what M cycles through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Family {
+    /// Text, code and hexdumps: shown while scrolling, docked, or off.
+    Minimap,
+    /// PDFs, slides and documents: docked or off.
+    Rail,
+}
+
+impl Family {
+    fn key(self) -> &'static str {
+        match self {
+            Family::Minimap => "minimap",
+            Family::Rail => "rail",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mode {
-    /// Shown while the view scrolls.
+    /// Over the view's edge while it scrolls.
     #[default]
     Auto,
-    /// Shown whenever there is more than a screen.
+    /// Docked beside the view, always shown.
     On,
     /// The slim scrollbar instead, while the view scrolls.
     Off,
 }
 
 impl Mode {
-    pub fn next(self) -> Self {
-        match self {
-            Mode::Auto => Mode::On,
-            Mode::On => Mode::Off,
-            Mode::Off => Mode::Auto,
+    pub fn next(self, family: Family) -> Self {
+        match (family, self) {
+            (Family::Minimap, Mode::Auto) => Mode::On,
+            (Family::Minimap, Mode::On) => Mode::Off,
+            (Family::Minimap, Mode::Off) => Mode::Auto,
+            (Family::Rail, Mode::Off) => Mode::On,
+            (Family::Rail, _) => Mode::Off,
         }
     }
 
-    /// The mode chosen last for `what`, kept until the next reboot.
-    pub fn load(what: &str) -> Self {
-        match memory::setting(what).as_deref() {
+    /// The mode chosen last for `family`, kept until the next reboot.
+    pub fn load(family: Family) -> Self {
+        match memory::setting(family.key()).as_deref() {
             Some("on") => Mode::On,
             Some("off") => Mode::Off,
+            _ if family == Family::Rail => Mode::On,
             _ => Mode::Auto,
         }
     }
 
-    pub fn save(self, what: &str) {
+    pub fn save(self, family: Family) {
         let name = match self {
             Mode::Auto => "auto",
             Mode::On => "on",
             Mode::Off => "off",
         };
-        memory::set_setting(what, name);
+        memory::set_setting(family.key(), name);
     }
 
     /// `Minimap while scrolling`, for the strip.
@@ -163,6 +186,9 @@ impl Geometry {
 #[derive(Default)]
 pub struct Overview {
     pub mode: Mode,
+    /// Docked beside the view now. It follows the mode once the window has
+    /// made room, which the preview sees to.
+    pub docked: bool,
     /// Recently scrolled, hovered or dragged.
     up: bool,
     /// Drawn still while it fades out.
@@ -177,19 +203,22 @@ pub struct Overview {
     timer: Option<Task<()>>,
 }
 
-/// What shows at the right edge now.
+/// What shows now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shown {
     Nothing,
-    /// The minimap or the rail.
-    Panel,
+    /// The minimap over the view's edge.
+    Overlay,
+    /// The minimap, the rail or the miniature beside the view.
+    Docked,
     Bar,
 }
 
 impl Overview {
-    pub fn new(mode: Mode) -> Self {
+    pub fn new(mode: Mode, docked: bool) -> Self {
         Self {
             mode,
+            docked,
             ..Self::default()
         }
     }
@@ -197,17 +226,25 @@ impl Overview {
     pub fn shown(&self, scrollable: bool) -> Shown {
         let up = self.up || self.fading || self.grip.is_some();
         match self.mode {
+            _ if self.docked => Shown::Docked,
             _ if !scrollable => Shown::Nothing,
-            Mode::On => Shown::Panel,
-            Mode::Auto if up => Shown::Panel,
-            Mode::Off if up => Shown::Bar,
+            Mode::Auto if up => Shown::Overlay,
+            // Pinned without a dock, as for a page that turned out longer
+            // than it looked, the bar shows where the view is.
+            Mode::On | Mode::Off if up => Shown::Bar,
             _ => Shown::Nothing,
         }
     }
 
-    /// Fades the element in or out with the overview; pinned, it just shows.
+    /// Whether the pointer holds or points at the scrollbar, so that the
+    /// strip says where the view is.
+    pub fn scrubbing(&self) -> bool {
+        !self.docked && self.mode != Mode::Auto && (self.hovered || self.grip.is_some())
+    }
+
+    /// Fades the element in or out with the overview; docked, it just shows.
     fn fade(&self, element: Stateful<Div>) -> AnyElement {
-        if self.mode == Mode::On {
+        if self.docked {
             return element.into_any_element();
         }
         let up = self.up || self.grip.is_some();
@@ -336,9 +373,9 @@ fn release<V: Overviewed>(view: &mut V, cx: &mut Context<V>) {
     }
 }
 
-/// The frame both kinds of overview share: the track's place, and the
-/// pointer on it. Mouse moves and releases are listened to on the whole
-/// window, so that a drag carries on outside the track.
+/// The frame every overview shares: the track's place, and the pointer on
+/// it. Mouse moves and releases are listened to on the whole window, so
+/// that a drag carries on outside the track.
 fn frame<V: Overviewed>(
     overview: &Overview,
     id: &'static str,
@@ -367,15 +404,8 @@ fn frame<V: Overviewed>(
     )
     .absolute()
     .size_full();
-    let live = overview.up || overview.grip.is_some() || overview.mode == Mode::On;
-    let element = div()
-        .id(id)
-        .absolute()
-        .top_0()
-        .bottom_0()
-        .right_0()
-        .child(follow);
-    if !live {
+    let element = div().id(id).absolute().child(follow);
+    if !(overview.docked || overview.up || overview.grip.is_some()) {
         // Fading out: drawn, but no longer in the pointer's way.
         return element;
     }
@@ -399,8 +429,9 @@ fn frame<V: Overviewed>(
         )
 }
 
-/// The minimap or the rail, `width` pixels wide. `content` draws what the
-/// track shows: the overview from the geometry's shift down.
+/// The minimap, the rail or the miniature: filling its dock, or `width`
+/// wide over the view's right edge. `content` draws what the track shows:
+/// the overview from the geometry's shift down.
 pub fn panel<V: Overviewed>(
     overview: &Overview,
     g: Geometry,
@@ -419,32 +450,37 @@ pub fn panel<V: Overviewed>(
         .border_y_1()
         .border_color(progress().opacity(0.7));
     let element = frame(overview, "overview", false, cx)
-        .w(px(width))
-        .bg(theme.surface.opacity(0.9))
-        .border_l_1()
-        .border_color(theme.muted.opacity(0.25))
+        .top_0()
+        .bottom_0()
+        .right_0()
+        .when(overview.docked, |panel| panel.left_0())
+        .when(!overview.docked, |panel| {
+            panel
+                .w(px(width))
+                .bg(theme.surface.opacity(0.9))
+                .border_l_1()
+                .border_color(theme.muted.opacity(0.25))
+        })
         .overflow_hidden()
         .child(content)
         .child(thumb);
     overview.fade(element)
 }
 
-/// The slim scrollbar, with `label` beside its thumb while it is held or
-/// pointed at.
+/// The slim scrollbar over the view's right edge. Where the view is shows
+/// in the strip while the scrollbar is held or pointed at.
 pub fn scrollbar<V: Overviewed>(
     overview: &Overview,
     g: Geometry,
-    label: String,
     theme: Theme,
     cx: &mut Context<V>,
 ) -> AnyElement {
     let g = g.bar();
     let active = overview.grip.is_some() || overview.hovered;
-    let (top, height) = (g.thumb_top() as f32, g.thumb_height() as f32);
     let thumb = div()
         .absolute()
-        .top(px(top))
-        .h(px(height))
+        .top(px(g.thumb_top() as f32))
+        .h(px(g.thumb_height() as f32))
         .right(px(7.))
         .w(px(if active { 8. } else { 6. }))
         .rounded(px(4.))
@@ -453,28 +489,32 @@ pub fn scrollbar<V: Overviewed>(
         } else {
             theme.muted.opacity(0.6)
         });
-    let tag = active.then(|| {
-        div()
-            .absolute()
-            .top(px(top + height / 2. - 13.))
-            .right(px(BAR_WIDTH + 4.))
-            .px(px(10.))
-            .py(px(4.))
-            .rounded(px(6.))
-            .bg(theme.strip)
-            .text_color(theme.strip_text)
-            .text_size(px(12.5))
-            .whitespace_nowrap()
-            .child(label)
-    });
     let element = frame(overview, "scrollbar", true, cx)
         .top(px(INSET))
         .bottom(px(INSET))
+        .right_0()
         .w(px(BAR_WIDTH))
-        .child(thumb)
-        .children(tag);
-    // The label hangs outside the track, to the left.
+        .child(thumb);
     overview.fade(element)
+}
+
+/// The dock beside a view, `width` wide, on `ground`, with what its
+/// overview shows; `rule` sets it off from the view.
+pub fn dock(
+    width: f32,
+    ground: Hsla,
+    rule: Option<Hsla>,
+    shown: Option<AnyElement>,
+) -> Stateful<Div> {
+    div()
+        .id("dock")
+        .flex_none()
+        .relative()
+        .w(px(width))
+        .h_full()
+        .bg(ground)
+        .when_some(rule, |dock, rule| dock.border_l_1().border_color(rule))
+        .children(shown)
 }
 
 /// The track a scrollbar has in a view `height` pixels tall.
@@ -482,9 +522,25 @@ pub fn bar_track(height: f32) -> f64 {
     f64::from((height - 2. * INSET).max(1.))
 }
 
+/// The window's area left to a view beside a dock `dock` wide.
+pub fn beside(window: &Window, dock: f32) -> Size<Pixels> {
+    let viewport = window.viewport_size();
+    size((viewport.width - px(dock)).max(px(1.)), viewport.height)
+}
+
+/// Where a view stands with its dock.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Docking {
+    /// The dock's width, in logical pixels.
+    pub width: f32,
+    pub docked: bool,
+    /// The mode pins the overview, and the view is long enough for it.
+    pub wanted: bool,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Geometry, MIN_THUMB, Mode, Overview, Shown};
+    use super::{Family, Geometry, MIN_THUMB, Mode, Overview, Shown};
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-6
@@ -537,19 +593,33 @@ mod tests {
     }
 
     #[test]
-    fn m_cycles_through_the_modes() {
-        assert_eq!(Mode::Auto.next(), Mode::On);
-        assert_eq!(Mode::On.next(), Mode::Off);
-        assert_eq!(Mode::Off.next(), Mode::Auto);
-        let mut overview = Overview::new(Mode::Auto);
+    fn m_cycles_three_modes_in_text_and_two_in_pages() {
+        assert_eq!(Mode::Auto.next(Family::Minimap), Mode::On);
+        assert_eq!(Mode::On.next(Family::Minimap), Mode::Off);
+        assert_eq!(Mode::Off.next(Family::Minimap), Mode::Auto);
+        assert_eq!(Mode::On.next(Family::Rail), Mode::Off);
+        assert_eq!(Mode::Off.next(Family::Rail), Mode::On);
+        // An auto left from before pages lost it docks them.
+        assert_eq!(Mode::Auto.next(Family::Rail), Mode::Off);
+    }
+
+    #[test]
+    fn the_minimap_shows_while_scrolling_and_docked_overviews_always() {
+        let mut overview = Overview::new(Mode::Auto, false);
         assert_eq!(overview.shown(true), Shown::Nothing);
         overview.up = true;
-        assert_eq!(overview.shown(true), Shown::Panel);
+        assert_eq!(overview.shown(true), Shown::Overlay);
         assert_eq!(overview.shown(false), Shown::Nothing);
         overview.mode = Mode::Off;
         assert_eq!(overview.shown(true), Shown::Bar);
-        overview.up = false;
-        overview.mode = Mode::On;
-        assert_eq!(overview.shown(true), Shown::Panel);
+        // Pinned: docked, resting or not, long or short.
+        let mut docked = Overview::new(Mode::On, true);
+        assert_eq!(docked.shown(true), Shown::Docked);
+        assert_eq!(docked.shown(false), Shown::Docked);
+        // Pinned while the window has not made room yet: the bar stands in.
+        docked.docked = false;
+        assert_eq!(docked.shown(true), Shown::Nothing);
+        docked.up = true;
+        assert_eq!(docked.shown(true), Shown::Bar);
     }
 }

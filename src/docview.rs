@@ -1,6 +1,8 @@
 //! Word-processing documents as a column on a page: headings, paragraphs
 //! with their emphasis, lists, tables and pictures. Only the blocks in view
 //! are laid out, and pictures are decoded when they first come into view.
+//! Docked at the right, a miniature of the whole column shows where the
+//! view is.
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -9,27 +11,29 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use silent::detect::Kind as FileKind;
 use silent::memory::View;
-use silent::office::miniature::size_of;
+use silent::office::miniature::{Kind, Miniature, size_of};
 use silent::office::{Align, Block, Document, Paragraph, Role, Span, Table, family};
 use silent::vim::Motion;
 
-use crate::content::decode_still;
-use crate::overview::{self, Geometry, Mode, Overview, Overviewed, Shown};
-use crate::theme::{Theme, progress};
+use crate::content::{Paper, decode_still};
+use crate::overview::{self, Docking, Geometry, Mode, Overview, Overviewed, Shown};
+use crate::paged::{RAIL, THUMB};
+use crate::theme::{Theme, accent, progress};
 
 /// The page, warm white as paper is.
-const PAPER: u32 = 0xfffdf8;
-const INK: u32 = 0x1f1a16;
+pub const PAPER: u32 = 0xfffdf8;
+pub const INK: u32 = 0x1f1a16;
 /// How long a block jumped to stays lit.
 const FLASH: Duration = Duration::from_millis(1200);
 
 pub struct DocPane {
     doc: Rc<Document>,
+    mini: Rc<Miniature>,
     list: ListState,
     images: HashMap<usize, Arc<RenderImage>>,
     pending: HashSet<usize>,
-    /// A document has no minimap: the slim scrollbar shows while it scrolls.
     overview: Overview,
     /// Pixels per point, as last drawn.
     scale: f32,
@@ -40,8 +44,16 @@ pub struct DocPane {
 }
 
 impl DocPane {
-    pub fn new(doc: Document, view: Option<View>, window: &Window) -> Self {
-        let scale = f32::from(window.viewport_size().width) / doc.page.0.max(1.);
+    pub fn new(
+        paper: Paper,
+        mode: Mode,
+        docked: bool,
+        view: Option<View>,
+        window: &Window,
+    ) -> Self {
+        let doc = paper.document;
+        let width = overview::beside(window, if docked { RAIL } else { 0. }).width;
+        let scale = f32::from(width) / doc.page.0.max(1.);
         // Blocks not laid out yet count as two lines, so that the scrollbar
         // is about right from the start.
         let guess = px(doc.base_size * scale * 1.3 * 2.5);
@@ -55,10 +67,11 @@ impl DocPane {
         }
         Self {
             doc: Rc::new(doc),
+            mini: Rc::new(paper.miniature),
             list,
             images: HashMap::new(),
             pending: HashSet::new(),
-            overview: Overview::new(Mode::Off),
+            overview: Overview::new(mode, docked),
             scale,
             centre: None,
             flash: None,
@@ -72,6 +85,35 @@ impl DocPane {
             block: top.item_ix,
             offset,
         })
+    }
+
+    /// How far down the document the view is, for the strip, while the
+    /// scrollbar is held or pointed at.
+    pub fn scrub_label(&self) -> Option<String> {
+        let percent = (self.geometry(1.).fraction() * 100.).round();
+        self.overview.scrubbing().then(|| format!("{percent}%"))
+    }
+
+    pub fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
+        self.overview.mode = mode;
+        overview::reveal(self, cx);
+    }
+
+    pub fn docking(&self) -> Docking {
+        Docking {
+            width: RAIL,
+            docked: self.overview.docked,
+            wanted: self.overview.mode == Mode::On && self.geometry(1.).scrollable(),
+        }
+    }
+
+    pub fn set_docked(&mut self, docked: bool, cx: &mut Context<Self>) {
+        self.overview.docked = docked;
+        cx.notify();
+    }
+
+    fn dock(&self) -> f32 {
+        if self.overview.docked { RAIL } else { 0. }
     }
 
     /// Moves as vim's keys and the arrows ask: j and k by a line of body
@@ -289,37 +331,123 @@ impl Overviewed for DocPane {
         &mut self.overview
     }
 
-    /// Pixels: the list knows the heights of the blocks laid out so far,
-    /// and guesses the rest.
+    /// Points down the miniature's column. The view runs from the block at
+    /// its top to the one at its bottom, each as far into it as the list
+    /// has it laid out, taken as far into the miniature's block: the
+    /// miniature guesses heights, and this keeps the two in step.
     fn geometry(&self, track: f64) -> Geometry {
-        let view = f64::from(self.list.viewport_bounds().size.height);
-        let max = f64::from(self.list.max_offset_for_scrollbar().y);
-        let top = -f64::from(self.list.scroll_px_offset_for_scrollbar().y);
-        Geometry::new(max + view, view, top, 1., track)
+        let viewport = self.list.viewport_bounds();
+        let top = self.list.logical_scroll_top();
+        let into = |ix: usize, pixels: Pixels| {
+            let (_, height) = self.mini.blocks.get(ix).copied().unwrap_or_default();
+            match self.list.bounds_for_item(ix) {
+                Some(drawn) if drawn.size.height > px(0.) => {
+                    height * (pixels / drawn.size.height).clamp(0., 1.)
+                }
+                _ => f32::from(pixels) / self.scale,
+            }
+        };
+        let y_top = self
+            .mini
+            .y_of(top.item_ix, into(top.item_ix, top.offset_in_item));
+        let mut y_bottom = y_top + f32::from(viewport.size.height) / self.scale;
+        for ix in top.item_ix..self.doc.blocks.len() {
+            let Some(drawn) = self.list.bounds_for_item(ix) else {
+                break;
+            };
+            if drawn.top() >= viewport.bottom() {
+                break;
+            }
+            y_bottom = self
+                .mini
+                .y_of(ix, into(ix, viewport.bottom() - drawn.top()));
+        }
+        Geometry::new(
+            f64::from(self.mini.height),
+            f64::from((y_bottom - y_top).max(1.)),
+            f64::from(y_top),
+            f64::from(THUMB / self.doc.page.0.max(1.)),
+            track,
+        )
     }
 
     fn scroll_to(&mut self, top: f64, _: &mut Window, cx: &mut Context<Self>) {
-        self.list
-            .set_offset_from_scrollbar(point(px(0.), px(-top as f32)));
+        let (item_ix, within) = self.mini.block_at(top as f32);
+        let (_, height) = self.mini.blocks.get(item_ix).copied().unwrap_or_default();
+        let offset_in_item = match self.list.bounds_for_item(item_ix) {
+            Some(drawn) if height > 0. => drawn.size.height * (within / height),
+            _ => px(within * self.scale),
+        };
+        self.list.scroll_to(ListOffset {
+            item_ix,
+            offset_in_item,
+        });
         cx.notify();
     }
+}
 
-    fn on_drag(&mut self, held: bool) {
-        if held {
-            self.list.scrollbar_drag_started();
-        } else {
-            self.list.scrollbar_drag_ended();
-        }
-    }
+/// The miniature on the dock, from the geometry's shift down: the column as
+/// a strip of paper with its lines, rules and pictures.
+fn sketch(mini: Rc<Miniature>, page: f32, g: Geometry, theme: Theme) -> AnyElement {
+    let (scale, shift) = (g.scale as f32, g.shift() as f32);
+    let margin = (page - mini.width) / 2.;
+    let ink: Hsla = rgb(INK).into();
+    let rule = theme.muted.opacity(0.6);
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let hairline = px(1. / window.scale_factor());
+            let left = bounds.left() + px((RAIL - THUMB) / 2.);
+            let top = bounds.top() - px(shift);
+            let paper = Bounds::from_corners(
+                point(left, top.max(bounds.top())),
+                point(
+                    left + px(THUMB),
+                    (top + px(mini.height * scale)).min(bounds.bottom()),
+                ),
+            );
+            window.paint_quad(quad(
+                paper,
+                px(0.),
+                rgb(PAPER),
+                hairline,
+                theme.muted.opacity(0.35),
+                BorderStyle::Solid,
+            ));
+            let span = shift / scale..(shift + f32::from(bounds.size.height)) / scale;
+            for mark in mini.marks_within(span.start, span.end) {
+                let color = match mark.kind {
+                    Kind::Heading => ink.opacity(0.75),
+                    Kind::Text => ink.opacity(0.32),
+                    Kind::Rule => rule,
+                    Kind::Picture => accent(FileKind::Image).opacity(0.35),
+                };
+                let origin = point(
+                    left + px((margin + mark.x) * scale),
+                    top + px(mark.y * scale),
+                );
+                let extent = size(
+                    px(mark.w * scale).max(hairline),
+                    px(mark.h * scale).max(hairline),
+                );
+                window.paint_quad(fill(Bounds::new(origin, extent), color));
+            }
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+    .into_any_element()
 }
 
 impl Render for DocPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.centre_block(window);
         let theme = Theme::of(window.appearance());
-        let width = f32::from(window.viewport_size().width);
+        let width = f32::from(overview::beside(window, self.dock()).width);
         let doc = self.doc.clone();
-        // Pixels per point: the page's width fills the window's.
+        // Pixels per point: the page's width fills the view's.
         let scale = width / doc.page.0.max(1.);
         self.scale = scale;
         let margin = (doc.margins.0 * scale).clamp(16., width / 4.);
@@ -365,21 +493,48 @@ impl Render for DocPane {
         })
         .size_full();
         let height = f32::from(window.viewport_size().height);
-        let overview =
-            (self.overview.shown(self.geometry(1.).scrollable()) == Shown::Bar).then(|| {
+        let (dock, bar) = match self.overview.shown(self.geometry(1.).scrollable()) {
+            Shown::Docked => {
+                let g = self.geometry(f64::from(height));
+                let content = sketch(self.mini.clone(), self.doc.page.0, g, theme);
+                let panel = overview::panel(&self.overview, g, RAIL, content, theme, cx);
+                let dock = overview::dock(RAIL, theme.backdrop, None, Some(panel)).on_scroll_wheel(
+                    cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
+                        let delta = event.delta.pixel_delta(window.line_height());
+                        this.list.scroll_by(-delta.y);
+                        cx.notify();
+                    }),
+                );
+                (Some(dock), None)
+            }
+            Shown::Bar => {
                 let g = self.geometry(overview::bar_track(height));
-                let label = format!("{}%", (g.fraction() * 100.).round());
-                overview::scrollbar(&self.overview, g, label, theme, cx)
-            });
+                (
+                    None,
+                    Some(overview::scrollbar(&self.overview, g, theme, cx)),
+                )
+            }
+            Shown::Overlay | Shown::Nothing => (None, None),
+        };
         div()
             .size_full()
-            .relative()
-            .bg(rgb(PAPER))
-            .pt(px(margin.min(48.)))
-            .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
-                overview::reveal(this, cx);
-            }))
-            .child(rows)
-            .children(overview)
+            .flex()
+            .flex_row()
+            .bg(theme.backdrop)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .relative()
+                    .bg(rgb(PAPER))
+                    .pt(px(margin.min(48.)))
+                    .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
+                        overview::reveal(this, cx);
+                    }))
+                    .child(rows)
+                    .children(bar),
+            )
+            .children(dock)
     }
 }

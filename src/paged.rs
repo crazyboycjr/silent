@@ -96,6 +96,12 @@ impl Pages {
         self.scroll.set_offset(offset);
     }
 
+    /// Scrolls as a wheel turned beside the scroll asks.
+    pub fn wheel(&self, event: &ScrollWheelEvent, window: &Window) {
+        let delta = event.delta.pixel_delta(window.line_height());
+        self.scroll_to(self.view_top() - f32::from(delta.y));
+    }
+
     pub fn go_to(&self, page: usize) {
         let page = page.min(self.count().saturating_sub(1));
         if let Some((top, _)) = self.layout().nth(page) {
@@ -119,9 +125,8 @@ impl Pages {
     }
 
     /// Moves as vim's keys and the arrows ask: j and k by pages, the rest
-    /// by the view's height or a nudge.
-    pub fn motion(&self, motion: Motion, window: &Window) {
-        let height = f32::from(window.viewport_size().height);
+    /// by the view's height, `height`, or a nudge.
+    pub fn motion(&self, motion: Motion, height: f32) {
         let by = |pixels: f32, k: usize| self.scroll_to(self.view_top() + pixels * k as f32);
         match motion {
             Motion::Down(k) => self.step(true, k),
@@ -147,8 +152,8 @@ impl Pages {
         (page > 0 || within > 0.001).then_some(View::Pages { page, within })
     }
 
-    /// Goes back to a view, before the column has been laid out: the
-    /// window's width is the column's.
+    /// Goes back to a view, before the column has been laid out: its width
+    /// is `width`.
     pub fn restore(&self, view: &View, width: f32) {
         let View::Pages { page, within } = *view else {
             return;

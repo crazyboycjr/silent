@@ -17,11 +17,14 @@ use silent::decode::{Decoder, Event};
 use silent::detect::{self, Facts, Kind};
 use silent::geometry::Screen;
 use silent::memory::{self, Key, View};
+use silent::office::miniature::Miniature;
 use silent::office::{self, doc, docx, odf, ppt, pptx};
 use silent::{hexdump, pretty, unpack};
 use smallvec::SmallVec;
 use unicode_width::UnicodeWidthChar;
 
+use crate::overview::{Family, Mode};
+use crate::paged::RAIL;
 use crate::picture::{self, Prepared};
 
 /// Card sizes in logical pixels; they grow with the desktop scale.
@@ -38,6 +41,9 @@ pub struct Loaded {
     pub description: String,
     /// Window size in root-window pixels.
     pub size: (i32, i32),
+    /// The overview docked at the window's right, in logical pixels; none
+    /// when it is zero.
+    pub dock: f32,
     /// For a compressed file, what is known about the data inside.
     pub packed: Option<Packed>,
     pub body: Body,
@@ -60,7 +66,7 @@ pub enum Body {
     Text(Box<Text>),
     Hex(Hex),
     Archive(Archive),
-    Document(Box<office::Document>),
+    Document(Box<Paper>),
     Sheet(Box<Sheet>),
     Deck(Box<Deck>),
     Info,
@@ -68,6 +74,12 @@ pub enum Body {
 
 pub struct Still {
     pub image: Arc<RenderImage>,
+}
+
+/// A word-processing document, and its column drawn small.
+pub struct Paper {
+    pub document: office::Document,
+    pub miniature: Miniature,
 }
 
 pub struct Sheet {
@@ -127,7 +139,7 @@ pub struct Pdf {
     pub document: Arc<gpui_pdf::Document>,
     /// Page sizes in points.
     pub pages: Vec<(f32, f32)>,
-    /// The page shown first, by its index, rendered at the window's width.
+    /// The page shown first, by its index, rendered at the pages' width.
     pub first: Option<(usize, Arc<RenderImage>)>,
 }
 
@@ -197,7 +209,8 @@ pub fn load(uri: &str, screen: Screen, wait_for_pixels: bool) -> Loaded {
         .and_then(|p| Key::new(p, facts.size, facts.modified))
         .and_then(|key| memory::recall(&key));
     let mut loaded = Loaded {
-        size: screen.card(CARD.0, CARD.1),
+        size: card(screen, CARD),
+        dock: 0.,
         packed: None,
         body: Body::Info,
         facts,
@@ -212,47 +225,51 @@ pub fn load(uri: &str, screen: Screen, wait_for_pixels: bool) -> Loaded {
         Some(View::Pages { page, .. }) => page,
         _ => 0,
     };
-    let (size, body) = match (loaded.facts.kind, path) {
+    let (size, dock, body) = match (loaded.facts.kind, path) {
         (Kind::Image, _) => match image(&loaded.facts.uri, screen, wait_for_pixels) {
-            Some((size, picture)) => (size, Body::Image(picture)),
+            Some((size, picture)) => (size, 0., Body::Image(picture)),
             None => return loaded,
         },
-        (Kind::Folder, path) => (loaded.size, Body::Folder(folder(path))),
+        (Kind::Folder, path) => (loaded.size, 0., Body::Folder(folder(path))),
         (Kind::Video, _) => match video(&loaded.facts.uri, resume) {
             Some(video) => {
                 let (w, h) = video.size();
-                let fit = screen.fit_media((w.max(1) as u32, h.max(1) as u32));
-                ((fit.width, fit.height), Body::Video(video))
+                let size = media(screen, (w.max(1) as u32, h.max(1) as u32));
+                (size, 0., Body::Video(video))
             }
             None => return loaded,
         },
         (Kind::Audio, Some(path)) => match audio(&loaded.facts.uri, &path, resume) {
-            Some(audio) => (screen.card(AUDIO_CARD.0, AUDIO_CARD.1), Body::Audio(audio)),
+            Some(audio) => (card(screen, AUDIO_CARD), 0., Body::Audio(audio)),
             None => return loaded,
         },
         (Kind::Pdf, Some(path)) => match pdf(&path, screen, page) {
-            Some((size, pdf)) => (size, Body::Pdf(pdf)),
+            Some((size, dock, pdf)) => (size, dock, Body::Pdf(pdf)),
             None => return loaded,
         },
         (Kind::Text, Some(path)) => match read_head(&path) {
             Some((bytes, truncated)) => {
                 let text = text(bytes, truncated, &path, &loaded.facts.content_type);
-                (text_size(&text, screen), Body::Text(Box::new(text)))
+                let (size, dock) = text_size(&text, screen);
+                (size, dock, Body::Text(Box::new(text)))
             }
             None => return loaded,
         },
         (Kind::Binary, Some(path)) => match mapped(&path) {
-            Some(hex) => (hex_size(&hex, screen), Body::Hex(hex)),
+            Some(hex) => {
+                let (size, dock) = hex_size(&hex, screen);
+                (size, dock, Body::Hex(hex))
+            }
             None => return loaded,
         },
         (Kind::Archive, Some(path)) => match archive(&path) {
-            Some(archive) => (archive_size(&archive, screen), Body::Archive(archive)),
+            Some(archive) => (archive_size(&archive, screen), 0., Body::Archive(archive)),
             None => return loaded,
         },
         (Kind::Compressed, Some(path)) => match compressed(&path, &loaded.facts.name, screen) {
-            Some((size, body, packed)) => {
+            Some((size, dock, body, packed)) => {
                 loaded.packed = packed;
-                (size, body)
+                (size, dock, body)
             }
             None => return loaded,
         },
@@ -271,6 +288,7 @@ pub fn load(uri: &str, screen: Screen, wait_for_pixels: bool) -> Loaded {
         _ => return loaded,
     };
     loaded.size = size;
+    loaded.dock = dock as f32;
     loaded.body = body;
     loaded
 }
@@ -288,10 +306,32 @@ fn missing(uri: &str, error: &str, screen: Screen) -> Loaded {
             kind: Kind::Other,
         },
         description: error.to_owned(),
-        size: screen.card(CARD.0, CARD.1),
+        size: card(screen, CARD),
+        dock: 0.,
         packed: None,
         body: Body::Info,
         view: None,
+    }
+}
+
+/// The window for a card of `size` logical pixels.
+fn card(screen: Screen, (width, height): (f64, f64)) -> (i32, i32) {
+    screen.card(width, height, 0.0)
+}
+
+/// The window for a picture or a video of `natural` pixels.
+fn media(screen: Screen, natural: (u32, u32)) -> (i32, i32) {
+    let fit = screen.fit_media(natural);
+    (fit.width, fit.height)
+}
+
+/// The rail docked beside `pages` pages, in logical pixels, unless M has
+/// taken it away; a single page needs none.
+fn rail_dock(pages: usize) -> f64 {
+    if pages > 1 && Mode::load(Family::Rail) == Mode::On {
+        f64::from(RAIL)
+    } else {
+        0.0
     }
 }
 
@@ -309,9 +349,8 @@ fn image(uri: &str, screen: Screen, wait_for_pixels: bool) -> Option<((i32, i32)
     } else {
         None
     };
-    let fit = screen.fit_media(natural);
     Some((
-        (fit.width, fit.height),
+        media(screen, natural),
         Picture {
             natural,
             first,
@@ -416,7 +455,7 @@ fn document(
     content_type: &str,
     screen: Screen,
     view: &Option<View>,
-) -> Option<((i32, i32), Body)> {
+) -> Option<((i32, i32), f64, Body)> {
     let iwork = ["apple", "iwork"].iter().any(|k| content_type.contains(k));
     let open = content_type.contains("opendocument");
     // The binary formats of Office 97 to 2003.
@@ -425,8 +464,7 @@ fn document(
         let bytes = office::iwork_preview(path)?;
         let longest = screen.monitor.width.max(screen.monitor.height) as u32;
         let (image, natural) = decode_still(&bytes, longest)?;
-        let fit = screen.fit_media(natural);
-        return Some(((fit.width, fit.height), Body::Still(Still { image })));
+        return Some((media(screen, natural), 0., Body::Still(Still { image })));
     }
     match kind {
         Kind::Spreadsheet => {
@@ -446,29 +484,31 @@ fn document(
                 .map(|w| (*w).clamp(4, 40) as f64 * 7.4 + 18.)
                 .sum();
             let rows = grid.cells.len().clamp(8, 28) as f64;
-            let size = screen.card((width + 60.).clamp(560., 1400.), rows * 24. + 70.);
+            let size = card(screen, ((width + 60.).clamp(560., 1400.), rows * 24. + 70.));
             let sheet = Sheet {
                 path: path.to_owned(),
                 names,
                 current,
                 grid,
             };
-            Some((size, Body::Sheet(Box::new(sheet))))
+            Some((size, 0., Body::Sheet(Box::new(sheet))))
         }
         Kind::Presentation if !open && !ole => {
             let deck = pptx::open(path)?;
-            let size = screen.fit_page((deck.size.0 as f64, deck.size.1 as f64));
+            let dock = rail_dock(deck.slides.len());
+            let slide = screen.fit_page((deck.size.0 as f64, deck.size.1 as f64), dock);
             let index = match view {
                 Some(View::Pages { page, .. }) => (*page).min(deck.slides.len().saturating_sub(1)),
                 _ => 0,
             };
-            let first = render_slide(path, &deck, index, size.0 as u32).map(|slide| (index, slide));
+            let first =
+                render_slide(path, &deck, index, slide.0 as u32).map(|slide| (index, slide));
             let deck = Deck {
                 path: path.to_owned(),
                 deck,
                 first,
             };
-            Some((size, Body::Deck(Box::new(deck))))
+            Some((screen.window(slide, dock), dock, Body::Deck(Box::new(deck))))
         }
         _ => {
             let document = match kind {
@@ -478,13 +518,40 @@ fn document(
                 _ if open => odf::read_text(path)?,
                 _ => docx::read(path)?,
             };
-            let (w, h) = document.page;
+            let miniature = Miniature::of(&document);
+            let page = (f64::from(document.page.0), f64::from(document.page.1));
+            let docked = screen.fit_page(page, f64::from(RAIL));
+            let long = Mode::load(Family::Rail) == Mode::On
+                && f64::from(miniature.height) > shown_points(&document, docked, screen);
+            let (dock, size) = if long {
+                (f64::from(RAIL), docked)
+            } else {
+                (0.0, screen.fit_page(page, 0.0))
+            };
+            let paper = Paper {
+                document,
+                miniature,
+            };
             Some((
-                screen.fit_page((w as f64, h as f64)),
-                Body::Document(Box::new(document)),
+                screen.window(size, dock),
+                dock,
+                Body::Document(Box::new(paper)),
             ))
         }
     }
+}
+
+/// How much of a document's column, in points, a view of `size` root-window
+/// pixels shows at once: the page's width fills the view, below a margin
+/// at the top.
+fn shown_points(document: &office::Document, size: (i32, i32), screen: Screen) -> f64 {
+    let (width, height) = (
+        f64::from(size.0) / screen.scale,
+        f64::from(size.1) / screen.scale,
+    );
+    let scale = width / f64::from(document.page.0.max(1.));
+    let margin = (f64::from(document.margins.0) * scale).clamp(16., width / 4.);
+    (height - margin.min(48.)) / scale
 }
 
 /// Reads a slide and decodes its pictures for a slide `width` pixels wide.
@@ -512,18 +579,20 @@ pub fn render_slide(path: &Path, deck: &pptx::Deck, index: usize, width: u32) ->
 }
 
 /// A PDF, with page `page` rendered: the first, or the one it was left on.
-fn pdf(path: &Path, screen: Screen, page: usize) -> Option<((i32, i32), Pdf)> {
+fn pdf(path: &Path, screen: Screen, page: usize) -> Option<((i32, i32), f64, Pdf)> {
     let bytes = std::fs::read(path).ok()?;
     let document = gpui_pdf::parse(Arc::new(bytes)).ok()?;
     let pages = gpui_pdf::page_dims(&document);
     let &(width, height) = pages.first()?;
-    let size = screen.fit_page((width as f64, height as f64));
+    let dock = rail_dock(pages.len());
+    let shown = screen.fit_page((width as f64, height as f64), dock);
     let page = page.min(pages.len() - 1);
-    let first = gpui_pdf::render_page(&document, page, size.0 as f32 / pages[page].0)
+    let first = gpui_pdf::render_page(&document, page, shown.0 as f32 / pages[page].0)
         .ok()
         .map(|image| (page, image));
     Some((
-        size,
+        screen.window(shown, dock),
+        dock,
         Pdf {
             document,
             pages,
@@ -602,9 +671,24 @@ pub fn columns(line: &str) -> usize {
     })
 }
 
-fn text_size(text: &Text, screen: Screen) -> (i32, i32) {
+fn text_size(text: &Text, screen: Screen) -> ((i32, i32), f64) {
     let rows = text.lines.len().clamp(8, 44) as f64;
-    screen.card(860.0, rows * 21.0 + 40.0)
+    lines_window(text.lines.len(), (860.0, rows * 21.0 + 40.0), screen)
+}
+
+/// The window for `lines` lines of text or a hexdump in `size` logical
+/// pixels, and the minimap docked beside them once M has pinned it and
+/// they need scrolling.
+fn lines_window(lines: usize, (width, height): (f64, f64), screen: Screen) -> ((i32, i32), f64) {
+    let shown = screen.card(width, height, 0.0);
+    let tall = f64::from(shown.1) / screen.scale;
+    let dock =
+        if Mode::load(Family::Minimap) == Mode::On && crate::lines::scrolls(lines, tall as f32) {
+            f64::from(crate::lines::minimap_width(screen.scale as f32))
+        } else {
+            return (shown, 0.0);
+        };
+    (screen.window(screen.card(width, height, dock), dock), dock)
 }
 
 /// UTF-8 when it is valid, the encoding a byte-order mark names, and
@@ -676,10 +760,12 @@ fn mapped(path: &Path) -> Option<Hex> {
     })
 }
 
-fn hex_size(hex: &Hex, screen: Screen) -> (i32, i32) {
-    let rows = hexdump::line_count(hex.bytes.len() as u64).clamp(8, 44) as f64;
+fn hex_size(hex: &Hex, screen: Screen) -> ((i32, i32), f64) {
+    let lines = hexdump::line_count(hex.bytes.len() as u64);
+    let rows = lines.clamp(8, 44) as f64;
     let digits = hexdump::offset_digits(hex.bytes.len() as u64) as f64;
-    screen.card(600.0 + digits * 7.6, rows * 21.0 + 40.0)
+    let size = (600.0 + digits * 7.6, rows * 21.0 + 40.0);
+    lines_window(lines as usize, size, screen)
 }
 
 /// What is inside a compressed file: text, a tar's listing, or the bytes.
@@ -687,11 +773,16 @@ fn compressed(
     path: &Path,
     name: &str,
     screen: Screen,
-) -> Option<((i32, i32), Body, Option<Packed>)> {
+) -> Option<((i32, i32), f64, Body, Option<Packed>)> {
     let head = unpack::head(path, TEXT_LIMIT + 1).ok()?;
     if head.bytes.get(257..262) == Some(b"ustar") {
         let archive = archive(path)?;
-        return Some((archive_size(&archive, screen), Body::Archive(archive), None));
+        return Some((
+            archive_size(&archive, screen),
+            0.,
+            Body::Archive(archive),
+            None,
+        ));
     }
     let unpacked = if head.complete {
         Some(head.bytes.len() as u64)
@@ -708,13 +799,15 @@ fn compressed(
     bytes.truncate(TEXT_LIMIT);
     if is_text {
         let text = text(bytes, truncated, Path::new(inner), &content_type);
-        return Some((text_size(&text, screen), Body::Text(Box::new(text)), packed));
+        let (size, dock) = text_size(&text, screen);
+        return Some((size, dock, Body::Text(Box::new(text)), packed));
     }
     let hex = Hex {
         bytes: Bytes::Owned(bytes),
         truncated,
     };
-    Some((hex_size(&hex, screen), Body::Hex(hex), packed))
+    let (size, dock) = hex_size(&hex, screen);
+    Some((size, dock, Body::Hex(hex), packed))
 }
 
 fn archive(path: &Path) -> Option<Archive> {
@@ -742,7 +835,7 @@ fn archive(path: &Path) -> Option<Archive> {
 
 fn archive_size(archive: &Archive, screen: Screen) -> (i32, i32) {
     let rows = archive.entries.len().clamp(6, 26) as f64;
-    screen.card(720.0, rows * 30.0 + 96.0)
+    card(screen, (720.0, rows * 30.0 + 96.0))
 }
 
 fn decode_name(bytes: &[u8]) -> compress_tools::Result<String> {

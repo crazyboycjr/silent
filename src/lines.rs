@@ -1,8 +1,9 @@
 //! Text, code and hexdumps. Only the lines in view are shaped and drawn,
 //! straight from their source, so a 2 MB file or a dump of gigabytes opens
 //! at once. Long lines scroll sideways rather than wrap, text can be
-//! selected with the mouse and copied, and a minimap at the right edge
-//! shows the lines around the view in their highlighting colours.
+//! selected with the mouse and copied, and a minimap at the right edge, or
+//! docked beside the text, shows the lines around the view in their
+//! highlighting colours.
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -21,7 +22,9 @@ use smallvec::SmallVec;
 use unicode_width::UnicodeWidthChar;
 
 use crate::content::{Hex, TAB, Text, columns};
-use crate::overview::{self, Geometry, Mode, Overview, Overviewed};
+use crate::overview::{
+    self, Docking, Geometry, Mode, Overview, Overviewed, Shown as OverviewShown,
+};
 use crate::theme::{Theme, progress};
 
 const FONT_SIZE: f32 = 12.5;
@@ -208,7 +211,7 @@ impl Pitch {
         }
     }
 
-    fn width(self) -> f32 {
+    pub fn width(self) -> f32 {
         MINI_COLUMNS as f32 * self.column + 2. * MINI_PAD
     }
 
@@ -269,6 +272,22 @@ impl Mini {
     }
 }
 
+/// The minimap's width at a desktop scale.
+pub fn minimap_width(scale: f32) -> f32 {
+    Pitch::at(scale).width()
+}
+
+/// How many lines a view `height` tall holds, a part line as a part.
+fn rows_in(height: Pixels) -> f64 {
+    f64::from(((height - px(PAD_TOP)) / px(LINE_HEIGHT)).max(1.))
+}
+
+/// Whether `lines` lines need scrolling in a view `height` logical pixels
+/// tall; the view scrolls one line past the last.
+pub fn scrolls(lines: usize, height: f32) -> bool {
+    lines as f64 + 1. - rows_in(px(height)) > 1e-6
+}
+
 pub struct LinesPane {
     doc: Rc<Doc>,
     /// The first line in view, with the fraction of it scrolled past.
@@ -276,6 +295,8 @@ pub struct LinesPane {
     scroll_x: Pixels,
     selection: Option<Selection>,
     dragging: Option<Unit>,
+    /// The view's height, the window's.
+    height: Pixels,
     /// Where the lines were last drawn, for the pointer.
     area: Rc<Cell<Bounds<Pixels>>>,
     advance: Rc<Cell<Pixels>>,
@@ -287,7 +308,7 @@ pub struct LinesPane {
 }
 
 impl LinesPane {
-    pub fn new(doc: Doc, mode: Mode, view: Option<View>) -> Self {
+    pub fn new(doc: Doc, mode: Mode, docked: bool, view: Option<View>) -> Self {
         let advance = px(7.5);
         let (top, side) = match view {
             Some(View::Lines { top, side }) => (top, side),
@@ -299,9 +320,10 @@ impl LinesPane {
             scroll_x: advance * side,
             selection: None,
             dragging: None,
+            height: px(0.),
             area: Rc::default(),
             advance: Rc::new(Cell::new(advance)),
-            overview: Overview::new(mode),
+            overview: Overview::new(mode, docked),
             mini: Rc::default(),
             pitch: Pitch::at(1.),
             flash: None,
@@ -346,6 +368,25 @@ impl LinesPane {
         overview::reveal(self, cx);
     }
 
+    pub fn docking(&self) -> Docking {
+        Docking {
+            width: self.pitch.width(),
+            docked: self.overview.docked,
+            wanted: self.overview.mode == Mode::On && self.geometry(1.).scrollable(),
+        }
+    }
+
+    pub fn set_docked(&mut self, docked: bool, cx: &mut Context<Self>) {
+        self.overview.docked = docked;
+        cx.notify();
+    }
+
+    /// Where the view is, for the strip, while the scrollbar is held or
+    /// pointed at.
+    pub fn scrub_label(&self) -> Option<String> {
+        self.overview.scrubbing().then(|| self.label())
+    }
+
     fn font() -> Font {
         Font {
             features: FontFeatures::disable_ligatures(),
@@ -354,8 +395,7 @@ impl LinesPane {
     }
 
     fn rows(&self) -> f64 {
-        let height = self.area.get().size.height;
-        f64::from(((height - px(PAD_TOP)) / px(LINE_HEIGHT)).max(1.))
+        rows_in(self.height)
     }
 
     fn max_top(&self) -> f64 {
@@ -610,7 +650,7 @@ impl LinesPane {
         })
     }
 
-    /// Where the view is, beside the scrollbar's thumb.
+    /// Where the view is: the line, or the offset in a hexdump.
     fn label(&self) -> String {
         let line = (self.top.floor() as usize).min(self.doc.line_count().saturating_sub(1));
         match self.doc.as_ref() {
@@ -1089,50 +1129,70 @@ impl Render for LinesPane {
             });
         };
 
-        let height = window.viewport_size().height;
+        self.height = window.viewport_size().height;
         self.pitch = Pitch::at(window.scale_factor());
-        let overview = match self.overview.shown(self.geometry(1.).scrollable()) {
-            overview::Shown::Panel => {
-                let g = self.geometry(f64::from(height));
+        let scrollable = self.geometry(1.).scrollable();
+        let track = f32::from(self.height);
+        let width = self.pitch.width();
+        let shown = self.overview.shown(scrollable);
+        let overview = match shown {
+            OverviewShown::Overlay | OverviewShown::Docked => {
+                let g = self.geometry(f64::from(track));
                 let content = self.minimap(g, theme, highlight, dark);
                 Some(overview::panel(
                     &self.overview,
                     g,
-                    self.pitch.width(),
+                    width,
                     content,
                     theme,
                     cx,
                 ))
             }
-            overview::Shown::Bar => {
-                let g = self.geometry(overview::bar_track(f32::from(height)));
-                Some(overview::scrollbar(
-                    &self.overview,
-                    g,
-                    self.label(),
-                    theme,
-                    cx,
-                ))
+            OverviewShown::Bar => {
+                let g = self.geometry(overview::bar_track(track));
+                Some(overview::scrollbar(&self.overview, g, theme, cx))
             }
-            overview::Shown::Nothing => None,
+            OverviewShown::Nothing => None,
+        };
+        let (over, dock) = if shown == OverviewShown::Docked {
+            (
+                None,
+                Some(overview::dock(
+                    width,
+                    theme.surface,
+                    Some(theme.rule),
+                    overview,
+                )),
+            )
+        } else {
+            (overview, None)
         };
         div()
             .id("lines")
             .size_full()
-            .relative()
+            .flex()
+            .flex_row()
             .bg(theme.surface)
-            .cursor(CursorStyle::IBeam)
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                    this.press(event, window, cx)
-                }),
-            )
             .on_scroll_wheel(
                 cx.listener(|this, event: &ScrollWheelEvent, _, cx| this.scroll(event, cx)),
             )
-            .child(canvas(prepaint, paint).size_full())
-            .children(overview)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .relative()
+                    .cursor(CursorStyle::IBeam)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                            this.press(event, window, cx)
+                        }),
+                    )
+                    .child(canvas(prepaint, paint).size_full())
+                    .children(over),
+            )
+            .children(dock)
     }
 }
 
@@ -1141,7 +1201,19 @@ mod tests {
     use gpui_kit::{Hsla, TextStyle, rgb};
     use silent::hexdump;
 
-    use super::{MINI_COLUMNS, Mini, Pitch, SHOWN, Shown, hex_runs, ink, word};
+    use super::{MINI_COLUMNS, Mini, Pitch, SHOWN, Shown, hex_runs, ink, scrolls, word};
+
+    #[test]
+    fn lines_scroll_once_they_outgrow_the_view() {
+        // 964 px hold 47.5 lines, and the view scrolls a line past the last.
+        assert!(!scrolls(46, 964.));
+        assert!(scrolls(47, 964.));
+        // Files short enough get a window that holds them, and no minimap.
+        for lines in 1..=44 {
+            let height = lines.max(8) as f32 * 21. + 40.;
+            assert!(!scrolls(lines, height), "{lines}");
+        }
+    }
 
     #[test]
     fn tabs_stretch_to_the_next_stop_and_map_back() {

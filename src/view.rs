@@ -22,7 +22,7 @@ use crate::grid::SheetPane;
 use crate::keys::{self, Act, Mods};
 use crate::lines::{Doc, LinesPane};
 use crate::media::{AudioPane, Loudness, VideoPane};
-use crate::overview::Mode;
+use crate::overview::{Docking, Family, Mode};
 use crate::pdf::PdfPane;
 use crate::slides::SlidesPane;
 use crate::theme::{Theme, accent, progress};
@@ -30,6 +30,9 @@ use crate::trace;
 
 /// Corner radius when a compositor draws the transparent corners.
 pub const RADIUS: f32 = 11.0;
+/// How long a dock waits for the window to make room before it docks
+/// anyway, as in a window manager that will not resize the window.
+const DOCK_WAIT: Duration = Duration::from_millis(400);
 const STRIP_FADE: Duration = Duration::from_millis(180);
 const STRIP_LINGER: Duration = Duration::from_millis(1500);
 /// The video's seek bar, which a note in the strip goes above.
@@ -53,7 +56,7 @@ pub struct Preview {
     traced: bool,
     /// What has been typed of a vim command.
     keys: Keys,
-    /// The minimap's and the thumbnail rail's modes, read when first needed.
+    /// The minimap's and the rail's modes, read when first needed.
     minimap: Option<Mode>,
     rail: Option<Mode>,
     /// Volume and mute, carried from one sound or video to the next.
@@ -61,8 +64,23 @@ pub struct Preview {
     /// Whether the content was engaged as the mouse went down, so that the
     /// click that engages a video does not pause it too.
     engaged_at_press: bool,
+    /// An overview docking or leaving its dock, waiting for the window to
+    /// take its new width.
+    redock: Option<Redock>,
+    /// Whether the window's own size has room for the dock, which leaving
+    /// fullscreen puts right if M changed it meanwhile.
+    sized_docked: bool,
+    was_fullscreen: bool,
     _appearance: Subscription,
     _activation: Subscription,
+    _bounds: Subscription,
+}
+
+struct Redock {
+    docked: bool,
+    /// The window's width when the change was asked for.
+    width: Pixels,
+    _wait: Task<()>,
 }
 
 /// Kinds with state of their own get a view of their own.
@@ -91,6 +109,26 @@ impl Pane {
             Pane::Sheet(v) => v.clone().into(),
             Pane::Slides(v) => v.clone().into(),
         })
+    }
+
+    fn docking(&self, cx: &App) -> Option<Docking> {
+        Some(match self {
+            Pane::Lines(t) => t.read(cx).docking(),
+            Pane::Pdf(p) => p.read(cx).docking(),
+            Pane::Slides(s) => s.read(cx).docking(),
+            Pane::Doc(d) => d.read(cx).docking(),
+            _ => return None,
+        })
+    }
+
+    fn set_docked(&self, docked: bool, cx: &mut App) {
+        match self {
+            Pane::Lines(t) => t.update(cx, |t, cx| t.set_docked(docked, cx)),
+            Pane::Pdf(p) => p.update(cx, |p, cx| p.set_docked(docked, cx)),
+            Pane::Slides(s) => s.update(cx, |s, cx| s.set_docked(docked, cx)),
+            Pane::Doc(d) => d.update(cx, |d, cx| d.set_docked(docked, cx)),
+            _ => {}
+        }
     }
 
     fn kind(&self) -> keys::Kind {
@@ -132,6 +170,7 @@ impl Preview {
         let activation = cx.observe_window_activation(window, |this, window, cx| {
             this.disengage(window, cx);
         });
+        let bounds = cx.observe_window_bounds(window, Self::bounds_changed);
         let mut preview = Self {
             loaded,
             image: None,
@@ -151,8 +190,12 @@ impl Preview {
             rail: None,
             loudness: Loudness::default(),
             engaged_at_press: false,
+            redock: None,
+            sized_docked: false,
+            was_fullscreen: false,
             _appearance: appearance,
             _activation: activation,
+            _bounds: bounds,
         };
         preview.attach(window, cx);
         preview
@@ -201,12 +244,12 @@ impl Preview {
         }
     }
 
-    fn minimap_mode(&mut self) -> Mode {
-        *self.minimap.get_or_insert_with(|| Mode::load("minimap"))
-    }
-
-    fn rail_mode(&mut self) -> Mode {
-        *self.rail.get_or_insert_with(|| Mode::load("rail"))
+    fn mode(&mut self, family: Family) -> Mode {
+        let slot = match family {
+            Family::Minimap => &mut self.minimap,
+            Family::Rail => &mut self.rail,
+        };
+        *slot.get_or_insert_with(|| Mode::load(family))
     }
 
     fn attach(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -216,12 +259,15 @@ impl Preview {
         self._pane_changes = None;
         self.keys = Keys::default();
         self.strip.note = None;
+        self.redock = None;
         if let Some(old) = self.image.take() {
             cx.drop_image(old, Some(window));
         }
         let name: SharedString = self.loaded.facts.name.clone().into();
         let view = self.loaded.view.take();
         let loudness = self.loudness;
+        let docked = self.loaded.dock > 0.;
+        self.sized_docked = docked;
         self.pane = match std::mem::replace(&mut self.loaded.body, Body::Info) {
             Body::Video(video) => {
                 Pane::Video(cx.new(|cx| VideoPane::new(video, loudness, window, cx)))
@@ -230,22 +276,25 @@ impl Preview {
                 Pane::Audio(cx.new(|cx| AudioPane::new(audio, name, loudness, window, cx)))
             }
             Body::Pdf(pdf) => {
-                let mode = self.rail_mode();
-                Pane::Pdf(cx.new(|_| PdfPane::new(pdf, mode, view, window)))
+                let mode = self.mode(Family::Rail);
+                Pane::Pdf(cx.new(|_| PdfPane::new(pdf, mode, docked, view, window)))
             }
             Body::Text(text) => {
-                let mode = self.minimap_mode();
-                Pane::Lines(cx.new(|_| LinesPane::new(Doc::Text(text), mode, view)))
+                let mode = self.mode(Family::Minimap);
+                Pane::Lines(cx.new(|_| LinesPane::new(Doc::Text(text), mode, docked, view)))
             }
             Body::Hex(hex) => {
-                let mode = self.minimap_mode();
-                Pane::Lines(cx.new(|_| LinesPane::new(Doc::Hex(hex), mode, view)))
+                let mode = self.mode(Family::Minimap);
+                Pane::Lines(cx.new(|_| LinesPane::new(Doc::Hex(hex), mode, docked, view)))
             }
-            Body::Document(doc) => Pane::Doc(cx.new(|_| DocPane::new(*doc, view, window))),
+            Body::Document(paper) => {
+                let mode = self.mode(Family::Rail);
+                Pane::Doc(cx.new(|_| DocPane::new(*paper, mode, docked, view, window)))
+            }
             Body::Sheet(sheet) => Pane::Sheet(cx.new(|_| SheetPane::new(*sheet, view))),
             Body::Deck(deck) => {
-                let mode = self.rail_mode();
-                Pane::Slides(cx.new(|_| SlidesPane::new(*deck, mode, view, window)))
+                let mode = self.mode(Family::Rail);
+                Pane::Slides(cx.new(|_| SlidesPane::new(*deck, mode, docked, view, window)))
             }
             Body::Archive(archive) => {
                 Pane::Archive(cx.new(|cx| ArchivePane::new(archive, view, window, cx)))
@@ -448,40 +497,100 @@ impl Preview {
         match &self.pane {
             Pane::Lines(t) => t.update(cx, |t, cx| t.motion(motion, cx)),
             Pane::Doc(d) => d.update(cx, |d, cx| d.motion(motion, window, cx)),
-            Pane::Pdf(p) => p.update(cx, |p, cx| p.motion(motion, window, cx)),
-            Pane::Slides(s) => s.update(cx, |s, cx| s.motion(motion, window, cx)),
+            Pane::Pdf(p) => p.update(cx, |p, cx| p.motion(motion, cx)),
+            Pane::Slides(s) => s.update(cx, |s, cx| s.motion(motion, cx)),
             Pane::Sheet(s) => s.update(cx, |s, cx| s.motion(motion, cx)),
             _ => {}
         }
     }
 
-    /// M: the minimap or the thumbnail rail goes to its next mode, which is
-    /// kept for the next file and the next preview.
+    /// M: the minimap, the rail or the miniature goes to its next mode,
+    /// which is kept for the next file and the next preview, and the window
+    /// makes room for it or gives the room back.
     fn cycle_overview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (what, mode) = match &self.pane {
-            Pane::Lines(_) => ("Minimap", self.minimap_mode().next()),
-            Pane::Pdf(_) | Pane::Slides(_) => ("Thumbnails", self.rail_mode().next()),
+        let (family, what) = match &self.pane {
+            Pane::Lines(_) => (Family::Minimap, "Minimap"),
+            Pane::Pdf(_) | Pane::Slides(_) => (Family::Rail, "Thumbnails"),
+            Pane::Doc(_) => (Family::Rail, "Overview"),
             _ => return,
         };
+        let mode = self.mode(family).next(family);
+        match family {
+            Family::Minimap => self.minimap = Some(mode),
+            Family::Rail => self.rail = Some(mode),
+        }
+        mode.save(family);
         match &self.pane {
-            Pane::Lines(t) => {
-                self.minimap = Some(mode);
-                mode.save("minimap");
-                t.update(cx, |t, cx| t.set_mode(mode, cx));
-            }
-            Pane::Pdf(p) => {
-                self.rail = Some(mode);
-                mode.save("rail");
-                p.update(cx, |p, cx| p.set_mode(mode, cx));
-            }
-            Pane::Slides(s) => {
-                self.rail = Some(mode);
-                mode.save("rail");
-                s.update(cx, |s, cx| s.set_mode(mode, cx));
-            }
+            Pane::Lines(t) => t.update(cx, |t, cx| t.set_mode(mode, cx)),
+            Pane::Pdf(p) => p.update(cx, |p, cx| p.set_mode(mode, cx)),
+            Pane::Slides(s) => s.update(cx, |s, cx| s.set_mode(mode, cx)),
+            Pane::Doc(d) => d.update(cx, |d, cx| d.set_mode(mode, cx)),
             _ => {}
         }
+        self.redock(window, cx);
         self.note(Some(mode.describe(what)), window, cx);
+    }
+
+    /// Docks the overview or takes it away, as its mode now asks: the
+    /// window grows or shrinks at its right first, so that the content
+    /// keeps its size and place, and the dock follows once it has.
+    fn redock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.redock = None;
+        let Some(docking) = self.pane.docking(cx) else {
+            return;
+        };
+        if docking.wanted == docking.docked {
+            return;
+        }
+        if window.is_fullscreen() {
+            self.pane.set_docked(docking.wanted, cx);
+            return;
+        }
+        let by = if docking.wanted {
+            docking.width
+        } else {
+            -docking.width
+        };
+        self.intent(Intent::Redock(by));
+        let wait = cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(DOCK_WAIT).await;
+            let _ = this.update(cx, |this, cx| this.settle(cx));
+        });
+        self.redock = Some(Redock {
+            docked: docking.wanted,
+            width: window.viewport_size().width,
+            _wait: wait,
+        });
+    }
+
+    fn settle(&mut self, cx: &mut Context<Self>) {
+        if let Some(redock) = self.redock.take() {
+            self.pane.set_docked(redock.docked, cx);
+            self.sized_docked = redock.docked;
+        }
+    }
+
+    fn bounds_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let width = window.viewport_size().width;
+        if self.redock.as_ref().is_some_and(|r| r.width != width) {
+            self.settle(cx);
+        }
+        // Back from fullscreen in a window sized before M changed the dock.
+        let fullscreen = window.is_fullscreen();
+        if self.was_fullscreen
+            && !fullscreen
+            && let Some(docking) = self.pane.docking(cx)
+            && docking.docked != self.sized_docked
+        {
+            let by = if docking.docked {
+                docking.width
+            } else {
+                -docking.width
+            };
+            self.intent(Intent::Redock(by));
+            self.sized_docked = docking.docked;
+        }
+        self.was_fullscreen = fullscreen;
     }
 
     fn toggle_pause(&self, cx: &App) {
@@ -599,6 +708,15 @@ impl Preview {
         parts.join(" · ")
     }
 
+    /// Where the scrollbar has the view, while it is held or pointed at.
+    fn scrub_label(&self, cx: &App) -> Option<String> {
+        match &self.pane {
+            Pane::Lines(t) => t.read(cx).scrub_label(),
+            Pane::Doc(d) => d.read(cx).scrub_label(),
+            _ => None,
+        }
+    }
+
     fn strip(&self, theme: Theme, radius: Pixels, cx: &App) -> AnyElement {
         let bar = matches!(&self.pane, Pane::Video(v) if v.read(cx).bar_shown());
         // Above a workbook's sheet tabs, which are clicked where it would be,
@@ -609,7 +727,11 @@ impl Preview {
             _ => px(0.),
         };
         // What is typed of a vim command, or a word from a key.
-        let aside = self.keys.pending().or_else(|| self.strip.note.clone());
+        let aside = self
+            .keys
+            .pending()
+            .or_else(|| self.strip.note.clone())
+            .or_else(|| self.scrub_label(cx));
         let strip = div()
             .absolute()
             .left_0()
