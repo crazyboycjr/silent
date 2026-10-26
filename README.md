@@ -32,7 +32,7 @@ screen, at a size you can see. It takes the place of GNOME's sushi.
 | Video | Plays at its own aspect, with sound; hardware decoding when GStreamer has it; a playbar over the bottom of the picture, with the seek track, the times and the volume, while the pointer moves and after each seek |
 | Audio | A card with the cover art, title, artist and album, playing, with the same playbar |
 | PDF | The pages in a scroll, shaped by the first page, rendered as they come into view; a rail of page thumbnails docked at the right; text can be selected and copied |
-| Text and code | Highlighted, with line numbers; a minimap over the right edge while it scrolls, or docked beside the text; long lines scroll sideways instead of wrapping; select with the mouse and copy; UTF-8, UTF-16 and GB18030 (GBK) text; minified JSON laid out; the first 2 MB of large files |
+| Text and code | Highlighted, with line numbers; a minimap over the right edge while it scrolls, or docked beside the text; long lines scroll sideways, or wrap at the window's width with w; select with the mouse and copy; UTF-8, UTF-16 and GB18030 (GBK) text; minified JSON laid out; the first 2 MB of large files |
 | Binary files | As `hexdump -C` prints them, read from a memory map, so a dump of gigabytes opens at once, minimap and all; select and copy as text |
 | Compressed files | gzip, xz, zstd, bzip2, lz4 and lzma files show what is inside: text and code as above, a tar as its listing, anything else as a hexdump; the strip gives both sizes when the format records them |
 | Word documents | docx, odt and the older doc of Word 97 to 2003 (and WPS Writer's wps) as a column on a page: headings, paragraphs with their bold, italic, underline and colour, bulleted and numbered lists, tables, and the pictures of docx and odt; docked at the right, the whole column drawn small |
@@ -67,16 +67,26 @@ rail docked, within 85% of the screen with the page; M takes it away, and
 the window narrows by as much. Without an overview, a slim scrollbar shows
 while the view scrolls.
 
+Long lines of text and code scroll sideways, and w wraps them at the
+window's width instead, at the start of a word unless the word is wider
+than the window, and between Chinese characters but not before their
+commas; the window keeps its size and the line at the top stays there.
+Wrapped, a line's number stands at its first row, the keys that move by a
+line move by a row, 20G still goes to line 20, the minimap and the
+scrollbar show the rows, and copying gives the lines without the breaks.
+Text wraps again when the window changes size, and the next text file
+wraps too, until w again. Hexdumps keep their width.
+
 A file you leave, by moving to another or closing the preview, comes back
 as you left it if you return within the hour: video and sound play on from
 there (unless they were nearly over), PDFs and slides open at the page,
 text at the line, documents at the paragraph, spreadsheets on the sheet and
 the cell, archives with the same folders open and the same entry selected.
-That, and the modes M and i last chose, for the minimap, for the rail of
-pages and documents, and for the strip of each family of files (pictures,
-video and sound, text, pages, sheets, archives, cards), is all silent
-remembers: two small files in `$XDG_RUNTIME_DIR/silent`, gone at the next
-boot.
+That, and the modes M, i and w last chose, for the minimap, for the rail
+of pages and documents, for the strip of each family of files (pictures,
+video and sound, text, pages, sheets, archives, cards), and for wrapping
+text, is all silent remembers: two small files in `$XDG_RUNTIME_DIR/silent`,
+gone at the next boot.
 
 A file inside an archive opens in the same window: Enter, Space or a
 double-click on it in the tree, once a click has given the tree the keys.
@@ -107,10 +117,11 @@ cleared at the next start.
 | Delete | Move to the trash |
 | F | Fullscreen |
 | M | The minimap of text: shown while scrolling, docked beside the text, or none (a slim scrollbar instead); the rail of a PDF, slides or a document: docked or none; mute video and audio |
-| i | The strip: shown while the pointer moves, never, or always; while it is never shown, a key that changes something (M, i, the volume, a seek, a pause) still answers with a word at the bottom right for a second |
+| i | The strip: shown while the pointer moves, never, or always; while it is never shown, a key that changes something (M, i, w, the volume, a seek, a pause) still answers with a word at the bottom right for a second |
+| w | Wrap the long lines of text and code at the window's width, or scroll them sideways again |
 | K or a click | Pause or play video and audio |
 | J, L | Back or forward ten seconds |
-| Shift+← , Shift+→ | Half a screen sideways in text; back or forward thirty seconds in video and audio; the previous or next sheet of a spreadsheet |
+| Shift+← , Shift+→ | Half a screen sideways in text that does not wrap; back or forward thirty seconds in video and audio; the previous or next sheet of a spreadsheet |
 | Shift+↑ , Shift+↓ | A screen up or down; the previous or next page of a PDF, or slide |
 | Page Up, Page Down | A screen up or down |
 | Home, End | The start or the end |
@@ -123,9 +134,9 @@ as vim's `showcmd` does:
 
 | Key | Action |
 | --- | --- |
-| j, k | A line down or up; in a PDF or slides, the next or previous page |
-| h, l, 0 | Sideways, and back to the left edge |
-| Ctrl+e, Ctrl+y | A line down or up |
+| j, k | A line down or up, a row in wrapped text; in a PDF or slides, the next or previous page |
+| h, l, 0 | Sideways, and back to the left edge, in text that does not wrap |
+| Ctrl+e, Ctrl+y | A line down or up, a row in wrapped text |
 | Ctrl+d, Ctrl+u | Half a screen down or up |
 | Ctrl+f, Ctrl+b | A screen down or up |
 | gg, G | The start, the end |
@@ -139,7 +150,7 @@ engages a video only engages it; the next one pauses.
 
 | Content | ← → | ↑ ↓ |
 | --- | --- | --- |
-| Text, code, hexdumps, documents | Sideways | A line |
+| Text, code, hexdumps, documents | Sideways, unless text wraps | A line, a row in wrapped text |
 | PDF, slides | The previous or next page | Scroll |
 | Spreadsheets | The cell cursor | The cell cursor |
 | Archives | Close or open a folder | The previous or next entry; Enter or Space shows the file over the archive, or opens or closes the folder |

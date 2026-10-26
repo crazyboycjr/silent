@@ -563,6 +563,7 @@ impl Preview {
             }
             Act::Overview => self.cycle_overview(window, cx),
             Act::Strip => self.cycle_strip(window, cx),
+            Act::Wrap => self.toggle_wrap(window, cx),
             Act::SelectAll => {
                 if let Pane::Lines(t) = &self.pane {
                     t.update(cx, |t, cx| t.select_all(cx));
@@ -727,6 +728,21 @@ impl Preview {
         self.strip.shown = mode == StripMode::Auto;
         self.strip.epoch += 1;
         self.note(Some(mode.describe().into()), window, cx);
+    }
+
+    /// w: text wraps at the window's width, which stays as it is, or
+    /// scrolls sideways again, and the next text does the same; the strip
+    /// says which, or that a hexdump keeps its width.
+    fn toggle_wrap(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Pane::Lines(t) = &self.pane else {
+            return;
+        };
+        let word = match t.update(cx, |t, cx| t.toggle_wrap(window, cx)) {
+            Some(true) => "Wrap",
+            Some(false) => "No wrap",
+            None => "Hexdumps do not wrap",
+        };
+        self.note(Some(word.into()), window, cx);
     }
 
     /// Looks inside the selected entry of the archive in view, or opens or

@@ -69,6 +69,8 @@ pub enum Act {
     Overview,
     /// i: the strip goes to its next mode.
     Strip,
+    /// w: text wraps at the window's width, or scrolls sideways again.
+    Wrap,
     /// Enter or Space in an engaged archive: look inside the selected
     /// entry, which goes on top, or open or close the selected folder;
     /// with nothing selected, the key's usual act.
@@ -194,6 +196,7 @@ pub fn route(kind: Kind, engaged: bool, key: &str, mods: Mods, held: bool, vim: 
             once(Act::Overview)
         }
         (false, "i") => once(Act::Strip),
+        (false, "w") if kind == Kind::Lines => once(Act::Wrap),
         (false, "k") if kind.media() => once(Act::Pause),
         (false, "j" | "l") if kind.media() => Act::Seek {
             forward: key == "l",
@@ -413,6 +416,29 @@ mod tests {
         }
         // Sheets and archives take no vim keys.
         assert_eq!(press(Kind::Sheet, false, "j"), Act::Pass);
+    }
+
+    #[test]
+    fn w_wraps_text_once_per_press() {
+        assert_eq!(press(Kind::Lines, false, "w"), Act::Wrap);
+        assert_eq!(press(Kind::Lines, true, "w"), Act::Wrap);
+        for kind in [Kind::Doc, Kind::Pdf, Kind::Sheet, Kind::Video, Kind::Still] {
+            assert_eq!(press(kind, false, "w"), Act::Pass, "{kind:?}");
+        }
+        // A count typed first is dropped, as vim drops one before a key it
+        // does not know.
+        let mut vim = Keys::default();
+        let mods = Mods::default();
+        route(Kind::Lines, false, "5", mods, false, &mut vim);
+        assert_eq!(
+            route(Kind::Lines, false, "w", mods, false, &mut vim),
+            Act::Wrap
+        );
+        assert_eq!(vim.pending(), None);
+        assert_eq!(
+            route(Kind::Lines, false, "w", mods, true, &mut vim),
+            Act::Nothing
+        );
     }
 
     #[test]

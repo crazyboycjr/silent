@@ -1,9 +1,10 @@
-//! Text, code and hexdumps. Only the lines in view are shaped and drawn,
+//! Text, code and hexdumps. Only the rows in view are shaped and drawn,
 //! straight from their source, so a 2 MB file or a dump of gigabytes opens
-//! at once. Long lines scroll sideways rather than wrap, text can be
-//! selected with the mouse and copied, and a minimap at the right edge, or
-//! docked beside the text, shows the lines around the view in their
-//! highlighting colours.
+//! at once. Long lines scroll sideways, or once w wraps them, break into
+//! rows at the view's width; hexdumps keep theirs. Text can be selected
+//! with the mouse and copied, and a minimap at the right edge, or docked
+//! beside the text, shows the rows around the view in their highlighting
+//! colours.
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -15,8 +16,9 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::component::highlighter::HighlightTheme;
 use gpui_kit::*;
-use silent::memory::View;
+use silent::memory::{self, View};
 use silent::vim::Motion;
+use silent::wrap::{Anchor, Layout, Measure};
 use silent::{format, hexdump};
 use smallvec::SmallVec;
 use unicode_width::UnicodeWidthChar;
@@ -31,8 +33,8 @@ const FONT_SIZE: f32 = 12.5;
 const LINE_HEIGHT: f32 = 20.;
 const PAD_TOP: f32 = 14.;
 const PAD_SIDE: f32 = 18.;
-/// Bytes of a line that are drawn; the rest of a minified line is only
-/// copied.
+/// Bytes of a line that are drawn unwrapped; the rest of a minified line
+/// is only copied, unless it wraps.
 const SHOWN: usize = 4000;
 /// A copy of a hexdump stops after this many lines (about 20 MB of text).
 const COPY_LINES: usize = 1 << 18;
@@ -46,6 +48,8 @@ const MINI_PAD: f32 = 8.;
 const MINI_SPAN: usize = 64 << 10;
 /// How long a line jumped to stays lit.
 const FLASH: Duration = Duration::from_millis(1200);
+/// Where the wrap mode w last chose is kept.
+const WRAP: &str = "wrap-text";
 
 pub enum Doc {
     Text(Box<Text>),
@@ -81,6 +85,110 @@ impl Doc {
             Doc::Hex(_) => self.digits() + 70,
         }
     }
+}
+
+/// A row as drawn: the bytes of a line from `start` up to `end`, or to the
+/// line's end when `end` is past it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Span {
+    line: usize,
+    start: usize,
+    end: usize,
+}
+
+impl Span {
+    fn of<'a>(&self, line: &'a str) -> &'a str {
+        let end = self.end.min(line.len());
+        &line[self.start.min(end)..end]
+    }
+}
+
+/// The rows the view scrolls through: the lines, or the rows they wrap into.
+#[derive(Clone)]
+struct Rows {
+    doc: Rc<Doc>,
+    layout: Option<Rc<Layout>>,
+}
+
+impl Rows {
+    fn len(&self) -> usize {
+        self.layout
+            .as_ref()
+            .map_or_else(|| self.doc.line_count(), |layout| layout.len())
+    }
+
+    /// The rows from `row` down.
+    fn from(&self, row: usize) -> impl Iterator<Item = Span> + '_ {
+        let lines = self.doc.line_count();
+        let (mut line, mut k) = match &self.layout {
+            Some(layout) => layout.locate(row),
+            None => (row, 0),
+        };
+        std::iter::from_fn(move || {
+            if line >= lines {
+                return None;
+            }
+            let Some(layout) = &self.layout else {
+                line += 1;
+                return Some(Span {
+                    line: line - 1,
+                    start: 0,
+                    end: usize::MAX,
+                });
+            };
+            let bytes = layout.span(line, k);
+            let span = Span {
+                line,
+                start: bytes.start,
+                end: bytes.end,
+            };
+            k += 1;
+            if k == layout.rows_of(line) {
+                (line, k) = (line + 1, 0);
+            }
+            Some(span)
+        })
+    }
+
+    /// Row `row`, or the last.
+    fn at(&self, row: usize) -> Span {
+        let row = row.min(self.len().saturating_sub(1));
+        self.from(row).next().unwrap_or(Span {
+            line: 0,
+            start: 0,
+            end: usize::MAX,
+        })
+    }
+
+    /// The row `line` starts on.
+    fn row_of(&self, line: usize) -> usize {
+        self.layout
+            .as_ref()
+            .map_or(line, |layout| layout.row_of(line))
+    }
+}
+
+/// The bytes of `span`'s line that `selection` covers on that row, and
+/// whether it goes on past the line's end, which the row shows.
+fn covered(span: Span, selection: &Range<Pos>) -> Option<(usize, usize, bool)> {
+    let line = span.line;
+    if selection.start == selection.end
+        || !(selection.start.line..=selection.end.line).contains(&line)
+    {
+        return None;
+    }
+    let from = if selection.start.line < line {
+        span.start
+    } else {
+        selection.start.byte.max(span.start)
+    };
+    let to = if selection.end.line > line {
+        span.end
+    } else {
+        selection.end.byte.min(span.end)
+    };
+    let on = selection.end.line > line && span.end == usize::MAX;
+    (from < to || on).then_some((from, to, on))
 }
 
 /// A place in the text: a line, and a byte offset into it.
@@ -221,12 +329,13 @@ impl Pitch {
     }
 }
 
-/// The minimap's lines around the view, kept while the view stays near.
+/// The minimap's rows around the view, kept while the view stays near.
 #[derive(Default)]
 struct Mini {
     first: usize,
     lines: VecDeque<Ink>,
-    dark: bool,
+    /// What they were made for: the appearance, and the layout of the rows.
+    key: (bool, usize),
 }
 
 impl Mini {
@@ -234,18 +343,20 @@ impl Mini {
         self.lines.get(ix.checked_sub(self.first)?)
     }
 
-    /// Makes sure lines `range` are here, making only those that are not.
-    fn fill(&mut self, range: Range<usize>, dark: bool, make: impl Fn(Range<usize>) -> Vec<Ink>) {
+    /// Makes sure rows `range` are here, making only those that are not.
+    fn fill(
+        &mut self,
+        range: Range<usize>,
+        key: (bool, usize),
+        make: impl Fn(Range<usize>) -> Vec<Ink>,
+    ) {
         if range.is_empty() {
             return;
         }
         let end = self.first + self.lines.len();
-        if dark != self.dark
-            || self.lines.is_empty()
-            || range.end <= self.first
-            || range.start >= end
+        if key != self.key || self.lines.is_empty() || range.end <= self.first || range.start >= end
         {
-            self.dark = dark;
+            self.key = key;
             self.first = range.start;
             self.lines = make(range).into();
             return;
@@ -277,6 +388,33 @@ pub fn minimap_width(scale: f32) -> f32 {
     Pitch::at(scale).width()
 }
 
+/// How wide the code's face draws a column, Chinese and emoji, which come
+/// from the faces it falls back to.
+fn measure(window: &Window) -> Measure {
+    let system = window.text_system();
+    let font = system.resolve_font(&LinesPane::font());
+    let width = |c| f32::from(system.layout_width(font, px(FONT_SIZE), c));
+    let column = width('0').max(1.);
+    // Without a face that has it, a character is a box about two columns wide.
+    let or_two = |w: f32| if w > 0. { w } else { 2. * column };
+    Measure {
+        column,
+        wide: or_two(width('中')),
+        emoji: or_two(width('😀')),
+        tab: TAB,
+    }
+}
+
+/// Whether text wraps, as w last chose, until the next reboot.
+fn wraps() -> bool {
+    memory::setting(WRAP).as_deref() == Some("on")
+}
+
+/// The line numbers' gutter for a text of `lines` lines.
+fn gutter_width(lines: usize) -> f32 {
+    lines.to_string().len() as f32 * 8.4 + 22.
+}
+
 /// How many lines a view `height` tall holds, a part line as a part.
 fn rows_in(height: Pixels) -> f64 {
     f64::from(((height - px(PAD_TOP)) / px(LINE_HEIGHT)).max(1.))
@@ -290,9 +428,20 @@ pub fn scrolls(lines: usize, height: f32) -> bool {
 
 pub struct LinesPane {
     doc: Rc<Doc>,
-    /// The first line in view, with the fraction of it scrolled past.
+    /// The first row in view, with the fraction of it scrolled past: a line,
+    /// or a row of the layout while lines wrap.
     top: f64,
     scroll_x: Pixels,
+    /// Lines wrap at the view's width instead of scrolling sideways.
+    wrap: bool,
+    /// The rows they wrap into, at the width they were last laid out for.
+    layout: Option<Rc<Layout>>,
+    /// Where the view was left, as the view memory keeps it, until the
+    /// lines are first laid out.
+    left_at: Option<f64>,
+    measure: Option<Measure>,
+    /// Counts layouts, so that the minimap makes its rows again.
+    epoch: usize,
     selection: Option<Selection>,
     dragging: Option<Unit>,
     /// The view's height, the window's.
@@ -308,16 +457,23 @@ pub struct LinesPane {
 }
 
 impl LinesPane {
+    /// Text wraps as w last chose for it; hexdumps never do.
     pub fn new(doc: Doc, mode: Mode, docked: bool, view: Option<View>) -> Self {
         let advance = px(7.5);
         let (top, side) = match view {
             Some(View::Lines { top, side }) => (top, side),
             _ => (0., 0.),
         };
+        let wrap = matches!(doc, Doc::Text(_)) && wraps();
         Self {
             doc: Rc::new(doc),
-            top,
-            scroll_x: advance * side,
+            top: if wrap { 0. } else { top },
+            scroll_x: if wrap { px(0.) } else { advance * side },
+            wrap,
+            layout: None,
+            left_at: wrap.then_some(top),
+            measure: None,
+            epoch: 0,
             selection: None,
             dragging: None,
             height: px(0.),
@@ -354,13 +510,94 @@ impl LinesPane {
         }
     }
 
-    /// Where the view is, to come back to; nothing at the start.
+    /// Where the view is, to come back to; nothing at the start. A wrapped
+    /// view is kept as the line at the top and how far through its rows,
+    /// so that it reads back unwrapped, or at another width, about right.
     pub fn view(&self) -> Option<View> {
         let side = self.scroll_x / self.advance.get();
-        (self.top > 0.01 || side > 0.01).then_some(View::Lines {
-            top: self.top,
-            side,
-        })
+        let top = match (&self.layout, self.left_at) {
+            (_, Some(left)) => left,
+            (Some(layout), None) => layout.logical(self.top),
+            (None, None) => self.top,
+        };
+        (top > 0.01 || side > 0.01).then_some(View::Lines { top, side })
+    }
+
+    /// w: the lines wrap at the view's width, or scroll sideways again,
+    /// with the same line at the top, and the next text does the same.
+    /// Hexdumps keep their width: none.
+    pub fn toggle_wrap(&mut self, window: &Window, cx: &mut Context<Self>) -> Option<bool> {
+        if !matches!(self.doc.as_ref(), Doc::Text(_)) {
+            return None;
+        }
+        let anchor = self.anchor();
+        self.wrap = !self.wrap;
+        self.layout = None;
+        self.left_at = None;
+        self.epoch += 1;
+        self.scroll_x = px(0.);
+        self.top = anchor.top(None);
+        self.lay_out(window);
+        self.clamp();
+        memory::set_setting(WRAP, if self.wrap { "on" } else { "off" });
+        cx.notify();
+        Some(self.wrap)
+    }
+
+    /// What is at the top of the view.
+    fn anchor(&self) -> Anchor {
+        let top = self.left_at.unwrap_or(self.top);
+        Anchor::of(top, self.layout.as_deref(), self.doc.line_count())
+    }
+
+    /// Lays the lines out in rows at the view's width while they wrap,
+    /// again whenever the width changes, keeping what is at the top there.
+    /// Only lines that may be too wide are measured, and nothing is shaped.
+    fn lay_out(&mut self, window: &Window) {
+        let doc = self.doc.clone();
+        let (Doc::Text(text), true) = (doc.as_ref(), self.wrap) else {
+            return;
+        };
+        let width = self.wrap_width(window);
+        if self.layout.as_ref().is_some_and(|l| l.width == width) {
+            return;
+        }
+        let measure = *self.measure.get_or_insert_with(|| measure(window));
+        let anchor = self.anchor();
+        let layout = Layout::new(&text.text, &text.lines, width, &measure);
+        self.top = match self.left_at.take() {
+            Some(left) => layout.from_logical(left),
+            None => anchor.top(Some(&layout)),
+        };
+        self.layout = Some(Rc::new(layout));
+        self.epoch += 1;
+        self.clamp();
+    }
+
+    /// How wide rows are: the view's width less the line numbers, the
+    /// minimap's dock and a margin.
+    fn wrap_width(&self, window: &Window) -> f32 {
+        let dock = if self.overview.docked {
+            self.pitch.width()
+        } else {
+            0.
+        };
+        let width = f32::from(window.viewport_size().width - self.gutter()) - dock - PAD_SIDE;
+        width.max(8. * f32::from(self.advance.get()))
+    }
+
+    fn gutter(&self) -> Pixels {
+        match self.doc.as_ref() {
+            Doc::Text(_) => px(gutter_width(self.doc.line_count())),
+            Doc::Hex(_) => px(PAD_SIDE),
+        }
+    }
+
+    fn rows(&self) -> Rows {
+        Rows {
+            doc: self.doc.clone(),
+            layout: self.layout.clone(),
+        }
     }
 
     pub fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
@@ -394,15 +631,23 @@ impl LinesPane {
         }
     }
 
-    fn rows(&self) -> f64 {
+    /// How many rows the view holds.
+    fn in_view(&self) -> f64 {
         rows_in(self.height)
     }
 
+    fn count(&self) -> usize {
+        self.rows().len()
+    }
+
     fn max_top(&self) -> f64 {
-        (self.doc.line_count() as f64 - self.rows() + 1.).max(0.)
+        (self.count() as f64 - self.in_view() + 1.).max(0.)
     }
 
     fn max_scroll_x(&self) -> Pixels {
+        if self.wrap {
+            return px(0.);
+        }
         let widest = self.advance.get() * (self.doc.widest() + 2) as f32;
         (widest + px(PAD_SIDE) - self.area.get().size.width).max(px(0.))
     }
@@ -412,9 +657,10 @@ impl LinesPane {
         self.scroll_x = self.scroll_x.clamp(px(0.), self.max_scroll_x());
     }
 
-    /// Moves as vim's keys and the arrows ask.
+    /// Moves as vim's keys and the arrows ask, by rows: by lines, unless
+    /// they wrap. Wrapped lines do not move sideways.
     pub fn motion(&mut self, motion: Motion, cx: &mut Context<Self>) {
-        let rows = self.rows();
+        let rows = self.in_view();
         let half = (rows / 2.).floor().max(1.);
         let page = (rows - 2.).max(1.);
         let step = self.advance.get() * STEP;
@@ -433,11 +679,12 @@ impl LinesPane {
             Motion::Top => self.top = 0.,
             Motion::Bottom => self.top = f64::MAX,
             Motion::Line(k) => {
-                // The line comes to the middle of the view, lit for a moment.
+                // The line's first row comes to the middle of the view, lit
+                // for a moment.
                 let ix = k
                     .saturating_sub(1)
                     .min(self.doc.line_count().saturating_sub(1));
-                self.top = ix as f64 - ((rows - 1.) / 2.).floor();
+                self.top = self.rows().row_of(ix) as f64 - ((rows - 1.) / 2.).floor();
                 self.flash = Some((ix, Instant::now()));
             }
         }
@@ -470,14 +717,13 @@ impl LinesPane {
         cx.notify();
     }
 
-    /// The place under `point`, from the line as it is drawn.
+    /// The place under `point`, from the row as it is drawn.
     fn hit(&self, point: Point<Pixels>, window: &mut Window) -> Pos {
         let area = self.area.get();
-        let row = f64::from((point.y - area.top() - px(PAD_TOP)) / LINE_HEIGHT);
-        let last = self.doc.line_count().saturating_sub(1);
-        let line = ((self.top + row).floor().max(0.) as usize).min(last);
-        let source = self.doc.line(line);
-        let shown = Shown::new(&source);
+        let row = self.top + f64::from((point.y - area.top() - px(PAD_TOP)) / LINE_HEIGHT);
+        let span = self.rows().at(row.floor().max(0.) as usize);
+        let source = self.doc.line(span.line);
+        let shown = Shown::new(span.of(&source));
         let run = TextRun {
             len: shown.text.len(),
             font: Self::font(),
@@ -492,8 +738,8 @@ impl LinesPane {
                 .shape_line(shown.text.clone(), px(FONT_SIZE), &[run], None);
         let x = point.x - area.left() + self.scroll_x;
         Pos {
-            line,
-            byte: shown.to_source(shaped.closest_index_for_x(x)),
+            line: span.line,
+            byte: span.start.min(source.len()) + shown.to_source(shaped.closest_index_for_x(x)),
         }
     }
 
@@ -652,7 +898,7 @@ impl LinesPane {
 
     /// Where the view is: the line, or the offset in a hexdump.
     fn label(&self) -> String {
-        let line = (self.top.floor() as usize).min(self.doc.line_count().saturating_sub(1));
+        let line = self.rows().at(self.top.floor().max(0.) as usize).line;
         match self.doc.as_ref() {
             Doc::Text(_) => format!(
                 "line {} of {}",
@@ -671,7 +917,7 @@ impl LinesPane {
         }
     }
 
-    /// The minimap's lines, drawn from the track's top at the geometry's shift.
+    /// The minimap's rows, drawn from the track's top at the geometry's shift.
     fn minimap(
         &self,
         g: Geometry,
@@ -679,18 +925,20 @@ impl LinesPane {
         highlight: Arc<HighlightTheme>,
         dark: bool,
     ) -> AnyElement {
-        let (doc, mini, pitch) = (self.doc.clone(), self.mini.clone(), self.pitch);
+        let (rows, mini, pitch) = (self.rows(), self.mini.clone(), self.pitch);
+        let key = (dark, self.epoch);
         let shift = g.shift();
-        let count = doc.line_count();
+        let count = rows.len();
         let (base, muted) = (theme.text, theme.muted);
         let painted = mini.clone();
         canvas(
             move |bounds, _, _| {
                 let first = ((shift / pitch.line).floor() as usize).min(count);
-                let rows = (f64::from(bounds.size.height) / pitch.line).ceil() as usize + 1;
-                let range = first..(first + rows).min(count);
-                mini.borrow_mut().fill(range.clone(), dark, |lines| {
-                    ink_lines(&doc, lines, &highlight, base, muted)
+                let shown = (f64::from(bounds.size.height) / pitch.line).ceil() as usize + 1;
+                let range = first..(first + shown).min(count);
+                mini.borrow_mut().fill(range.clone(), key, |range| {
+                    let spans: Vec<Span> = rows.from(range.start).take(range.len()).collect();
+                    ink_rows(&rows.doc, &spans, &highlight, base, muted)
                 });
                 range
             },
@@ -727,8 +975,8 @@ impl Overviewed for LinesPane {
     }
 
     fn geometry(&self, track: f64) -> Geometry {
-        let content = self.doc.line_count() as f64 + 1.;
-        Geometry::new(content, self.rows(), self.top, self.pitch.line, track)
+        let content = self.count() as f64 + 1.;
+        Geometry::new(content, self.in_view(), self.top, self.pitch.line, track)
     }
 
     fn scroll_to(&mut self, top: f64, _: &mut Window, cx: &mut Context<Self>) {
@@ -882,11 +1130,11 @@ fn head(text: &str, line: &Range<usize>) -> Range<usize> {
     line.start..end
 }
 
-/// Ink for lines `range`: highlighted text asks the highlighter once for
+/// Ink for rows `spans`: highlighted text asks the highlighter once for
 /// all of them, unless they are long.
-fn ink_lines(
+fn ink_rows(
     doc: &Doc,
-    range: Range<usize>,
+    spans: &[Span],
     highlight: &HighlightTheme,
     base: Hsla,
     muted: Hsla,
@@ -897,9 +1145,10 @@ fn ink_lines(
                 color: base,
                 ..TextStyle::default()
             };
-            return range
-                .map(|ix| {
-                    let line = doc.line(ix);
+            return spans
+                .iter()
+                .map(|row| {
+                    let line = doc.line(row.line);
                     let mut at = 0;
                     let spans: Vec<_> = hex_runs(&line, doc.digits(), &style, muted)
                         .into_iter()
@@ -914,12 +1163,15 @@ fn ink_lines(
         }
         Doc::Text(text) => text,
     };
+    let heads = spans.iter().map(|row| {
+        let line = &text.lines[row.line];
+        let at = |byte: usize| line.start + byte.min(line.len());
+        head(&text.text, &(at(row.start)..at(row.end)))
+    });
     let Some(highlighter) = &text.highlighter else {
-        return range
-            .map(|ix| ink(&text.text[head(&text.text, &text.lines[ix])], &[], base))
-            .collect();
+        return heads.map(|row| ink(&text.text[row], &[], base)).collect();
     };
-    let heads: Vec<Range<usize>> = range.map(|ix| head(&text.text, &text.lines[ix])).collect();
+    let heads: Vec<Range<usize>> = heads.collect();
     let (Some(first), Some(last)) = (heads.first(), heads.last()) else {
         return Vec::new();
     };
@@ -953,14 +1205,19 @@ fn ink_lines(
         .collect()
 }
 
+/// A row as shaped to be drawn, with its line's number on the line's first.
 struct Drawn {
-    first: usize,
-    lines: Vec<(ShapedLine, Shown)>,
-    numbers: Vec<ShapedLine>,
+    span: Span,
+    shaped: ShapedLine,
+    shown: Shown,
+    number: Option<ShapedLine>,
 }
 
 impl Render for LinesPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.height = window.viewport_size().height;
+        self.pitch = Pitch::at(window.scale_factor());
+        self.lay_out(window);
         let theme = Theme::of(window.appearance());
         let dark = matches!(
             window.appearance(),
@@ -971,16 +1228,16 @@ impl Render for LinesPane {
         } else {
             HighlightTheme::default_light()
         };
-        let doc = self.doc.clone();
-        let count = doc.line_count();
+        let rows = self.rows();
+        let count = rows.len();
         let top = self.top;
         let scroll_x = self.scroll_x;
         let selection = self.selection.as_ref().map(Selection::range);
-        let flash = self.flash.filter(|(_, at)| at.elapsed() < FLASH);
-        let gutter = match doc.as_ref() {
-            Doc::Text(_) => px(count.to_string().len() as f32 * 8.4 + 22.),
-            Doc::Hex(_) => px(PAD_SIDE),
-        };
+        let flash = self
+            .flash
+            .filter(|(_, at)| at.elapsed() < FLASH)
+            .map(|(line, at)| (rows.row_of(line), at));
+        let gutter = self.gutter();
         let (area, advance) = (self.area.clone(), self.advance.clone());
         let view = cx.entity().downgrade();
         let mut base = window.text_style();
@@ -991,8 +1248,8 @@ impl Render for LinesPane {
         let muted = theme.muted;
 
         let prepaint = {
-            let (doc, area, advance, base, highlight) = (
-                doc.clone(),
+            let (rows, area, advance, base, highlight) = (
+                rows.clone(),
                 area.clone(),
                 advance.clone(),
                 base.clone(),
@@ -1007,92 +1264,89 @@ impl Render for LinesPane {
                 let system = window.text_system().clone();
                 let zero = system.shape_line("0".into(), px(FONT_SIZE), &[base.to_run(1)], None);
                 advance.set(zero.width());
-                let first = top.floor() as usize;
-                let rows = (f32::from(bounds.size.height) / LINE_HEIGHT).ceil() as usize + 1;
-                let last = (first + rows).min(count);
-                let mut lines = Vec::with_capacity(last.saturating_sub(first));
-                let mut numbers = Vec::new();
+                let first = (top.floor().max(0.) as usize).min(count);
+                let shown_rows = (f32::from(bounds.size.height) / LINE_HEIGHT).ceil() as usize + 1;
                 let quiet = TextStyle {
                     color: muted.opacity(0.7),
                     ..base.clone()
                 };
-                for ix in first..last {
-                    let source = doc.line(ix);
-                    let shown = Shown::new(&source);
-                    let runs = match doc.as_ref() {
-                        Doc::Text(text) => match &text.highlighter {
-                            Some(highlighter) if !source.is_empty() => {
-                                let line = text.lines[ix].clone();
-                                let end = line.start + shown.len;
-                                let styles: Vec<_> = highlighter
-                                    .styles(&(line.start..end), highlight.as_ref())
-                                    .into_iter()
-                                    .map(|(r, style)| {
-                                        (
-                                            r.start.saturating_sub(line.start)..r.end - line.start,
-                                            style,
-                                        )
-                                    })
-                                    .collect();
-                                runs(&shown, &styles, &base)
-                            }
-                            _ => vec![base.to_run(shown.text.len())],
-                        },
-                        Doc::Hex(_) => hex_runs(&shown.text, doc.digits(), &base, muted),
-                    };
-                    let shaped = system.shape_line(shown.text.clone(), px(FONT_SIZE), &runs, None);
-                    if let Doc::Text(_) = doc.as_ref() {
-                        let number: SharedString = (ix + 1).to_string().into();
-                        let run = quiet.to_run(number.len());
-                        numbers.push(system.shape_line(number, px(FONT_SIZE), &[run], None));
-                    }
-                    lines.push((shaped, shown));
-                }
-                Drawn {
-                    first,
-                    lines,
-                    numbers,
-                }
+                let doc = rows.doc.as_ref();
+                let drawn: Vec<Drawn> = rows
+                    .from(first)
+                    .take(shown_rows)
+                    .map(|span| {
+                        let source = doc.line(span.line);
+                        let part = span.of(&source);
+                        let shown = Shown::new(part);
+                        let runs = match doc {
+                            Doc::Text(text) => match &text.highlighter {
+                                Some(highlighter) if !part.is_empty() => {
+                                    let start = text.lines[span.line].start + span.start;
+                                    let styles: Vec<_> = highlighter
+                                        .styles(&(start..start + shown.len), highlight.as_ref())
+                                        .into_iter()
+                                        .map(|(r, style)| {
+                                            let from = r.start.saturating_sub(start);
+                                            (from..r.end.saturating_sub(start), style)
+                                        })
+                                        .collect();
+                                    runs(&shown, &styles, &base)
+                                }
+                                _ => vec![base.to_run(shown.text.len())],
+                            },
+                            Doc::Hex(_) => hex_runs(&shown.text, doc.digits(), &base, muted),
+                        };
+                        let shaped =
+                            system.shape_line(shown.text.clone(), px(FONT_SIZE), &runs, None);
+                        // Rows a wrapped line goes on to carry no number.
+                        let number = (matches!(doc, Doc::Text(_)) && span.start == 0).then(|| {
+                            let number: SharedString = (span.line + 1).to_string().into();
+                            let run = quiet.to_run(number.len());
+                            system.shape_line(number, px(FONT_SIZE), &[run], None)
+                        });
+                        Drawn {
+                            span,
+                            shaped,
+                            shown,
+                            number,
+                        }
+                    })
+                    .collect();
+                (first, drawn)
             }
         };
 
         let paint = move |bounds: Bounds<Pixels>,
-                          drawn: Drawn,
+                          (first, drawn): (usize, Vec<Drawn>),
                           window: &mut Window,
                           cx: &mut App| {
             let text_area = area.get();
             let line_height = px(LINE_HEIGHT);
             let y_of =
-                |ix: usize| bounds.top() + px(PAD_TOP) + line_height * ((ix as f64 - top) as f32);
-            if let Some((line, at)) = flash {
+                |row: usize| bounds.top() + px(PAD_TOP) + line_height * ((row as f64 - top) as f32);
+            if let Some((row, at)) = flash {
                 // Fades out over the flash, eased so it lingers first.
                 let left = 1. - at.elapsed().as_secs_f32() / FLASH.as_secs_f32();
                 let band = Bounds::new(
-                    point(bounds.left(), y_of(line)),
+                    point(bounds.left(), y_of(row)),
                     size(bounds.size.width, line_height),
                 );
                 window.paint_quad(fill(band, progress().opacity(0.3 * left.max(0.).sqrt())));
                 window.request_animation_frame();
             }
             window.with_content_mask(Some(ContentMask { bounds: text_area }), |window| {
-                for (i, (shaped, shown)) in drawn.lines.iter().enumerate() {
-                    let ix = drawn.first + i;
-                    let origin = point(text_area.left() - scroll_x, y_of(ix));
+                for (i, row) in drawn.iter().enumerate() {
+                    let origin = point(text_area.left() - scroll_x, y_of(first + i));
                     if let Some(range) = &selection
-                        && (range.start.line..=range.end.line).contains(&ix)
-                        && range.start != range.end
+                        && let Some((from, to, on)) = covered(row.span, range)
                     {
-                        let from = if ix == range.start.line {
-                            shaped.x_for_index(shown.to_shown(range.start.byte))
-                        } else {
-                            px(0.)
+                        let x = |byte: usize| {
+                            row.shaped
+                                .x_for_index(row.shown.to_shown(byte - row.span.start))
                         };
-                        let mut to = if ix == range.end.line {
-                            shaped.x_for_index(shown.to_shown(range.end.byte))
-                        } else {
-                            shaped.width()
-                        };
-                        if ix < range.end.line {
+                        let (from, mut to) = (x(from), x(to));
+                        // The line break, when it is selected too.
+                        if on {
                             to += advance.get() * 0.6;
                         }
                         if to > from {
@@ -1105,13 +1359,17 @@ impl Render for LinesPane {
                             ));
                         }
                     }
-                    let _ = shaped.paint(origin, line_height, TextAlign::Left, None, window, cx);
+                    let _ =
+                        row.shaped
+                            .paint(origin, line_height, TextAlign::Left, None, window, cx);
                 }
             });
-            for (i, number) in drawn.numbers.iter().enumerate() {
-                let x = bounds.left() + gutter - px(14.) - number.width();
-                let origin = point(x, y_of(drawn.first + i));
-                let _ = number.paint(origin, line_height, TextAlign::Left, None, window, cx);
+            for (i, row) in drawn.iter().enumerate() {
+                if let Some(number) = &row.number {
+                    let x = bounds.left() + gutter - px(14.) - number.width();
+                    let origin = point(x, y_of(first + i));
+                    let _ = number.paint(origin, line_height, TextAlign::Left, None, window, cx);
+                }
             }
             // Listened to on every frame: a quick click can be released
             // before the frame after its press is drawn.
@@ -1129,8 +1387,6 @@ impl Render for LinesPane {
             });
         };
 
-        self.height = window.viewport_size().height;
-        self.pitch = Pitch::at(window.scale_factor());
         let scrollable = self.geometry(1.).scrollable();
         let track = f32::from(self.height);
         let width = self.pitch.width();
@@ -1198,10 +1454,16 @@ impl Render for LinesPane {
 
 #[cfg(test)]
 mod tests {
+    use std::rc::Rc;
+
     use gpui_kit::{Hsla, TextStyle, rgb};
     use silent::hexdump;
+    use silent::wrap::{Layout, Measure};
 
-    use super::{MINI_COLUMNS, Mini, Pitch, SHOWN, Shown, hex_runs, ink, scrolls, word};
+    use super::{
+        Doc, MINI_COLUMNS, Mini, Pitch, Pos, Rows, SHOWN, Shown, Span, Text, covered, hex_runs,
+        ink, scrolls, word,
+    };
 
     #[test]
     fn lines_scroll_once_they_outgrow_the_view() {
@@ -1308,16 +1570,109 @@ mod tests {
             range.map(|_| super::Ink::new()).collect()
         };
         let mut mini = Mini::default();
-        mini.fill(100..200, false, make);
-        mini.fill(110..210, false, make);
+        mini.fill(100..200, (false, 0), make);
+        mini.fill(110..210, (false, 0), make);
         // Only the ten new lines were made.
         assert_eq!(*made.borrow(), [100..200, 200..210]);
         assert!(mini.get(105).is_some() && mini.get(209).is_some());
-        mini.fill(5000..5100, false, make);
+        mini.fill(5000..5100, (false, 0), make);
         assert_eq!(made.borrow().last(), Some(&(5000..5100)));
         assert!(mini.get(105).is_none());
-        // The appearance changed: everything is made again.
-        mini.fill(5000..5100, true, make);
+        // The appearance changed, then the rows: everything is made again.
+        mini.fill(5000..5100, (true, 0), make);
         assert_eq!(made.borrow().len(), 4);
+        mini.fill(5000..5100, (true, 1), make);
+        assert_eq!(made.borrow().len(), 5);
+    }
+
+    fn text(text: &str) -> Doc {
+        let mut lines = Vec::new();
+        let mut start = 0;
+        for line in text.split('\n') {
+            lines.push(start..start + line.len());
+            start += line.len() + 1;
+        }
+        Doc::Text(Box::new(Text {
+            text: text.to_owned(),
+            lines,
+            highlighter: None,
+            language: None,
+            truncated: false,
+            widest: 0,
+            pretty: false,
+        }))
+    }
+
+    const COLUMNS: Measure = Measure {
+        column: 1.,
+        wide: 2.,
+        emoji: 2.,
+        tab: 4,
+    };
+    /// A row's end when it runs to its line's.
+    const MAX: usize = usize::MAX;
+
+    #[test]
+    fn rows_are_lines_or_the_rows_they_wrap_into() {
+        let doc = Rc::new(text("one\nthe quick brown fox\nend"));
+        let Doc::Text(t) = doc.as_ref() else {
+            unreachable!()
+        };
+        let layout = Layout::new(&t.text, &t.lines, 10., &COLUMNS);
+        let lines = Rows {
+            doc: doc.clone(),
+            layout: None,
+        };
+        let wrapped = Rows {
+            doc: doc.clone(),
+            layout: Some(Rc::new(layout)),
+        };
+        let span = |line, start, end| Span { line, start, end };
+        assert_eq!(lines.len(), 3);
+        assert_eq!(
+            lines.from(1).collect::<Vec<_>>(),
+            [span(1, 0, MAX), span(2, 0, MAX)]
+        );
+        assert_eq!(wrapped.len(), 4);
+        assert_eq!(
+            wrapped.from(0).collect::<Vec<_>>(),
+            [
+                span(0, 0, MAX),
+                span(1, 0, 10),
+                span(1, 10, MAX),
+                span(2, 0, MAX)
+            ]
+        );
+        assert_eq!(wrapped.from(2).next(), Some(span(1, 10, MAX)));
+        assert_eq!(wrapped.from(4).next(), None);
+        // Past the end, the last row.
+        assert_eq!(wrapped.at(9), span(2, 0, MAX));
+        assert_eq!(wrapped.row_of(2), 3);
+        assert_eq!(lines.row_of(2), 2);
+        // What a row shows of its line.
+        let line = doc.line(1);
+        assert_eq!(span(1, 10, MAX).of(&line), "brown fox");
+        assert_eq!(span(1, 0, 10).of(&line), "the quick ");
+    }
+
+    #[test]
+    fn a_selection_covers_its_part_of_each_row() {
+        let pos = |line, byte| Pos { line, byte };
+        let span = |line, start, end| Span { line, start, end };
+        // From inside line 1's second row to line 2.
+        let selection = pos(1, 14)..pos(2, 3);
+        assert_eq!(covered(span(0, 0, MAX), &selection), None);
+        assert_eq!(covered(span(1, 0, 10), &selection), None);
+        // The rest of the line, and its line break.
+        assert_eq!(covered(span(1, 10, MAX), &selection), Some((14, MAX, true)));
+        assert_eq!(covered(span(2, 0, MAX), &selection), Some((0, 3, false)));
+        // Across a row's end, the row is covered to its end and no further.
+        let across = pos(1, 4)..pos(1, 12);
+        assert_eq!(covered(span(1, 0, 10), &across), Some((4, 10, false)));
+        assert_eq!(covered(span(1, 10, MAX), &across), Some((10, 12, false)));
+        // Ending where a row starts covers nothing of it.
+        let to_the_edge = pos(1, 4)..pos(1, 10);
+        assert_eq!(covered(span(1, 10, MAX), &to_the_edge), None);
+        assert_eq!(covered(span(1, 0, MAX), &(pos(1, 3)..pos(1, 3))), None);
     }
 }
