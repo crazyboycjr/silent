@@ -39,7 +39,7 @@ screen, at a size you can see. It takes the place of GNOME's sushi.
 | Spreadsheets | xlsx, xls and ods as a grid with column letters and row numbers, numbers and dates formatted, a tab for each worksheet, opening on the one that was in front; a click puts a cell cursor down, and the strip shows its cell in full; chart and hidden sheets get no tab; old .xls written as a bare BIFF stream too; the first 5,000 rows |
 | Presentations | pptx as its slides in a scroll, with text, pictures, tables and shapes where the deck puts them and what they inherit from the layout and master, and a rail of the slides drawn small docked at the right; odp as its thumbnail and text; the older ppt as an outline of each slide's title and text |
 | Keynote, Pages, Numbers | The preview picture the file carries, as Quick Look shows it |
-| Archives | The entries as a tree with file-type icons and their sizes, and the total unpacked; zip, tar (gz, bz2, xz, zstd), 7z, rar, ISO and more |
+| Archives | The entries as a tree with file-type icons and their sizes, and the total unpacked; zip, tar (gz, bz2, xz, zstd), 7z, rar, ISO and more; any file in them opens in the same window, archives in archives too |
 | Folders | A card with the item count and the total size, counted in the background |
 | Everything else | A card with the type, size and modification date |
 
@@ -78,11 +78,24 @@ video and sound, text, pages, sheets, archives, cards), is all silent
 remembers: two small files in `$XDG_RUNTIME_DIR/silent`, gone at the next
 boot.
 
+A file inside an archive opens in the same window: Enter, Space or a
+double-click on it in the tree, once a click has given the tree the keys.
+silent takes it out on the fly, into `$XDG_RUNTIME_DIR/silent/extract`
+while it is small and `$XDG_CACHE_HOME/silent/extract` past 64 MB, and
+shows it as it shows any file, the window taking its size about the same
+centre; the strip names it by its place, `project.zip › src/main.rs`. Esc
+goes back to the archive with its folders, its selection and its scroll as
+they were, one archive at a time when one was inside another, and the file
+taken out is gone at once. A slow one shows how far it has come, and Esc
+stops it; encrypted entries and anything over 4 GB are not taken out, and
+the strip says why. What a crashed preview left there is cleared at the
+next start.
+
 ## Keys
 
 | Key | Action |
 | --- | --- |
-| Space, Esc | Close (Esc first drops a half-typed vim command) |
+| Space, Esc | Close; Esc first drops a half-typed vim command, stops a file being taken out of an archive, or goes back to the archive it was taken out of |
 | Arrow keys | The previous or next file in Nautilus; after a click inside the content, see below |
 | Enter | Open with the default application; for a folder, go into it |
 | F2 | Rename in Nautilus |
@@ -124,7 +137,7 @@ engages a video only engages it; the next one pauses.
 | Text, code, hexdumps, documents | Sideways | A line |
 | PDF, slides | The previous or next page | Scroll |
 | Spreadsheets | The cell cursor | The cell cursor |
-| Archives | Close or open a folder | The previous or next entry |
+| Archives | Close or open a folder | The previous or next entry; Enter or Space opens the file, or opens or closes the folder |
 | Video, audio | Back or forward five seconds | Louder or quieter; the playbar shows the volume, and the next sound or video keeps it, and the mute |
 
 The minimap, the rail and a document's miniature show where the view is
