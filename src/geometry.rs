@@ -1,10 +1,4 @@
-//! How big a preview window is and where it goes. A window holds the
-//! content, a row along the bottom for the strip and, beside long views, a
-//! column at the right for their overview, so that nothing is drawn over the
-//! content; all of it fits within the bounds.
-
-/// The row along the bottom of every preview, in logical pixels.
-pub const ROW: f64 = 34.0;
+//! How big a preview window is and where it goes.
 
 /// A rectangle in root-window pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,48 +64,23 @@ impl Screen {
         )
     }
 
-    /// `logical` pixels in root-window pixels.
-    pub fn pixels(&self, logical: f64) -> i32 {
-        (logical * self.scale).round() as i32
-    }
-
-    /// The window around content of `size`, with a column `column` logical
-    /// pixels wide beside it and the row below both.
-    pub fn window(&self, size: (i32, i32), column: f64) -> (i32, i32) {
-        (size.0 + self.pixels(column), size.1 + self.pixels(ROW))
-    }
-
-    /// The largest content beside a column `column` logical pixels wide.
-    fn room(&self, column: f64) -> (f64, f64) {
-        let (bw, bh) = self.bounds();
-        (
-            (bw - f64::from(self.pixels(column))).max(1.0),
-            (bh - f64::from(self.pixels(ROW))).max(1.0),
-        )
-    }
-
-    /// Display size for an image or video of `natural` pixels, the content
-    /// of a window without a column. It keeps the content's aspect, enlarges
-    /// small content by the desktop scale (and up to twice that while it
-    /// would still look small), and never leaves the room. How small content
-    /// looks is judged against the whole bounds, so that only content too
-    /// large for the room shrinks to make way for the row.
+    /// Display size for an image or video of `natural` pixels. It keeps the
+    /// content's aspect, enlarges small content by the desktop scale (and up
+    /// to twice that while it would still look small), and never leaves the
+    /// bounds.
     pub fn fit_media(&self, natural: (u32, u32)) -> Fit {
         let (w, h) = (natural.0.max(1) as f64, natural.1.max(1) as f64);
         let (bw, bh) = self.bounds();
-        let (rw, rh) = self.room(0.0);
         let s = self.scale;
         let fill = (bw / w).min(bh / h);
-        let room = (rw / w).min(rh / h);
         let mut scale = if fill <= s {
             fill
         } else {
             (fill / 2.0).clamp(s, 2.0 * s)
-        }
-        .min(room);
+        };
         let long = w.max(h);
         if long * scale < MIN_LONG_SIDE * s {
-            scale = (MIN_LONG_SIDE * s / long).min(room);
+            scale = (MIN_LONG_SIDE * s / long).min(fill);
         }
         let mut filter = Filter::Smooth;
         if long <= PIXEL_ART && scale >= 2.0 {
@@ -125,24 +94,23 @@ impl Screen {
         }
     }
 
-    /// Content size for a document whose first page measures `page` points,
-    /// beside a column `column` logical pixels wide: the whole page in view,
-    /// at most twice its actual size.
-    pub fn fit_page(&self, page: (f64, f64), column: f64) -> (i32, i32) {
+    /// Window size for a document whose first page measures `page` points:
+    /// the whole page in view, at most twice its actual size.
+    pub fn fit_page(&self, page: (f64, f64)) -> (i32, i32) {
         let (pw, ph) = (page.0.max(1.0), page.1.max(1.0));
-        let (rw, rh) = self.room(column);
+        let (bw, bh) = self.bounds();
         let actual = self.scale * 96.0 / 72.0;
-        let scale = (rw / pw).min(rh / ph).min(2.0 * actual);
+        let scale = (bw / pw).min(bh / ph).min(2.0 * actual);
         ((pw * scale).round() as i32, (ph * scale).round() as i32)
     }
 
-    /// Content of `width` × `height` logical pixels beside a column `column`
-    /// logical pixels wide, scaled to the desktop and kept within the room.
-    pub fn card(&self, width: f64, height: f64, column: f64) -> (i32, i32) {
-        let (rw, rh) = self.room(column);
+    /// A card of `width` × `height` logical pixels, scaled to the desktop
+    /// and kept within the bounds.
+    pub fn card(&self, width: f64, height: f64) -> (i32, i32) {
+        let (bw, bh) = self.bounds();
         (
-            (width * self.scale).min(rw).round() as i32,
-            (height * self.scale).min(rh).round() as i32,
+            (width * self.scale).min(bw).round() as i32,
+            (height * self.scale).min(bh).round() as i32,
         )
     }
 
@@ -191,52 +159,12 @@ mod tests {
     }
 
     #[test]
-    fn large_content_fills_the_room_above_the_row() {
+    fn large_content_fills_the_bounds() {
         let s = screen();
-        assert_eq!(size(s.fit_media((3840, 2160))), (3161, 1778));
-        assert_eq!(size(s.fit_media((8000, 4500))), (3161, 1778));
-        assert_eq!(size(s.fit_media((3024, 4032))), (1334, 1778));
+        assert_eq!(size(s.fit_media((3840, 2160))), (3264, 1836));
+        assert_eq!(size(s.fit_media((8000, 4500))), (3264, 1836));
+        assert_eq!(size(s.fit_media((3024, 4032))), (1377, 1836));
         assert_eq!(size(s.fit_media((12000, 2000))), (3264, 544));
-        // With the row below it, the window is as tall as the bounds.
-        assert_eq!(s.window((3161, 1778), 0.0), (3161, 1836));
-    }
-
-    #[test]
-    fn the_window_holds_the_content_its_column_and_the_row() {
-        let s = screen();
-        assert_eq!(s.pixels(ROW), 58);
-        assert_eq!(s.window((1000, 500), 0.0), (1000, 558));
-        assert_eq!(s.window((1000, 500), 108.0), (1183, 558));
-        // A page beside a rail: the page as tall as before the reserve
-        // allows, the window as tall as the bounds.
-        let page = s.fit_page((595.0, 842.0), 108.0);
-        assert_eq!(page, (1256, 1778));
-        assert_eq!(s.window(page, 108.0), (1439, 1836));
-        // Content too wide gives way to the column.
-        assert_eq!(s.card(4000.0, 4000.0, 122.0), (3057, 1778));
-        assert_eq!(s.window(s.card(4000.0, 4000.0, 122.0), 122.0), (3264, 1836));
-    }
-
-    #[test]
-    fn windows_with_their_reserve_stay_within_the_bounds() {
-        let s = screen();
-        let (bw, bh) = s.bounds();
-        let within = |(w, h): (i32, i32)| w as f64 <= bw.ceil() && h as f64 <= bh.ceil();
-        for column in [0.0, 16.0, 108.0, 122.0] {
-            for page in [
-                (595.0, 842.0),
-                (842.0, 595.0),
-                (960.0, 540.0),
-                (100.0, 9000.0),
-            ] {
-                let content = s.fit_page(page, column);
-                assert!(within(s.window(content, column)), "{page:?} {column}");
-            }
-            for card in [(860.0, 964.0), (4000.0, 300.0), (300.0, 4000.0)] {
-                let content = s.card(card.0, card.1, column);
-                assert!(within(s.window(content, column)), "{card:?} {column}");
-            }
-        }
     }
 
     #[test]
@@ -248,7 +176,6 @@ mod tests {
 
     #[test]
     fn small_content_grows_up_to_twice_the_desktop_scale() {
-        // As large as before there was a row: there is room for it.
         let s = screen();
         // Half the bounds, which is a little more than the desktop scale.
         assert_eq!(size(s.fit_media((640, 480))), (1224, 918));
@@ -284,8 +211,7 @@ mod tests {
             (20000, 20000),
         ] {
             let fit = s.fit_media((w, h));
-            let (ww, wh) = s.window((fit.width, fit.height), 0.0);
-            assert!(ww as f64 <= bw.ceil() && wh as f64 <= bh.ceil());
+            assert!(fit.width as f64 <= bw.ceil() && fit.height as f64 <= bh.ceil());
             let error = fit.width as f64 * h as f64 - fit.height as f64 * w as f64;
             assert!(error.abs() <= w.max(h) as f64, "{w}x{h} -> {fit:?}");
         }
@@ -302,24 +228,24 @@ mod tests {
             },
             scale: 1.0,
         };
-        assert_eq!(size(s.fit_media((4000, 3000))), (1179, 884));
+        assert_eq!(size(s.fit_media((4000, 3000))), (1224, 918));
         assert_eq!(size(s.fit_media((800, 600))), (800, 600));
     }
 
     #[test]
     fn pages_show_whole_and_small_pages_are_not_blown_up() {
         let s = screen();
-        assert_eq!(s.fit_page((595.0, 842.0), 0.0), (1256, 1778));
-        assert_eq!(s.fit_page((842.0, 595.0), 108.0), (2516, 1778));
+        assert_eq!(s.fit_page((595.0, 842.0)), (1297, 1836));
+        assert_eq!(s.fit_page((842.0, 595.0)), (2598, 1836));
         // A business card at twice its actual size.
-        assert_eq!(s.fit_page((252.0, 144.0), 0.0), (1141, 652));
+        assert_eq!(s.fit_page((252.0, 144.0)), (1141, 652));
     }
 
     #[test]
-    fn cards_scale_with_the_desktop_and_stay_within_the_room() {
+    fn cards_scale_with_the_desktop_and_stay_within_the_bounds() {
         let s = screen();
-        assert_eq!(s.card(600.0, 360.0, 0.0), (1019, 611));
-        assert_eq!(s.card(4000.0, 4000.0, 0.0), (3264, 1778));
+        assert_eq!(s.card(600.0, 360.0), (1019, 611));
+        assert_eq!(s.card(4000.0, 4000.0), (3264, 1836));
     }
 
     #[test]

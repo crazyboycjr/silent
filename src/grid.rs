@@ -17,7 +17,7 @@ use crate::theme::{Theme, progress};
 
 const ROW: f32 = 24.;
 /// The sheet tabs' height.
-const TABS: f32 = 34.;
+pub const TABS: f32 = 34.;
 const FONT: f32 = 13.;
 const PAD: f32 = 7.;
 /// Characters of a cell's text the strip shows.
@@ -61,7 +61,7 @@ impl SheetPane {
         }
     }
 
-    fn has_tabs(&self) -> bool {
+    pub fn has_tabs(&self) -> bool {
         self.names.len() > 1
     }
 

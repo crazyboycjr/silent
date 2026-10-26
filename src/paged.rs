@@ -8,8 +8,6 @@ use gpui_kit::*;
 use silent::memory::View;
 use silent::vim::Motion;
 
-use crate::overview::Mode;
-
 pub const GAP: f32 = 10.;
 /// The rail: a thumbnail's width, and the rail's width around it.
 pub const THUMB: f32 = 84.;
@@ -98,25 +96,6 @@ impl Pages {
         self.scroll.set_offset(offset);
     }
 
-    /// Scrolls as a wheel turned beside the scroll asks.
-    pub fn wheel(&self, event: &ScrollWheelEvent, window: &Window) {
-        let delta = event.delta.pixel_delta(window.line_height());
-        self.scroll_to(self.view_top() - f32::from(delta.y));
-    }
-
-    /// Fits the rail's column, as wide as `mode` makes it, into `area` when
-    /// the pages need scrolling even beside it: its width, and the area left
-    /// to the pages.
-    pub fn fit_rail(&self, area: Size<Pixels>, mode: Mode) -> (Option<f32>, Size<Pixels>) {
-        let width = mode.column(RAIL);
-        let beside = size(area.width - px(width), area.height);
-        if self.height_at(f32::from(beside.width)) > f32::from(beside.height) + 0.5 {
-            (Some(width), beside)
-        } else {
-            (None, area)
-        }
-    }
-
     pub fn go_to(&self, page: usize) {
         let page = page.min(self.count().saturating_sub(1));
         if let Some((top, _)) = self.layout().nth(page) {
@@ -140,8 +119,9 @@ impl Pages {
     }
 
     /// Moves as vim's keys and the arrows ask: j and k by pages, the rest
-    /// by the view's height, `height`, or a nudge.
-    pub fn motion(&self, motion: Motion, height: f32) {
+    /// by the view's height or a nudge.
+    pub fn motion(&self, motion: Motion, window: &Window) {
+        let height = f32::from(window.viewport_size().height);
         let by = |pixels: f32, k: usize| self.scroll_to(self.view_top() + pixels * k as f32);
         match motion {
             Motion::Down(k) => self.step(true, k),
@@ -167,8 +147,8 @@ impl Pages {
         (page > 0 || within > 0.001).then_some(View::Pages { page, within })
     }
 
-    /// Goes back to a view, before the column has been laid out, as wide
-    /// as `width`.
+    /// Goes back to a view, before the column has been laid out: the
+    /// window's width is the column's.
     pub fn restore(&self, view: &View, width: f32) {
         let View::Pages { page, within } = *view else {
             return;

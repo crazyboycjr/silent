@@ -17,6 +17,12 @@ use yuv::{YuvBiPlanarImage, YuvConversionMode, YuvRange, YuvStandardMatrix, yuv_
 use crate::content::{Audio, clock};
 use crate::theme::{Theme, accent, progress};
 
+/// How long the seek bar stays after a seek, or after the pointer leaves
+/// the bottom of the video.
+const BAR_LINGER: Duration = Duration::from_millis(1500);
+const BAR_FADE: Duration = Duration::from_millis(180);
+/// The pointer this close to the bottom brings the seek bar up.
+const NEAR_BOTTOM: f32 = 72.;
 /// Volume steps, in percent of a cubic scale, as the ear hears loudness.
 const VOLUME_STEP: i32 = 5;
 
@@ -50,15 +56,25 @@ fn stepped(volume: f64, louder: bool) -> f64 {
 }
 
 /// A playing video. Frames are converted on a thread of their own, only
-/// when the player has a new one, so the UI thread only swaps images. Its
-/// seek bar is drawn in the row below the picture.
+/// when the player has a new one, so the UI thread only swaps images.
 pub struct VideoPane {
     video: Video,
     frame: Option<Arc<RenderImage>>,
     _feed: Task<()>,
-    /// Where a drag on the seek bar has got to.
+    bar: Bar,
+}
+
+/// The seek bar over the bottom of a video: up for a moment after a seek,
+/// and while the pointer is near the bottom or drags on it.
+#[derive(Default)]
+struct Bar {
+    up: bool,
+    near: bool,
+    /// Counts showings and hidings, so that each fade is a new animation.
+    epoch: usize,
+    timer: Option<Task<()>>,
+    /// Where a drag on the bar has got to.
     dragging: Option<Duration>,
-    /// The seek bar's track as last laid out.
     track: Rc<Cell<Bounds<Pixels>>>,
 }
 
@@ -94,8 +110,7 @@ impl VideoPane {
             video,
             frame: None,
             _feed: feed,
-            dragging: None,
-            track: Rc::default(),
+            bar: Bar::default(),
         }
     }
 
@@ -107,7 +122,8 @@ impl VideoPane {
         self.video.set_muted(!self.video.muted());
     }
 
-    /// Back or on by `by`, to the frame or to the nearest keyframe.
+    /// Back or on by `by`, to the frame or to the nearest keyframe; the
+    /// seek bar shows where to.
     pub fn seek(&mut self, forward: bool, by: Duration, accurate: bool, cx: &mut Context<Self>) {
         let position = self.video.position();
         let target = if forward {
@@ -116,7 +132,7 @@ impl VideoPane {
             position.saturating_sub(by)
         };
         let _ = self.video.seek(target, accurate);
-        cx.notify();
+        self.flash_bar(cx);
     }
 
     /// A step louder or quieter; louder also unmutes. Returns the percent.
@@ -144,23 +160,56 @@ impl VideoPane {
         Some(self.video.duration()).filter(|d| !d.is_zero())
     }
 
-    /// Whether it is paused or muted, for the strip.
-    pub fn flags(&self) -> impl Iterator<Item = &'static str> {
-        [
-            (self.video.paused(), "paused"),
-            (self.video.muted(), "muted"),
-        ]
-        .into_iter()
-        .filter_map(|(on, word)| on.then_some(word))
+    /// Shows the seek bar, and hides it 1.5 s from now unless the pointer
+    /// is near it then.
+    fn flash_bar(&mut self, cx: &mut Context<Self>) {
+        if !self.bar.up {
+            self.bar.up = true;
+            self.bar.epoch += 1;
+        }
+        self.bar.timer = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(BAR_LINGER).await;
+            let _ = this.update(cx, |this, cx| {
+                if !this.bar.near && this.bar.dragging.is_none() {
+                    this.bar.up = false;
+                    this.bar.epoch += 1;
+                    cx.notify();
+                }
+            });
+        }));
+        cx.notify();
+    }
+
+    /// The pointer moved: near the bottom, the seek bar comes up.
+    fn pointer(&mut self, y: Pixels, window: &Window, cx: &mut Context<Self>) {
+        let near = y > window.viewport_size().height - px(NEAR_BOTTOM);
+        if near != self.bar.near {
+            self.bar.near = near;
+            self.flash_bar(cx);
+        }
+    }
+
+    /// `0:12 / 0:42`, and whether it is paused or muted.
+    pub fn status(&self) -> String {
+        status(
+            self.video.position(),
+            self.duration(),
+            self.video.paused(),
+            self.video.muted(),
+        )
     }
 
     pub fn ready(&self) -> bool {
         self.frame.is_some()
     }
 
+    pub fn bar_shown(&self) -> bool {
+        self.bar.up || self.bar.near || self.bar.dragging.is_some()
+    }
+
     /// The time under `x` on the bar's track.
     fn time_at(&self, x: Pixels) -> Duration {
-        let track = self.track.get();
+        let track = self.bar.track.get();
         let fraction = if track.size.width > px(0.) {
             ((x - track.left()) / track.size.width).clamp(0., 1.)
         } else {
@@ -171,30 +220,41 @@ impl VideoPane {
 
     fn drag_to(&mut self, x: Pixels, cx: &mut Context<Self>) {
         let target = self.time_at(x);
-        self.dragging = Some(target);
+        self.bar.dragging = Some(target);
         let _ = self.video.seek(target, false);
         cx.notify();
     }
 
     fn drop_at(&mut self, cx: &mut Context<Self>) {
-        if let Some(target) = self.dragging.take() {
+        if let Some(target) = self.bar.dragging.take() {
             let _ = self.video.seek(target, true);
-            cx.notify();
+            self.flash_bar(cx);
         }
     }
 
-    /// The seek bar for the row below the picture: the time, the track and
-    /// the length. Only a bar in a shown row takes the pointer.
-    pub fn seek_bar(&self, live: bool, cx: &mut Context<Self>) -> Stateful<Div> {
+    /// The bar, drawn while it fades out too; only a shown bar takes the
+    /// pointer.
+    fn bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let shown = self.bar_shown();
+        let bar = self.bar_body(shown, cx);
+        bar.with_animation(
+            ("seek-bar", self.bar.epoch),
+            Animation::new(BAR_FADE).with_easing(ease_in_out),
+            move |bar, t| bar.opacity(if shown { t } else { 1. - t }),
+        )
+        .into_any_element()
+    }
+
+    fn bar_body(&self, live: bool, cx: &mut Context<Self>) -> Stateful<Div> {
         let theme = Theme::of(WindowAppearance::Dark);
         let duration = self.video.duration();
-        let position = self.dragging.unwrap_or_else(|| self.video.position());
+        let position = self.bar.dragging.unwrap_or_else(|| self.video.position());
         let fraction = if duration.is_zero() {
             0.
         } else {
             (position.as_secs_f32() / duration.as_secs_f32()).clamp(0., 1.)
         };
-        let track = self.track.clone();
+        let track = self.bar.track.clone();
         let view = cx.entity().downgrade();
         let follow = canvas(
             move |bounds, _, _| track.set(bounds),
@@ -208,7 +268,7 @@ impl VideoPane {
                 window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                     if phase == DispatchPhase::Bubble {
                         let _ = moved.update(cx, |this, cx| {
-                            if this.dragging.is_some() {
+                            if this.bar.dragging.is_some() {
                                 this.drag_to(event.position.x, cx);
                             }
                         });
@@ -228,25 +288,30 @@ impl VideoPane {
             div()
                 .flex_none()
                 .min_w(px(44.))
+                .text_size(px(13.))
                 .text_color(theme.strip_text)
                 .child(format::duration(t))
         };
         div()
             .id("seek-bar")
-            .flex_1()
-            .min_w(px(160.))
-            .h_full()
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .h(px(44.))
+            .px(px(16.))
             .flex()
             .flex_row()
             .items_center()
             .gap(px(12.))
+            .bg(theme.strip)
             .when(live, |bar| {
                 bar.on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                        // The whole bar keeps clicks from pausing; only the track seeks.
                         cx.stop_propagation();
-                        // A little either side of the track seeks too.
-                        let track = this.track.get();
+                        let track = this.bar.track.get();
                         let x = event.position.x;
                         if x > track.left() - px(12.) && x < track.right() + px(12.) {
                             this.drag_to(x, cx);
@@ -293,13 +358,30 @@ impl VideoPane {
 }
 
 impl Render for VideoPane {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let frame = self.frame.clone().map(|image| {
             img(ImageSource::Render(image))
                 .size_full()
                 .object_fit(ObjectFit::Contain)
         });
-        div().size_full().bg(rgb(0x000000)).children(frame)
+        // Before the first seek or visit to the bottom there is nothing to fade.
+        let bar = (self.bar.epoch > 0).then(|| self.bar(cx));
+        div()
+            .id("video")
+            .size_full()
+            .relative()
+            .bg(rgb(0x000000))
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                this.pointer(event.position.y, window, cx)
+            }))
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !hovered && this.bar.near {
+                    this.bar.near = false;
+                    this.flash_bar(cx);
+                }
+            }))
+            .children(frame)
+            .children(bar)
     }
 }
 

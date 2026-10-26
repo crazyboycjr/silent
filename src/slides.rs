@@ -1,7 +1,6 @@
 //! PowerPoint slides in a vertical scroll like PDF pages: each slide drawn
 //! from its shapes, pictures and tables, read in the background around what
-//! is in view, with a rail of the slides drawn small in a column at the
-//! right.
+//! is in view, with a rail of the slides drawn small at the right edge.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -17,9 +16,8 @@ use silent::vim::Motion;
 
 use crate::content::{Deck, Slide, render_slide};
 use crate::docview::styled;
-use crate::layout;
 use crate::overview::{self, Geometry, Mode, Overview, Overviewed, Shown};
-use crate::paged::{GAP, Pages, THUMB};
+use crate::paged::{GAP, Pages, RAIL, THUMB};
 use crate::pdf::thumb_frame;
 use crate::theme::Theme;
 
@@ -37,8 +35,6 @@ pub struct SlidesPane {
     pending: HashSet<usize>,
     /// The device width slides were last read for.
     width: u32,
-    /// The slides' area when last drawn: the window above the row, less the
-    /// rail's column.
     viewport: Size<Pixels>,
     overview: Overview,
     /// Slides read small, for the rail.
@@ -49,20 +45,20 @@ pub struct SlidesPane {
 
 impl SlidesPane {
     pub fn new(deck: Deck, mode: Mode, view: Option<View>, window: &Window) -> Self {
+        let width = (f32::from(window.viewport_size().width) * window.scale_factor()) as u32;
         let mut shown = HashMap::new();
         if let Some((index, first)) = deck.first {
             shown.insert(index, Rc::new(first));
         }
-        let pages = Pages::new(vec![deck.deck.size; deck.deck.slides.len()]);
-        let (_, viewport) = pages.fit_rail(layout::above_row(window), mode);
+        let sizes = vec![deck.deck.size; deck.deck.slides.len()];
         Self {
             path: deck.path,
             deck: Arc::new(deck.deck),
-            pages,
+            pages: Pages::new(sizes),
             shown,
             pending: HashSet::new(),
-            width: (f32::from(viewport.width) * window.scale_factor()).round() as u32,
-            viewport,
+            width,
+            viewport: window.viewport_size(),
             overview: Overview::new(mode),
             thumbs: HashMap::new(),
             thumbs_pending: HashSet::new(),
@@ -82,8 +78,8 @@ impl SlidesPane {
         self.pages.view()
     }
 
-    pub fn motion(&mut self, motion: Motion, cx: &mut Context<Self>) {
-        self.pages.motion(motion, f32::from(self.viewport.height));
+    pub fn motion(&mut self, motion: Motion, window: &Window, cx: &mut Context<Self>) {
+        self.pages.motion(motion, window);
         overview::reveal(self, cx);
     }
 
@@ -93,9 +89,9 @@ impl SlidesPane {
     }
 
     fn read_around_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let viewport = self.viewport;
+        let viewport = window.viewport_size();
         let width = f32::from(viewport.width);
-        let device = (width * window.scale_factor()).round() as u32;
+        let device = (width * window.scale_factor()) as u32;
         if device.abs_diff(self.width) > 1 {
             // Pictures were shrunk for the old width; read them again, sharp.
             self.width = device;
@@ -368,10 +364,7 @@ impl Overviewed for SlidesPane {
 
 impl Render for SlidesPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (column, viewport) = self
-            .pages
-            .fit_rail(layout::above_row(window), self.overview.mode);
-        self.viewport = viewport;
+        self.viewport = window.viewport_size();
         if let Some(view) = self.restore.take() {
             self.pages.restore(&view, f32::from(self.viewport.width));
         }
@@ -397,45 +390,35 @@ impl Render for SlidesPane {
                 }
             })
             .collect();
-        let column = column.map(|width| {
-            let height = f32::from(self.viewport.height);
-            let shown = match self.overview.shown(true) {
-                Shown::Panel => {
-                    let g = self.geometry(f64::from(height));
-                    let content = self.rail(g, window, cx);
-                    Some(overview::panel(&self.overview, g, content, cx))
-                }
-                Shown::Bar => {
-                    let g = self.geometry(overview::bar_track(height));
-                    Some(overview::scrollbar(&self.overview, g, theme, cx))
-                }
-                Shown::Nothing => None,
-            };
-            overview::column(width, None, shown, cx).on_scroll_wheel(cx.listener(
-                |this, event: &ScrollWheelEvent, window, cx| {
-                    this.pages.wheel(event, window);
-                    overview::reveal(this, cx);
-                },
-            ))
-        });
+        let height = f32::from(self.viewport.height);
+        let overview = match self.overview.shown(self.geometry(1.).scrollable()) {
+            Shown::Panel => {
+                let g = self.geometry(f64::from(height));
+                let content = self.rail(g, window, cx);
+                Some(overview::panel(&self.overview, g, RAIL, content, theme, cx))
+            }
+            Shown::Bar => {
+                let g = self.geometry(overview::bar_track(height));
+                let label = format!("slide {} of {}", self.current_slide(), self.slide_count());
+                Some(overview::scrollbar(&self.overview, g, label, theme, cx))
+            }
+            Shown::Nothing => None,
+        };
         div()
             .size_full()
-            .flex()
-            .flex_row()
-            .bg(theme.backdrop)
+            .relative()
             .child(
                 div()
                     .id("slides")
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
+                    .size_full()
                     .overflow_y_scroll()
                     .track_scroll(&self.pages.scroll)
                     .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
                         overview::reveal(this, cx);
                     }))
+                    .bg(theme.backdrop)
                     .child(div().flex().flex_col().gap(px(GAP)).children(slides)),
             )
-            .children(column)
+            .children(overview)
     }
 }

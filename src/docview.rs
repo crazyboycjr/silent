@@ -15,8 +15,7 @@ use silent::office::{Align, Block, Document, Paragraph, Role, Span, Table, famil
 use silent::vim::Motion;
 
 use crate::content::decode_still;
-use crate::layout;
-use crate::overview::{self, BAR, Geometry, Mode, Overview, Overviewed, Shown};
+use crate::overview::{self, Geometry, Mode, Overview, Overviewed, Shown};
 use crate::theme::{Theme, progress};
 
 /// The page, warm white as paper is.
@@ -30,8 +29,7 @@ pub struct DocPane {
     list: ListState,
     images: HashMap<usize, Arc<RenderImage>>,
     pending: HashSet<usize>,
-    /// A document has no minimap: the slim scrollbar shows while it
-    /// scrolls, in the page's margin, where it covers no text.
+    /// A document has no minimap: the slim scrollbar shows while it scrolls.
     overview: Overview,
     /// Pixels per point, as last drawn.
     scale: f32,
@@ -76,17 +74,10 @@ impl DocPane {
         })
     }
 
-    /// How far down the document the view is, for the strip, while the
-    /// scrollbar is held or pointed at.
-    pub fn scrub_label(&self) -> Option<String> {
-        let percent = (self.geometry(1.).fraction() * 100.).round();
-        self.overview.scrubbing().then(|| format!("{percent}%"))
-    }
-
     /// Moves as vim's keys and the arrows ask: j and k by a line of body
     /// text, `20G` to the twentieth block.
     pub fn motion(&mut self, motion: Motion, window: &Window, cx: &mut Context<Self>) {
-        let height = layout::above_row(window).height;
+        let height = window.viewport_size().height;
         let line = px(self.doc.base_size * self.scale * 1.3);
         let by = |pixels: Pixels, k: usize| self.list.scroll_by(pixels * k.min(1 << 16) as f32);
         match motion {
@@ -373,19 +364,13 @@ impl Render for DocPane {
                 .into_any_element()
         })
         .size_full();
-        let height = f32::from(layout::above_row(window).height);
-        let scrollable = self.geometry(1.).scrollable();
-        let bar = (self.overview.shown(scrollable) == Shown::Bar).then(|| {
-            let g = self.geometry(overview::bar_track(height));
-            overview::scrollbar(&self.overview, g, theme, cx)
-        });
-        let margin_bar = scrollable.then(|| {
-            overview::column(BAR, None, bar, cx)
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .right_0()
-        });
+        let height = f32::from(window.viewport_size().height);
+        let overview =
+            (self.overview.shown(self.geometry(1.).scrollable()) == Shown::Bar).then(|| {
+                let g = self.geometry(overview::bar_track(height));
+                let label = format!("{}%", (g.fraction() * 100.).round());
+                overview::scrollbar(&self.overview, g, label, theme, cx)
+            });
         div()
             .size_full()
             .relative()
@@ -395,6 +380,6 @@ impl Render for DocPane {
                 overview::reveal(this, cx);
             }))
             .child(rows)
-            .children(margin_bar)
+            .children(overview)
     }
 }
