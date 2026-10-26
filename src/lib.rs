@@ -3,6 +3,7 @@
 pub mod dbus;
 pub mod decode;
 pub mod detect;
+pub mod extract;
 pub mod format;
 pub mod geometry;
 pub mod hexdump;

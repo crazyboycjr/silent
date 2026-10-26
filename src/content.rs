@@ -19,7 +19,7 @@ use silent::geometry::Screen;
 use silent::memory::{self, Key, View};
 use silent::office::miniature::Miniature;
 use silent::office::{self, doc, docx, odf, ppt, pptx};
-use silent::{hexdump, pretty, unpack};
+use silent::{extract, hexdump, pretty, unpack};
 use smallvec::SmallVec;
 use unicode_width::UnicodeWidthChar;
 
@@ -812,7 +812,8 @@ fn compressed(
 
 fn archive(path: &Path) -> Option<Archive> {
     let file = File::open(path).ok()?;
-    let listed = compress_tools::list_archive_entries_with_encoding(file, decode_name).ok()?;
+    let listed =
+        compress_tools::list_archive_entries_with_encoding(file, extract::decode_name).ok()?;
     let mut archive = Archive {
         entries: Vec::with_capacity(listed.len()),
         files: 0,
@@ -836,13 +837,6 @@ fn archive(path: &Path) -> Option<Archive> {
 fn archive_size(archive: &Archive, screen: Screen) -> (i32, i32) {
     let rows = archive.entries.len().clamp(6, 26) as f64;
     card(screen, (720.0, rows * 30.0 + 96.0))
-}
-
-fn decode_name(bytes: &[u8]) -> compress_tools::Result<String> {
-    Ok(match std::str::from_utf8(bytes) {
-        Ok(name) => name.to_owned(),
-        Err(_) => encoding_rs::GB18030.decode(bytes).0.into_owned(),
-    })
 }
 
 fn folder(path: Option<PathBuf>) -> Folder {
