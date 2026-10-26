@@ -10,8 +10,9 @@ Each run calls ShowFile as Nautilus does and watches the previewer's window
 from the X server: the first frame counts once the window's pixels have come
 three quarters of the way from what they were (nothing, or the file before) to
 what they settle on. A previewer is timed to its content, not to the map of its
-window. Cold runs start with no previewer process; sushi's warm
-runs keep its process alive between previews, as it normally lives; a switch
+window. Cold runs start with no previewer process; warm runs keep it alive
+between previews, as both normally live: sushi for a while after a preview,
+silent for as long as its caller stays on the bus, as Nautilus does; a switch
 shows the next file in an open window, as the arrow keys do.
 
 The previewer that answers is chosen with a D-Bus service file of the user's,
@@ -444,7 +445,7 @@ def run(args):
     results = []
     out = pathlib.Path(args.out)
     try:
-        for which, mode in (("silent", "cold"), ("sushi", "cold"), ("sushi", "warm")):
+        for which, mode in (("silent", "cold"), ("silent", "warm"), ("sushi", "cold"), ("sushi", "warm")):
             if which not in args.previewers.split(","):
                 continue
             previewers.use(which)
@@ -501,7 +502,8 @@ def report(results, markdown, note=None):
             continue
         cells.setdefault(key, []).append(r)
     by_file = {(FIXTURES / rel).name: (key, label, can) for key, label, rel, can in KINDS}
-    columns = [("silent", "cold"), ("sushi", "cold"), ("sushi", "warm"), ("silent", "switch"), ("sushi", "switch")]
+    columns = [("silent", "cold"), ("silent", "warm"), ("sushi", "cold"), ("sushi", "warm"),
+               ("silent", "switch"), ("sushi", "switch")]
     rows = []
     for name, (key, label, can) in by_file.items():
         row = {"key": key, "label": label, "sushi_can": can}
@@ -538,18 +540,18 @@ def write_markdown(rows, columns, results, notes, note, path):
     lines = [
         "# silent against sushi",
         "",
-        f"From Nautilus's ShowFile call to the first frame that shows the file, in ms: the median, and in brackets the 95th percentile, of {n} runs a cell. Measured by `scripts/bench run` on {time.strftime('%Y-%m-%d')}, from outside both previewers: a call as Nautilus makes it, and the window's pixels read back from the X server until they settle. Each previewer is timed to the content, not to its window's map, which comes a little before it in both. Cold: no previewer process before the call. Warm: sushi's process kept alive between previews, as it normally lives; silent has no resident process, so it is always cold. Switch: the next file in an open window, as the arrow keys show it.",
+        f"From Nautilus's ShowFile call to the first frame that shows the file, in ms: the median, and in brackets the 95th percentile, of {n} runs a cell. Measured by `scripts/bench run` on {time.strftime('%Y-%m-%d')}, from outside both previewers: a call as Nautilus makes it, and the window's pixels read back from the X server until they settle. Each previewer is timed to the content, not to its window's map, which comes a little before it in both. Cold: no previewer process before the call. Warm: the previewer's process kept alive between previews, as both normally live: sushi for a while after a preview, silent for as long as Nautilus runs. Switch: the next file in an open window, as the arrow keys show it.",
         "",
         "![Time to the first frame of each file](benchmark.svg)",
         "",
     ] + ([note, ""] if note else []) + [
-        "| File | silent, cold | sushi, cold | sushi, warm | silent, switch | sushi, switch | RSS, silent / sushi (MB) | VRAM, silent / sushi (MiB) |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| File | silent, cold | silent, warm | sushi, cold | sushi, warm | silent, switch | sushi, switch | RSS, silent / sushi (MB) | VRAM, silent / sushi (MiB) |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for r in rows:
         mb = lambda v: "–" if v is None else f"{v:.0f}"
         sushi = lambda c: cell(r[c]) if r["sushi_can"] else "sushi can't"
-        lines.append(f"| {r['label']} | {cell(r['silent cold'])} | {sushi('sushi cold')} | {sushi('sushi warm')} "
+        lines.append(f"| {r['label']} | {cell(r['silent cold'])} | {cell(r['silent warm'])} | {sushi('sushi cold')} | {sushi('sushi warm')} "
                      f"| {cell(r['silent switch'])} | {sushi('sushi switch')} "
                      f"| {mb(r['silent rss'])} / {mb(r['sushi rss']) if r['sushi_can'] else '–'} "
                      f"| {mb(r['silent vram'])} / {mb(r['sushi vram']) if r['sushi_can'] else '–'} |")
@@ -565,11 +567,11 @@ def write_markdown(rows, columns, results, notes, note, path):
 
 
 def write_chart(rows, path):
-    """Grouped horizontal bars of the medians, silent cold beside sushi warm and
-    cold, in the first three categorical slots of the dataviz reference palette,
-    which tell apart for every colour vision in light and dark."""
-    series = [("silent cold", "silent, cold", 1), ("sushi warm", "sushi, warm", 2),
-              ("sushi cold", "sushi, cold", 3)]
+    """Grouped horizontal bars of the medians, warm and cold, in the first four
+    categorical slots of the dataviz reference palette, whose neighbours tell
+    apart for every colour vision in light and dark."""
+    series = [("silent warm", "silent, warm", 1), ("sushi warm", "sushi, warm", 2),
+              ("silent cold", "silent, cold", 3), ("sushi cold", "sushi, cold", 4)]
     bar, gap, group_gap, label_w, plot_w, top = 8, 2, 12, 150, 520, 50
     group = (bar + gap) * len(series) + group_gap
     height = top + group * len(rows) + 28
@@ -587,9 +589,9 @@ def write_chart(rows, path):
            f'viewBox="0 0 {width} {height}" font-family="Noto Sans, sans-serif" font-size="12">',
            "<style>"
            ".bg{fill:#fcfcfb}text{fill:#0b0b0b}.muted{fill:#52514e}.grid{stroke:#e4e2dc}"
-           ".s1{fill:#2a78d6}.s2{fill:#eb6834}.s3{fill:#1baf7a}"
+           ".s1{fill:#2a78d6}.s2{fill:#eb6834}.s3{fill:#1baf7a}.s4{fill:#eda100}"
            "@media (prefers-color-scheme: dark){.bg{fill:#1a1a19}text{fill:#f0efec}.muted{fill:#c3c2b7}"
-           ".grid{stroke:#34332f}.s1{fill:#3987e5}.s2{fill:#d95926}.s3{fill:#199e70}}"
+           ".grid{stroke:#34332f}.s1{fill:#3987e5}.s2{fill:#d95926}.s3{fill:#199e70}.s4{fill:#c98500}}"
            "</style>",
            f'<rect class="bg" width="{width}" height="{height}"/>']
     x = label_w
