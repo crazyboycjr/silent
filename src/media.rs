@@ -285,6 +285,9 @@ pub fn playbar<P: Player>(player: &mut P, live: bool, ink: Hsla, cx: &mut Contex
 /// when the player has a new one, so the UI thread only swaps images.
 pub struct VideoPane {
     video: Video,
+    /// Paused by K or a click. The pipeline itself passes through its
+    /// paused state on every seek, so it cannot tell.
+    paused: bool,
     frame: Option<Arc<RenderImage>>,
     _feed: Task<()>,
     bar: Bar,
@@ -322,6 +325,7 @@ impl VideoPane {
         });
         Self {
             video,
+            paused: false,
             frame: None,
             _feed: feed,
             bar: Bar::default(),
@@ -348,8 +352,9 @@ impl VideoPane {
         )
     }
 
-    pub fn toggle_pause(&self) {
-        self.video.set_paused(!self.video.paused());
+    pub fn toggle_pause(&mut self) {
+        self.paused = !self.paused;
+        self.video.set_paused(self.paused);
     }
 
     pub fn toggle_mute(&self) {
@@ -387,12 +392,9 @@ impl VideoPane {
 
     /// Whether it is paused or muted, for the strip.
     pub fn flags(&self) -> impl Iterator<Item = &'static str> {
-        [
-            (self.video.paused(), "paused"),
-            (self.video.muted(), "muted"),
-        ]
-        .into_iter()
-        .filter_map(|(on, word)| on.then_some(word))
+        [(self.paused, "paused"), (self.video.muted(), "muted")]
+            .into_iter()
+            .filter_map(|(on, word)| on.then_some(word))
     }
 
     pub fn ready(&self) -> bool {
@@ -505,6 +507,9 @@ fn to_bgra(nv12: &[u8], width: u32, height: u32) -> Option<Arc<RenderImage>> {
 pub struct AudioPane {
     audio: Audio,
     name: SharedString,
+    /// Paused by K or a click, as for video: seeks pass through the
+    /// pipeline's paused state.
+    paused: bool,
     bar: Bar,
     _tick: Task<()>,
 }
@@ -533,17 +538,15 @@ impl AudioPane {
         Self {
             audio,
             name,
+            paused: false,
             bar: Bar::default(),
             _tick: tick,
         }
     }
 
-    fn playing(&self) -> bool {
-        self.audio.playbin.current_state() == gst::State::Playing
-    }
-
-    pub fn toggle_pause(&self) {
-        let next = if self.playing() {
+    pub fn toggle_pause(&mut self) {
+        self.paused = !self.paused;
+        let next = if self.paused {
             gst::State::Paused
         } else {
             gst::State::Playing
@@ -586,7 +589,7 @@ impl AudioPane {
 
     /// Whether it is paused or muted, for the strip.
     pub fn flags(&self) -> impl Iterator<Item = &'static str> {
-        [(!self.playing(), "paused"), (self.muted(), "muted")]
+        [(self.paused, "paused"), (self.muted(), "muted")]
             .into_iter()
             .filter_map(|(on, word)| on.then_some(word))
     }

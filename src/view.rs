@@ -944,10 +944,10 @@ impl Preview {
         )
     }
 
-    fn toggle_pause(&self, cx: &App) {
+    fn toggle_pause(&self, cx: &mut App) {
         match &self.pane {
-            Pane::Video(v) => v.read(cx).toggle_pause(),
-            Pane::Audio(a) => a.read(cx).toggle_pause(),
+            Pane::Video(v) => v.update(cx, |v, _| v.toggle_pause()),
+            Pane::Audio(a) => a.update(cx, |a, _| a.toggle_pause()),
             _ => {}
         }
     }
