@@ -45,6 +45,16 @@ pub struct SlidesPane {
 }
 
 impl SlidesPane {
+    /// Lets the window's atlas go of the slides' pictures and backgrounds.
+    pub fn drop_pictures(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for (_, slide) in self.shown.drain().chain(self.thumbs.drain()) {
+            let pictures = slide.pictures.values().chain(&slide.background);
+            for image in pictures {
+                cx.drop_image(image.clone(), Some(window));
+            }
+        }
+    }
+
     pub fn new(deck: Deck, mode: Mode, docked: bool, view: Option<View>, window: &Window) -> Self {
         let mut shown = HashMap::new();
         if let Some((index, first)) = deck.first {

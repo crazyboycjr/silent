@@ -336,6 +336,13 @@ pub struct VideoPane {
 }
 
 impl VideoPane {
+    /// Lets the window's atlas go of the frame shown.
+    pub fn drop_pictures(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(frame) = self.frame.take() {
+            cx.drop_image(frame, Some(window));
+        }
+    }
+
     pub fn new(
         video: Video,
         loudness: Loudness,
@@ -560,6 +567,13 @@ pub struct AudioPane {
 }
 
 impl AudioPane {
+    /// Lets the window's atlas go of the cover.
+    pub fn drop_pictures(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(cover) = self.audio.cover.take() {
+            cx.drop_image(cover, Some(window));
+        }
+    }
+
     pub fn new(
         audio: Audio,
         name: SharedString,

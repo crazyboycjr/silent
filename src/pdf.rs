@@ -53,6 +53,13 @@ struct Drag {
 }
 
 impl PdfPane {
+    /// Lets the window's atlas go of the pages and thumbnails drawn.
+    pub fn drop_pictures(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for (_, image) in self.rendered.drain().chain(self.thumbs.drain()) {
+            cx.drop_image(image, Some(window));
+        }
+    }
+
     pub fn new(pdf: Pdf, mode: Mode, docked: bool, view: Option<View>, window: &Window) -> Self {
         let mut rendered = HashMap::new();
         if let Some((page, image)) = pdf.first {

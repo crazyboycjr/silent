@@ -44,6 +44,13 @@ pub struct DocPane {
 }
 
 impl DocPane {
+    /// Lets the window's atlas go of the pictures drawn.
+    pub fn drop_pictures(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for (_, image) in self.images.drain() {
+            cx.drop_image(image, Some(window));
+        }
+    }
+
     pub fn new(
         paper: Paper,
         mode: Mode,

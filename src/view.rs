@@ -190,6 +190,19 @@ impl Pane {
             _ => {}
         }
     }
+
+    /// Gives the pictures the pane drew back to the window's GPU atlas, as
+    /// the pane goes: the window outlives it, and with it the atlas.
+    fn drop_pictures(&self, window: &mut Window, cx: &mut App) {
+        match self {
+            Pane::Video(v) => v.update(cx, |v, cx| v.drop_pictures(window, cx)),
+            Pane::Audio(a) => a.update(cx, |a, cx| a.drop_pictures(window, cx)),
+            Pane::Pdf(p) => p.update(cx, |p, cx| p.drop_pictures(window, cx)),
+            Pane::Doc(d) => d.update(cx, |d, cx| d.drop_pictures(window, cx)),
+            Pane::Slides(s) => s.update(cx, |s, cx| s.drop_pictures(window, cx)),
+            Pane::None | Pane::Lines(_) | Pane::Archive(_) | Pane::Sheet(_) => {}
+        }
+    }
 }
 
 #[derive(Default)]
@@ -335,6 +348,7 @@ impl Preview {
     fn attach(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.feed = None;
         self.totals = None;
+        self.pane.drop_pictures(window, cx);
         self.pane = Pane::None;
         self._pane_changes = None;
         self.keys = Keys::default();
@@ -887,6 +901,7 @@ impl Preview {
         if let Some(old) = self.image.take() {
             cx.drop_image(old, Some(window));
         }
+        self.pane.drop_pictures(window, cx);
         self.pane = level.pane;
         self.loaded = level.loaded;
         self.inside = level.file;
