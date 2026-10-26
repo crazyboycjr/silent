@@ -13,6 +13,7 @@ mod pdf;
 mod pdftext;
 mod picture;
 mod slides;
+mod strip;
 mod theme;
 mod trace;
 mod view;

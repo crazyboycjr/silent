@@ -1,5 +1,6 @@
-//! File-type icons from the Lucide set that gpui-component bundles, so they
-//! look like the rest of the toolkit. Only the few used here are embedded.
+//! File-type icons, and the playbar's, from the Lucide set that
+//! gpui-component bundles, so they look like the rest of the toolkit. Only
+//! the few used here are embedded.
 
 use gpui_kit::{Hsla, SharedString};
 use gpui_kit_assets::IconName;
@@ -21,6 +22,9 @@ gpui_kit_assets::icon_assets!(pub Icons, [
     FileSpreadsheet,
     FileChartPie,
     FileDigit,
+    Volume1,
+    Volume2,
+    VolumeX,
 ]);
 
 /// The icon and its colour for an entry called `name`.

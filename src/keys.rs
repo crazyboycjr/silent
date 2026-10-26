@@ -63,6 +63,8 @@ pub enum Act {
     /// M: the minimap, the thumbnail rail or a document's overview goes to
     /// its next mode.
     Overview,
+    /// i: the strip goes to its next mode.
+    Strip,
     SelectAll,
     Copy,
     /// The previous or next sheet of a workbook.
@@ -162,6 +164,7 @@ pub fn route(kind: Kind, engaged: bool, key: &str, mods: Mods, held: bool, vim: 
         (false, "m") if matches!(kind, Kind::Lines | Kind::Doc | Kind::Pdf | Kind::Slides) => {
             once(Act::Overview)
         }
+        (false, "i") => once(Act::Strip),
         (false, "k") if kind.media() => once(Act::Pause),
         (false, "j" | "l") if kind.media() => Act::Seek {
             forward: key == "l",
@@ -369,6 +372,16 @@ mod tests {
         assert_eq!(press(Kind::Pdf, false, "m"), Act::Overview);
         assert_eq!(press(Kind::Doc, false, "m"), Act::Overview);
         assert_eq!(press(Kind::Sheet, false, "m"), Act::Pass);
+        // i is the strip's everywhere, vim's documents included.
+        for kind in [
+            Kind::Still,
+            Kind::Video,
+            Kind::Lines,
+            Kind::Doc,
+            Kind::Archive,
+        ] {
+            assert_eq!(press(kind, false, "i"), Act::Strip, "{kind:?}");
+        }
         // Sheets and archives take no vim keys.
         assert_eq!(press(Kind::Sheet, false, "j"), Act::Pass);
     }

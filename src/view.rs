@@ -1,4 +1,6 @@
-//! The preview window's content: a picture or a card, and the info strip.
+//! The preview window: the content, a picture or a card, and over its
+//! bottom the strip of facts, which a video's or a sound's playbar joins.
+//! The strip shows while the pointer moves, always, or never, as i cycles.
 //! A click inside content that has keys of its own engages it: the arrows
 //! then act on it instead of browsing Nautilus's files, until the window
 //! loses the focus or shows another file.
@@ -12,31 +14,35 @@ use silent::decode::Event;
 use silent::detect::Kind;
 use silent::format;
 use silent::memory::{self, Key, View};
+use silent::scrim::Scrim;
 use silent::vim::{Keys, Motion};
 
 use crate::app::{Input, Intent};
 use crate::archive::ArchivePane;
 use crate::content::{Body, Loaded, Totals};
-use crate::docview::DocPane;
-use crate::grid::SheetPane;
+use crate::docview::{self, DocPane};
+use crate::grid::{self, SheetPane};
 use crate::keys::{self, Act, Mods};
 use crate::lines::{Doc, LinesPane};
-use crate::media::{AudioPane, Loudness, VideoPane};
+use crate::media::{self, AudioPane, Loudness, Player, VideoPane};
 use crate::overview::{Docking, Family, Mode};
 use crate::pdf::PdfPane;
 use crate::slides::SlidesPane;
-use crate::theme::{Theme, accent, progress};
+use crate::strip::{self, Mode as StripMode};
+use crate::theme::{Theme, accent};
 use crate::trace;
 
 /// Corner radius when a compositor draws the transparent corners.
 pub const RADIUS: f32 = 11.0;
+const STRIP_FADE: Duration = Duration::from_millis(180);
+/// How long the strip stays once the pointer rests; a playbar goes sooner.
+const STRIP_LINGER: Duration = Duration::from_millis(1500);
+const PLAYBAR_LINGER: Duration = Duration::from_millis(1000);
+/// How long a word from a key shows while the strip is off.
+const NOTICE: Duration = Duration::from_millis(1000);
 /// How long a dock waits for the window to make room before it docks
 /// anyway, as in a window manager that will not resize the window.
 const DOCK_WAIT: Duration = Duration::from_millis(400);
-const STRIP_FADE: Duration = Duration::from_millis(180);
-const STRIP_LINGER: Duration = Duration::from_millis(1500);
-/// The video's seek bar, which a note in the strip goes above.
-const SEEK_BAR: f32 = 44.;
 
 pub struct Preview {
     loaded: Loaded,
@@ -111,6 +117,24 @@ impl Pane {
         })
     }
 
+    fn kind(&self) -> keys::Kind {
+        match self {
+            Pane::None => keys::Kind::Still,
+            Pane::Video(_) => keys::Kind::Video,
+            Pane::Audio(_) => keys::Kind::Audio,
+            Pane::Pdf(_) => keys::Kind::Pdf,
+            Pane::Lines(_) => keys::Kind::Lines,
+            Pane::Archive(_) => keys::Kind::Archive,
+            Pane::Doc(_) => keys::Kind::Doc,
+            Pane::Sheet(_) => keys::Kind::Sheet,
+            Pane::Slides(_) => keys::Kind::Slides,
+        }
+    }
+
+    fn media(&self) -> bool {
+        matches!(self, Pane::Video(_) | Pane::Audio(_))
+    }
+
     fn docking(&self, cx: &App) -> Option<Docking> {
         Some(match self {
             Pane::Lines(t) => t.read(cx).docking(),
@@ -130,29 +154,28 @@ impl Pane {
             _ => {}
         }
     }
-
-    fn kind(&self) -> keys::Kind {
-        match self {
-            Pane::None => keys::Kind::Still,
-            Pane::Video(_) => keys::Kind::Video,
-            Pane::Audio(_) => keys::Kind::Audio,
-            Pane::Pdf(_) => keys::Kind::Pdf,
-            Pane::Lines(_) => keys::Kind::Lines,
-            Pane::Archive(_) => keys::Kind::Archive,
-            Pane::Doc(_) => keys::Kind::Doc,
-            Pane::Sheet(_) => keys::Kind::Sheet,
-            Pane::Slides(_) => keys::Kind::Slides,
-        }
-    }
 }
 
 #[derive(Default)]
 struct Strip {
+    mode: StripMode,
+    /// Shown while the strip is in its auto mode.
     shown: bool,
     /// Bumped on every change, so that each fade is a new animation.
     epoch: usize,
     /// A word from a key, such as the volume, at the right for a moment.
     note: Option<String>,
+    /// The pointer is on the strip, which keeps it.
+    hovered: bool,
+    /// The veil worked out for a picture, by the picture and the window's
+    /// size.
+    veil: Option<(ImageId, Size<Pixels>, Scrim)>,
+    /// While the strip is off, a word from a key for a second; the last
+    /// one stays to fade out.
+    notice: Option<String>,
+    notice_shown: bool,
+    notice_epoch: usize,
+    notice_timer: Option<Task<()>>,
 }
 
 impl Preview {
@@ -259,6 +282,7 @@ impl Preview {
         self._pane_changes = None;
         self.keys = Keys::default();
         self.strip.note = None;
+        self.strip.veil = None;
         self.redock = None;
         if let Some(old) = self.image.take() {
             cx.drop_image(old, Some(window));
@@ -304,6 +328,7 @@ impl Preview {
                 Pane::None
             }
         };
+        self.strip.mode = StripMode::load(self.family());
         // The strip shows the playing position, the page in view, the cell.
         self._pane_changes = match &self.pane {
             Pane::Video(v) => Some(cx.observe(v, |_, _, cx| cx.notify())),
@@ -361,6 +386,21 @@ impl Preview {
         cx.notify();
     }
 
+    /// The family of files whose strip mode i sets together.
+    fn family(&self) -> &'static str {
+        match &self.pane {
+            Pane::Video(_) | Pane::Audio(_) => "media",
+            Pane::Lines(_) => "text",
+            Pane::Pdf(_) | Pane::Slides(_) | Pane::Doc(_) => "pages",
+            Pane::Sheet(_) => "sheet",
+            Pane::Archive(_) => "archive",
+            Pane::None => match self.loaded.body {
+                Body::Image(_) | Body::Still(_) => "picture",
+                _ => "card",
+            },
+        }
+    }
+
     fn ready(&self, cx: &App) -> bool {
         match &self.pane {
             Pane::Video(video) => video.read(cx).ready(),
@@ -414,8 +454,13 @@ impl Preview {
         self.act(act, window, cx);
         if pending {
             // What is typed stays in the strip until the command is done.
-            self.hide = None;
-            self.set_strip(true, cx);
+            match self.strip.mode {
+                StripMode::Off => cx.notify(),
+                _ => {
+                    self.hide = None;
+                    self.set_strip(true, cx);
+                }
+            }
         } else if self.strip.shown && self.hide.is_none() {
             self.linger_strip(window, cx);
         }
@@ -438,6 +483,7 @@ impl Preview {
                 }
             }
             Act::Overview => self.cycle_overview(window, cx),
+            Act::Strip => self.cycle_strip(window, cx),
             Act::SelectAll => {
                 if let Pane::Lines(t) = &self.pane {
                     t.update(cx, |t, cx| t.select_all(cx));
@@ -460,7 +506,7 @@ impl Preview {
             }
             Act::Pause => {
                 self.toggle_pause(cx);
-                self.note(None, window, cx);
+                self.note_playing(window, cx);
             }
             Act::Mute => {
                 match &self.pane {
@@ -468,20 +514,20 @@ impl Preview {
                     Pane::Audio(a) => a.read(cx).toggle_mute(),
                     _ => {}
                 }
-                self.note(None, window, cx);
+                self.note_playing(window, cx);
             }
             Act::Seek {
                 forward,
                 by,
                 accurate,
-            } => match &self.pane {
-                Pane::Video(v) => v.update(cx, |v, cx| v.seek(forward, by, accurate, cx)),
-                Pane::Audio(a) => {
-                    a.read(cx).seek(forward, by, accurate);
-                    self.note(None, window, cx);
+            } => {
+                match &self.pane {
+                    Pane::Video(v) => v.update(cx, |v, cx| v.seek(forward, by, accurate, cx)),
+                    Pane::Audio(a) => a.update(cx, |a, _| a.seek(forward, by, accurate)),
+                    _ => return,
                 }
-                _ => {}
-            },
+                self.note_playing(window, cx);
+            }
             Act::Volume(louder) => {
                 let percent = match &self.pane {
                     Pane::Video(v) => v.read(cx).louder(louder),
@@ -593,6 +639,17 @@ impl Preview {
         self.was_fullscreen = fullscreen;
     }
 
+    /// i: the strip goes to its next mode, kept for files of the family.
+    fn cycle_strip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mode = self.strip.mode.next();
+        self.strip.mode = mode;
+        mode.save(self.family());
+        self.hide = None;
+        self.strip.shown = mode == StripMode::Auto;
+        self.strip.epoch += 1;
+        self.note(Some(mode.describe().into()), window, cx);
+    }
+
     fn toggle_pause(&self, cx: &App) {
         match &self.pane {
             Pane::Video(v) => v.read(cx).toggle_pause(),
@@ -602,6 +659,9 @@ impl Preview {
     }
 
     fn pointer_moved(&mut self, _: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.strip.mode != StripMode::Auto {
+            return;
+        }
         if !self.strip.shown {
             // A note faded out with the strip; it is not shown again.
             self.strip.note = None;
@@ -610,20 +670,89 @@ impl Preview {
         self.linger_strip(window, cx);
     }
 
-    /// Shows the strip for a moment, with `note` at its right.
+    /// Shows `note` at the strip's right for a moment, and the strip with
+    /// it; while the strip is off, the note alone.
     fn note(&mut self, note: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        self.strip.note = note;
-        self.set_strip(true, cx);
-        self.linger_strip(window, cx);
+        match self.strip.mode {
+            StripMode::Off => self.notice(note, window, cx),
+            StripMode::Auto | StripMode::On => {
+                self.strip.note = note;
+                self.set_strip(true, cx);
+                self.linger_strip(window, cx);
+            }
+        }
     }
 
-    /// Hides the strip 1.5 s from now, unless a vim command is unfinished.
-    fn linger_strip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.hide = Some(cx.spawn_in(window, async move |this, cx| {
-            cx.background_executor().timer(STRIP_LINGER).await;
+    /// A seek, a pause or the mute: the playbar shows them, or while the
+    /// strip is off, a word with the time does.
+    fn note_playing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let word = (self.strip.mode == StripMode::Off).then(|| {
+            let (position, duration, flags): (_, _, Vec<&str>) = match &self.pane {
+                Pane::Video(v) => {
+                    let v = v.read(cx);
+                    (v.position(), v.duration(), v.flags().collect())
+                }
+                Pane::Audio(a) => {
+                    let a = a.read(cx);
+                    (a.position(), a.duration(), a.flags().collect())
+                }
+                _ => return String::new(),
+            };
+            let mut word = format::duration(position);
+            if let Some(duration) = duration {
+                word = format!("{word} / {}", format::duration(duration));
+            }
+            for flag in flags {
+                word = format!("{word} · {flag}");
+            }
+            word
+        });
+        self.note(word, window, cx);
+    }
+
+    /// While the strip is off: `word` for a second over the bottom right.
+    fn notice(&mut self, word: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(word) = word.filter(|w| !w.is_empty()) else {
+            return;
+        };
+        self.strip.notice = Some(word);
+        if !self.strip.notice_shown {
+            self.strip.notice_shown = true;
+            self.strip.notice_epoch += 1;
+        }
+        self.strip.notice_timer = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(NOTICE).await;
             let _ = this.update(cx, |this, cx| {
-                if this.keys.pending().is_none() {
-                    this.set_strip(false, cx);
+                this.strip.notice_shown = false;
+                this.strip.notice_epoch += 1;
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    /// Hides the strip a moment from now, unless a vim command is
+    /// unfinished or the pointer is on the strip then; a strip that is
+    /// always shown only drops its note.
+    fn linger_strip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let linger = if self.pane.media() {
+            PLAYBAR_LINGER
+        } else {
+            STRIP_LINGER
+        };
+        self.hide = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(linger).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.keys.pending().is_some() || this.strip.hovered {
+                    return;
+                }
+                this.hide = None;
+                match this.strip.mode {
+                    StripMode::Auto => this.set_strip(false, cx),
+                    _ => {
+                        this.strip.note = None;
+                        cx.notify();
+                    }
                 }
             });
         }));
@@ -653,8 +782,9 @@ impl Preview {
         let facts = &self.loaded.facts;
         let mut parts = vec![facts.name.clone(), self.sizes()];
         match &self.pane {
-            Pane::Video(v) => parts.push(v.read(cx).status()),
-            Pane::Audio(a) => parts.push(a.read(cx).status()),
+            // The times are on the playbar.
+            Pane::Video(v) => parts.extend(v.read(cx).flags().map(str::to_owned)),
+            Pane::Audio(a) => parts.extend(a.read(cx).flags().map(str::to_owned)),
             Pane::Pdf(p) => {
                 let p = p.read(cx);
                 parts.push(format!("page {} of {}", p.current_page(), p.page_count()));
@@ -717,63 +847,208 @@ impl Preview {
         }
     }
 
-    fn strip(&self, theme: Theme, radius: Pixels, cx: &App) -> AnyElement {
-        let bar = matches!(&self.pane, Pane::Video(v) if v.read(cx).bar_shown());
-        // Above a workbook's sheet tabs, which are clicked where it would be,
-        // and with a note above the seek bar.
-        let lift = match &self.pane {
-            Pane::Sheet(s) if s.read(cx).has_tabs() => px(crate::grid::TABS),
-            Pane::Video(_) if bar => px(SEEK_BAR),
-            _ => px(0.),
+    /// The strip's veil over the bottom `band` of the window.
+    fn scrim(&mut self, band: f32, theme: Theme, window: &Window, cx: &mut App) -> Scrim {
+        let area = window.viewport_size();
+        let colours = match &self.pane {
+            Pane::Video(v) => return v.update(cx, |v, _| v.scrim(area, band)),
+            Pane::Audio(_) | Pane::Lines(_) | Pane::Sheet(_) | Pane::Archive(_) => {
+                vec![theme.surface, theme.text]
+            }
+            Pane::Doc(_) => vec![rgb(docview::PAPER).into(), rgb(docview::INK).into()],
+            // Pages are drawn white whatever their ink, between the
+            // window's own ground.
+            Pane::Pdf(_) | Pane::Slides(_) => {
+                vec![rgb(0xffffff).into(), rgb(0x000000).into(), theme.backdrop]
+            }
+            Pane::None => match (&self.loaded.body, &self.image) {
+                (Body::Image(_) | Body::Still(_), Some(image)) => {
+                    if let Some((id, size, scrim)) = self.strip.veil
+                        && id == image.id
+                        && size == area
+                    {
+                        return scrim;
+                    }
+                    let ground = strip::rgb_of(theme.backdrop);
+                    let under = strip::under_image(image, area, band, ground);
+                    let scrim = strip::follow(&under, None);
+                    self.strip.veil = Some((image.id, area, scrim));
+                    return scrim;
+                }
+                (Body::Image(_) | Body::Still(_), None) => vec![theme.backdrop],
+                _ => vec![theme.surface, theme.text],
+            },
         };
-        // What is typed of a vim command, or a word from a key.
+        strip::over_colours(&colours)
+    }
+
+    /// The strip over the bottom of the window, with a video's or a
+    /// sound's playbar; while it is off, only a notice from a key.
+    fn strip(
+        &mut self,
+        theme: Theme,
+        radius: Pixels,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let mode = self.strip.mode;
+        if mode == StripMode::Off {
+            return self.notice_element(theme, window, cx);
+        }
+        // Before the pointer has moved there is nothing to fade.
+        if mode == StripMode::Auto && self.strip.epoch == 0 {
+            return None;
+        }
+        let shown = mode == StripMode::On || self.strip.shown;
+        let media = self.pane.media();
+        let (fade, band) = if media {
+            (
+                strip::PLAYBAR_FADE,
+                strip::TRACK + strip::LINE + strip::BELOW,
+            )
+        } else {
+            (strip::FADE, strip::ROW)
+        };
+        let scrim = self.scrim(band, theme, window, cx);
+        let ink = strip::hsla(scrim.ink(), 1.);
         let aside = self
             .keys
             .pending()
             .or_else(|| self.strip.note.clone())
-            .or_else(|| self.scrub_label(cx));
+            .or_else(|| self.scrub_label(cx))
+            .map(|aside| div().flex_none().font_family("JetBrains Mono").child(aside));
+        let text = div()
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis_middle()
+            .child(self.strip_text(cx));
+        let playbar = match &self.pane {
+            Pane::Video(v) => Some(v.update(cx, |v, cx| media::playbar(v, shown, ink, cx))),
+            Pane::Audio(a) => Some(a.update(cx, |a, cx| media::playbar(a, shown, ink, cx))),
+            _ => None,
+        };
+        // Above a workbook's sheet tabs, which are clicked where it would be.
+        let lift = match &self.pane {
+            Pane::Sheet(s) if s.read(cx).has_tabs() => px(grid::TABS),
+            _ => px(0.),
+        };
+        let line = div()
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(16.))
+            .text_size(px(13.))
+            .text_color(ink);
         let strip = div()
+            .id("strip")
             .absolute()
             .left_0()
             .right_0()
             .bottom(lift)
-            .px(px(14.))
-            .py(px(7.))
+            .h(px(fade + band))
+            .bg(strip::background(scrim, fade / (fade + band)))
             .when(lift == px(0.), |strip| strip.rounded_b(radius))
-            .bg(theme.strip)
-            .text_color(theme.strip_text)
-            .text_size(px(13.))
             .flex()
-            .flex_row()
-            .gap(px(16.))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis_middle()
-                    .child(self.strip_text(cx)),
-            )
-            .children(aside.map(|aside| {
-                div()
-                    .flex_none()
-                    .font_family("JetBrains Mono")
-                    .text_color(progress())
-                    .child(aside)
+            .flex_col()
+            .justify_end()
+            .hover_listener_mode(HoverListenerMode::InputModalityIndependent)
+            .on_hover(cx.listener(|this, hovered: &bool, window, cx| {
+                this.strip.hovered = *hovered;
+                if !*hovered && this.strip.shown {
+                    this.linger_strip(window, cx);
+                }
             }));
-        let hidden = bar && self.strip.note.is_none() && self.keys.pending().is_none();
-        if self.strip.epoch == 0 || hidden {
-            return strip.opacity(0.).into_any_element();
+        let strip = match playbar {
+            Some(bar) => strip
+                .px(px(16.))
+                .pb(px(strip::BELOW))
+                // A shown playbar is a control: clicks on it do not reach
+                // the video. Occluding the video instead would also take
+                // the window's hover, which keeps the playbar.
+                .when(shown, |strip| {
+                    strip.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                })
+                .child(bar.track)
+                .child(
+                    line.h(px(strip::LINE))
+                        .child(
+                            div()
+                                .flex_none()
+                                .font_family("JetBrains Mono")
+                                .child(bar.times),
+                        )
+                        .child(text)
+                        .children(aside)
+                        .child(bar.volume),
+                ),
+            None => strip.child(
+                line.h(px(strip::ROW))
+                    .px(px(14.))
+                    .child(text)
+                    .children(aside),
+            ),
+        };
+        Some(if mode == StripMode::On {
+            strip.into_any_element()
+        } else {
+            strip
+                .with_animation(
+                    ("strip", self.strip.epoch),
+                    Animation::new(STRIP_FADE).with_easing(ease_in_out),
+                    move |strip, t| strip.opacity(if shown { t } else { 1. - t }),
+                )
+                .into_any_element()
+        })
+    }
+
+    /// A word from a key while the strip is off, on a veil of its own; what
+    /// is typed of a vim command and where the scrollbar has the view show
+    /// for as long as they last.
+    fn notice_element(
+        &mut self,
+        theme: Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let live = self.keys.pending().or_else(|| self.scrub_label(cx));
+        let shown = live.is_some() || self.strip.notice_shown;
+        let word = live.or_else(|| self.strip.notice.clone())?;
+        let scrim = self.scrim(strip::ROW, theme, window, cx);
+        let notice = div()
+            .absolute()
+            .right(px(14.))
+            .bottom(px(10.))
+            .px(px(10.))
+            .py(px(4.))
+            .rounded(px(6.))
+            .bg(strip::hsla(scrim.veil(), scrim.alpha))
+            .text_size(px(13.))
+            .font_family("JetBrains Mono")
+            .text_color(strip::hsla(scrim.ink(), 1.))
+            .child(word);
+        Some(
+            notice
+                .with_animation(
+                    ("notice", self.strip.notice_epoch),
+                    Animation::new(STRIP_FADE).with_easing(ease_in_out),
+                    move |notice, t| notice.opacity(if shown { t } else { 1. - t }),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// What the window shows behind the content.
+    fn ground(&self, theme: Theme) -> Hsla {
+        match (&self.pane, &self.loaded.body) {
+            (Pane::Video(_), _) => rgb(0x000000).into(),
+            (Pane::Pdf(_) | Pane::Slides(_), _) | (Pane::None, Body::Image(_) | Body::Still(_)) => {
+                theme.backdrop
+            }
+            _ => theme.surface,
         }
-        let shown = self.strip.shown;
-        strip
-            .with_animation(
-                ("strip", self.strip.epoch),
-                Animation::new(STRIP_FADE).with_easing(ease_in_out),
-                move |strip, t| strip.opacity(if shown { t } else { 1. - t }),
-            )
-            .into_any_element()
     }
 
     fn card(&self, theme: Theme) -> Div {
@@ -883,16 +1158,7 @@ impl Render for Preview {
         }
         let engaged = self.engaged(window, cx);
         let body = match (&self.loaded.body, &self.image) {
-            _ if let Some(pane) = self.pane.view() => div()
-                .id("content")
-                .size_full()
-                .rounded(radius)
-                .overflow_hidden()
-                .when(self.pane.kind().engages(), |body| {
-                    body.track_focus(&self.content)
-                })
-                .child(pane)
-                .into_any_element(),
+            _ if let Some(pane) = self.pane.view() => pane.into_any_element(),
             (Body::Image(_) | Body::Still(_), Some(image)) => {
                 img(ImageSource::Render(image.clone()))
                     .size_full()
@@ -903,41 +1169,14 @@ impl Render for Preview {
             (Body::Image(_), None) => div().size_full().into_any_element(),
             _ => self.card(theme).rounded(radius).into_any_element(),
         };
-        let backdrop = match (&self.pane, &self.loaded.body) {
-            (Pane::Video(_), _) => rgb(0x000000).into(),
-            (Pane::None, Body::Image(_) | Body::Still(_)) => theme.backdrop,
-            _ => theme.surface,
-        };
-        // Engaged content wears a thin warm ring, inside the window's edge.
-        let ring = engaged.then(|| {
-            div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full()
-                .rounded(radius)
-                .border_2()
-                .border_color(progress().opacity(0.55))
-        });
-        div()
-            .id("preview")
-            .track_focus(&self.focus)
+        let content = div()
+            .id("content")
             .size_full()
-            .relative()
-            .font_family("Noto Sans")
-            .bg(backdrop)
             .rounded(radius)
-            .on_key_down(cx.listener(Self::key))
-            .on_mouse_move(cx.listener(Self::pointer_moved))
-            // Where the pointer is, not whether a key came last: by default
-            // a key ends the hover, and the strip it showed would go with it.
-            .hover_listener_mode(HoverListenerMode::InputModalityIndependent)
-            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                if !hovered {
-                    this.hide = None;
-                    this.set_strip(false, cx);
-                }
-            }))
+            .overflow_hidden()
+            .when(self.pane.kind().engages(), |content| {
+                content.track_focus(&self.content)
+            })
             .capture_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, window, cx| {
                 this.engaged_at_press = this.engaged(window, cx);
             }))
@@ -947,9 +1186,41 @@ impl Render for Preview {
                     this.toggle_pause(cx);
                 }
             }))
-            .child(body)
+            .child(body);
+        let strip = self.strip(theme, radius, window, cx);
+        // Engaged content wears a thin warm ring, inside the window's edge.
+        let ring = engaged.then(|| {
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .rounded(radius)
+                .border_2()
+                .border_color(crate::theme::progress().opacity(0.55))
+        });
+        div()
+            .id("preview")
+            .track_focus(&self.focus)
+            .size_full()
+            .relative()
+            .font_family("Noto Sans")
+            .bg(self.ground(theme))
+            .rounded(radius)
+            .on_key_down(cx.listener(Self::key))
+            .on_mouse_move(cx.listener(Self::pointer_moved))
+            // Where the pointer is, not whether a key came last: by default
+            // a key ends the hover, and the strip it showed would go with it.
+            .hover_listener_mode(HoverListenerMode::InputModalityIndependent)
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !hovered && this.strip.mode == StripMode::Auto {
+                    this.hide = None;
+                    this.set_strip(false, cx);
+                }
+            }))
+            .child(content)
+            .children(strip)
             .children(ring)
-            .child(self.strip(theme, radius, cx))
     }
 }
 
