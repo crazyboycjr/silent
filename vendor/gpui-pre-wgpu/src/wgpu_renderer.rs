@@ -325,6 +325,7 @@ impl WgpuRenderer {
                 .create_surface_unsafe(target)
                 .map_err(|e| anyhow::anyhow!("Failed to create surface: {e}"))?
         };
+        log::info!(target: "silent::trace", "surface");
 
         let mut ctx_ref = gpu_context.borrow_mut();
         let context = match ctx_ref.as_mut() {
@@ -380,6 +381,7 @@ impl WgpuRenderer {
         atlas: Arc<WgpuAtlas>,
     ) -> anyhow::Result<Self> {
         let surface_caps = surface.get_capabilities(&context.adapter);
+        log::info!(target: "silent::trace", "surface formats");
         let preferred_formats = [
             wgpu::TextureFormat::Bgra8Unorm,
             wgpu::TextureFormat::Rgba8Unorm,
@@ -460,8 +462,18 @@ impl WgpuRenderer {
         // Configure the surface immediately. The adapter selection process already validated
         // that this adapter can successfully configure this surface.
         surface.configure(&context.device, &surface_config);
+        log::info!(
+            target: "silent::trace",
+            "configure {}x{} {:?} {:?} of {:?}",
+            surface_config.width,
+            surface_config.height,
+            surface_config.present_mode,
+            alpha_mode,
+            surface_caps.alpha_modes
+        );
 
         let core = WgpuRendererCore::new(context, atlas.clone(), surface_format, alpha_mode);
+        log::info!(target: "silent::trace", "renderer core");
 
         Ok(Self {
             context: gpu_context,
@@ -704,6 +716,7 @@ impl WgpuRendererCore {
         } else {
             None
         };
+        log::info!(target: "silent::trace", "shader modules");
 
         let blend_mode = match alpha_mode {
             wgpu::CompositeAlphaMode::PreMultiplied => {
@@ -929,6 +942,7 @@ impl WgpuRendererCore {
             1,
             &shader_module,
         );
+        log::info!(target: "silent::trace", "pipelines");
 
         WgpuPipelines {
             quads,
@@ -1047,6 +1061,7 @@ impl WgpuRenderer {
 
         if let RendererState::Ready { surface, core } = &self.state {
             surface.configure(&core.resources.device, &self.surface_config);
+            log::info!(target: "silent::trace", "reconfigure for {width}x{height}");
         }
     }
 
@@ -1073,6 +1088,7 @@ impl WgpuRenderer {
             return;
         };
         let resources = &mut core.resources;
+        log::info!(target: "silent::trace", "transparency changes the alpha mode");
         resources.pipelines = WgpuRendererCore::create_pipelines(
             &resources.device,
             &resources.bind_group_layouts,
@@ -1085,6 +1101,7 @@ impl WgpuRenderer {
 
         if let RendererState::Ready { surface, core } = &self.state {
             surface.configure(&core.resources.device, &self.surface_config);
+            log::info!(target: "silent::trace", "reconfigure for transparency");
         }
     }
 
@@ -1164,7 +1181,23 @@ impl WgpuRenderer {
             self.failed_frame_count = 0;
         }
 
-        let frame = match surface.get_current_texture() {
+        // silent: the first frame's steps are marked.
+        static PRESENTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let first = !PRESENTED.load(std::sync::atomic::Ordering::Relaxed);
+        let acquired = surface.get_current_texture();
+        if first {
+            let outcome = match &acquired {
+                wgpu::CurrentSurfaceTexture::Success(_) => "acquire",
+                wgpu::CurrentSurfaceTexture::Suboptimal(_) => "acquire: suboptimal",
+                wgpu::CurrentSurfaceTexture::Lost => "acquire: lost",
+                wgpu::CurrentSurfaceTexture::Outdated => "acquire: outdated",
+                wgpu::CurrentSurfaceTexture::Timeout => "acquire: timeout",
+                wgpu::CurrentSurfaceTexture::Occluded => "acquire: occluded",
+                wgpu::CurrentSurfaceTexture::Validation => "acquire: validation error",
+            };
+            log::info!(target: "silent::trace", "{outcome}");
+        }
+        let frame = match acquired {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
                 // Textures must be destroyed before the surface can be reconfigured.
@@ -1206,8 +1239,15 @@ impl WgpuRenderer {
             log::error!("{error:#}");
             return false;
         }
+        if first {
+            log::info!(target: "silent::trace", "encoded");
+        }
 
         frame.present();
+        if first {
+            PRESENTED.store(true, std::sync::atomic::Ordering::Relaxed);
+            log::info!(target: "silent::trace", "presented");
+        }
         true
     }
 }

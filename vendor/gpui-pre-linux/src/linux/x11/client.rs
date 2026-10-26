@@ -379,6 +379,7 @@ impl X11Connection {
             .context("DISPLAY is not valid UTF-8")?;
         let display_name =
             std::ffi::CString::new(display).context("X display name contains a NUL byte")?;
+        log::info!(target: "silent::trace", "x11 connect");
         let (xcb_connection, x_root_index) = XCBConnection::connect(Some(&display_name))
             .with_context(|| format!("failed to connect to X server {display:?}"))?;
         xcb_connection.prefetch_extension_information(xkb::X11_EXTENSION_NAME)?;
@@ -560,6 +561,7 @@ impl X11Connection {
         connection.register_sources(&handle, background_executor)?;
         let xcb_connection = connection.0.0.borrow().xcb_connection.clone();
         xcb_flush(&xcb_connection);
+        log::info!(target: "silent::trace", "x11 client");
         Ok(connection)
     }
 }
@@ -891,6 +893,9 @@ impl X11Client {
             Event::MapNotify(event) => {
                 let mut state = self.0.borrow_mut();
                 if let Some(window_ref) = state.windows.get_mut(&event.window) {
+                    if !window_ref.is_mapped {
+                        log::info!(target: "silent::trace", "mapped");
+                    }
                     window_ref.is_mapped = true;
                 }
                 handle_visibility_changed(state, event.window);

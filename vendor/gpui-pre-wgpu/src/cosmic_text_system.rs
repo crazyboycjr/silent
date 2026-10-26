@@ -130,6 +130,11 @@ impl CosmicTextSystem {
 
     pub fn new(system_font_fallback: &str) -> Self {
         let font_system = FontSystem::new();
+        log::info!(
+            target: "silent::trace",
+            "{} font faces",
+            font_system.db().faces().count()
+        );
 
         Self(RwLock::new(CosmicTextSystemState {
             font_system,

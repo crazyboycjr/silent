@@ -102,6 +102,7 @@ pub fn run(bus: Option<Bus>, requests: async_channel::Receiver<Request>, first: 
             controller.request(request, None);
         }
     }
+    trace::mark("toolkit starts");
     // The controller leaves on its own terms: after a delayed Rename, and
     // after the calls that were on their way when the name was given up.
     let app = gpui_kit::application()
@@ -109,6 +110,7 @@ pub fn run(bus: Option<Bus>, requests: async_channel::Receiver<Request>, first: 
         .with_assets(Icons);
     trace::mark("toolkit");
     app.run(move |cx| {
+        trace::mark("app runs");
         let forward = input.clone();
         cx.spawn(async move |_| {
             while let Ok(request) = requests.recv().await {
@@ -238,6 +240,7 @@ impl Controller {
             .name("load".into())
             .spawn(move || {
                 let loaded = content::load(&uri, screen, wait_for_pixels);
+                trace::mark("content ready");
                 let _ = input.send_blocking(Input::Loaded(generation, Box::new(loaded)));
             })
             .expect("spawning the loader");
@@ -291,6 +294,7 @@ impl Controller {
             ..Default::default()
         };
         let (screen, rounded, input) = (self.screen, self.rounded, self.input.clone());
+        trace::mark("window opens");
         let opened = cx.update(|cx| {
             cx.open_window(options, |window, cx| {
                 cx.new(|cx| Preview::new(loaded, screen, rounded, input, window, cx))

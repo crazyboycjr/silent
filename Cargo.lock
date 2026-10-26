@@ -6963,6 +6963,7 @@ dependencies = [
  "image",
  "kurbo 0.13.1",
  "lofty",
+ "log",
  "memmap2",
  "raw-window-handle",
  "ropey",

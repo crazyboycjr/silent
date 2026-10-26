@@ -560,6 +560,7 @@ impl X11WindowState {
                 &win_aux,
             ),
         )?;
+        log::info!(target: "silent::trace", "x11 window");
 
         // Collect errors during setup, so that window can be destroyed on failure.
         let setup_result = maybe!({
@@ -755,6 +756,7 @@ impl X11WindowState {
             )?;
 
             xcb_flush(xcb);
+            log::info!(target: "silent::trace", "x11 window set up");
 
             let mut renderer = {
                 let raw_window = RawWindow {
@@ -778,6 +780,7 @@ impl X11WindowState {
                 };
                 WgpuRenderer::new(gpu_context, &raw_window, config, compositor_gpu)?
             };
+            log::info!(target: "silent::trace", "renderer");
 
             renderer.set_subpixel_layout(is_bgr);
 
@@ -1184,6 +1187,9 @@ impl X11WindowStatePtr {
     pub fn refresh(&self, mut request_frame_options: RequestFrameOptions) {
         let callback = self.callbacks.borrow_mut().request_frame.take();
         if let Some(mut fun) = callback {
+            // silent: the first frame request is marked.
+            static REQUESTED: std::sync::Once = std::sync::Once::new();
+            REQUESTED.call_once(|| log::info!(target: "silent::trace", "frame requested"));
             // Expose events can present a frame before the refresh timer runs,
             // so every frame request must rebuild stale atlas references after recovery.
             request_frame_options.force_render |=
@@ -1615,6 +1621,7 @@ impl PlatformWindow for X11Window {
     }
 
     fn map_window(&mut self) -> anyhow::Result<()> {
+        log::info!(target: "silent::trace", "map");
         check_reply(
             || "X11 MapWindow failed.",
             self.0.xcb.map_window(self.0.x_window),

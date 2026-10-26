@@ -470,17 +470,20 @@ impl WgpuContext {
 
     #[cfg(not(target_family = "wasm"))]
     pub fn instance(display: Option<Box<dyn wgpu::wgt::WgpuHasDisplayHandle>>) -> wgpu::Instance {
-        wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
             flags: wgpu::InstanceFlags::default(),
             backend_options: wgpu::BackendOptions::default(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
             display,
-        })
+        });
+        log::info!(target: "silent::trace", "wgpu instance");
+        instance
     }
 
     pub fn check_compatible_with_surface(&self, surface: &wgpu::Surface<'_>) -> anyhow::Result<()> {
         let caps = surface.get_capabilities(&self.adapter);
+        log::info!(target: "silent::trace", "surface capabilities");
         if caps.formats.is_empty() {
             let info = self.adapter.get_info();
             anyhow::bail!(
@@ -514,6 +517,7 @@ impl WgpuContext {
         TextureFormat,
     )> {
         let mut adapters: Vec<_> = instance.enumerate_adapters(wgpu::Backends::all()).await;
+        log::info!(target: "silent::trace", "{} adapters", adapters.len());
 
         if adapters.is_empty() {
             anyhow::bail!("No GPU adapters found");
@@ -653,6 +657,12 @@ impl WgpuContext {
 
         let (device, queue, dual_source_blending, color_atlas_texture_format) =
             Self::create_device(adapter).await?;
+        log::info!(
+            target: "silent::trace",
+            "device on {} ({:?})",
+            adapter.get_info().name,
+            adapter.get_info().backend
+        );
         let error_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
 
         let test_config = wgpu::SurfaceConfiguration {
@@ -672,6 +682,7 @@ impl WgpuContext {
         if let Some(e) = error {
             anyhow::bail!("surface configuration failed: {e}");
         }
+        log::info!(target: "silent::trace", "test configure");
 
         Ok((
             device,

@@ -262,6 +262,7 @@ impl Preview {
             _bounds: bounds,
         };
         preview.attach(window, cx);
+        trace::mark("preview built");
         preview
     }
 
