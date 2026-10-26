@@ -13,4 +13,5 @@ pub mod pretty;
 pub mod scrim;
 pub mod unpack;
 pub mod vim;
+pub mod wrap;
 pub mod x11;
