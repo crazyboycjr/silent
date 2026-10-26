@@ -86,8 +86,6 @@ pub struct Deck {
     pub deck: office::pptx::Deck,
     /// The slide shown first, by its index, read before the window opens.
     pub first: Option<(usize, Slide)>,
-    /// The slides' width in the window, in root-window pixels.
-    pub width: u32,
 }
 
 /// A slide with its pictures decoded.
@@ -134,8 +132,6 @@ pub struct Pdf {
     pub pages: Vec<(f32, f32)>,
     /// The page shown first, by its index, rendered at the pages' width.
     pub first: Option<(usize, Arc<RenderImage>)>,
-    /// The pages' width in the window, in root-window pixels.
-    pub width: f32,
 }
 
 pub struct Text {
@@ -490,13 +486,12 @@ fn document(
                 Some(View::Pages { page, .. }) => (*page).min(deck.slides.len().saturating_sub(1)),
                 _ => 0,
             };
-            let width = slide.0 as u32;
-            let first = render_slide(path, &deck, index, width).map(|slide| (index, slide));
+            let first =
+                render_slide(path, &deck, index, slide.0 as u32).map(|slide| (index, slide));
             let deck = Deck {
                 path: path.to_owned(),
                 deck,
                 first,
-                width,
             };
             Some((screen.window(slide, column), Body::Deck(Box::new(deck))))
         }
@@ -548,8 +543,7 @@ fn pdf(path: &Path, screen: Screen, page: usize) -> Option<((i32, i32), Pdf)> {
     let column = rail_column(pages.len());
     let shown = screen.fit_page((width as f64, height as f64), column);
     let page = page.min(pages.len() - 1);
-    let width = shown.0 as f32;
-    let first = gpui_pdf::render_page(&document, page, width / pages[page].0)
+    let first = gpui_pdf::render_page(&document, page, shown.0 as f32 / pages[page].0)
         .ok()
         .map(|image| (page, image));
     Some((
@@ -558,7 +552,6 @@ fn pdf(path: &Path, screen: Screen, page: usize) -> Option<((i32, i32), Pdf)> {
             document,
             pages,
             first,
-            width,
         },
     ))
 }

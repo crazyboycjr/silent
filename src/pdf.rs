@@ -60,13 +60,15 @@ impl PdfPane {
         if let Some((page, image)) = pdf.first {
             rendered.insert(page, image);
         }
+        let pages = Pages::new(pdf.pages);
+        let (_, viewport) = pages.fit_rail(layout::above_row(window), mode);
         Self {
             document: pdf.document,
-            pages: Pages::new(pdf.pages),
+            pages,
             rendered,
             pending: HashSet::new(),
-            width: pdf.width,
-            viewport: layout::above_row(window),
+            width: f32::from(viewport.width) * window.scale_factor(),
+            viewport,
             texts: HashMap::new(),
             selecting: None,
             overview: Overview::new(mode),

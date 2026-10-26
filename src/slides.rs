@@ -53,15 +53,16 @@ impl SlidesPane {
         if let Some((index, first)) = deck.first {
             shown.insert(index, Rc::new(first));
         }
-        let sizes = vec![deck.deck.size; deck.deck.slides.len()];
+        let pages = Pages::new(vec![deck.deck.size; deck.deck.slides.len()]);
+        let (_, viewport) = pages.fit_rail(layout::above_row(window), mode);
         Self {
             path: deck.path,
             deck: Arc::new(deck.deck),
-            pages: Pages::new(sizes),
+            pages,
             shown,
             pending: HashSet::new(),
-            width: deck.width,
-            viewport: layout::above_row(window),
+            width: (f32::from(viewport.width) * window.scale_factor()).round() as u32,
+            viewport,
             overview: Overview::new(mode),
             thumbs: HashMap::new(),
             thumbs_pending: HashSet::new(),
