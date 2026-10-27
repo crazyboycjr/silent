@@ -14,7 +14,7 @@ use std::time::Duration;
 use futures_lite::FutureExt;
 use gpui_kit::*;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use silent::dbus::{Ask, Bus, Direction, Request};
+use silent::dbus::{Ask, Bus, Direction, Manager, Request};
 use silent::detect::Kind;
 use silent::extract::{self, Places};
 use silent::geometry::{self, Rect, Screen};
@@ -58,8 +58,20 @@ pub enum Intent {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Owner {
     Nautilus,
+    /// Nemo's, through nemo-preview's interface: it takes the keyboard as
+    /// Nautilus's does, and Nemo hears nothing back.
+    Nemo,
     /// A client's, for this process.
     Process(u32),
+}
+
+impl From<Manager> for Owner {
+    fn from(manager: Manager) -> Self {
+        match manager {
+            Manager::Nautilus => Owner::Nautilus,
+            Manager::Nemo => Owner::Nemo,
+        }
+    }
 }
 
 /// How long a released name waits for calls that were already on their way.
@@ -315,19 +327,21 @@ impl Controller {
                 window_handle,
                 close_if_shown,
                 activation_token,
+                from,
             } => {
                 trace::mark("request");
+                let owner = Owner::from(from);
                 if self
                     .shown
                     .as_ref()
-                    .is_some_and(|shown| shown.uri == uri && shown.owner == Owner::Nautilus)
+                    .is_some_and(|shown| shown.uri == uri && shown.owner == owner)
                 {
                     if close_if_shown && let Some(cx) = cx {
                         self.close(cx);
                     }
                     return;
                 }
-                self.show(uri, window_handle, activation_token, Owner::Nautilus, true);
+                self.show(uri, window_handle, activation_token, owner, true);
             }
             Request::Ask {
                 ask,
@@ -360,9 +374,9 @@ impl Controller {
                 };
                 let _ = answer.try_send(shown);
             }
-            // Nautilus's own preview, not a client's.
-            Request::Close => {
-                if self.owned_by(Owner::Nautilus)
+            // The file manager's own preview, not another's.
+            Request::Close(from) => {
+                if self.owned_by(Owner::from(from))
                     && let Some(cx) = cx
                 {
                     self.close(cx);
@@ -429,12 +443,12 @@ impl Controller {
         self.load(uri);
     }
 
-    /// The window the preview of `shown` is transient for: Nautilus's, or
-    /// the terminal a client gave, if it is there.
+    /// The window the preview of `shown` is transient for: the file
+    /// manager's, or the terminal a client gave, if it is there.
     fn parent(&self, shown: &Shown) -> Option<u32> {
         let parent = x11::parse_handle(&shown.window_handle)?;
         match shown.owner {
-            Owner::Nautilus => Some(parent),
+            Owner::Nautilus | Owner::Nemo => Some(parent),
             Owner::Process(_) => self.x11.as_ref()?.exists(parent).then_some(parent),
         }
     }

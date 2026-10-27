@@ -215,6 +215,7 @@ fn standalone(path: &str) -> ExitCode {
         window_handle: "x11:0".into(),
         close_if_shown: false,
         activation_token: String::new(),
+        from: silent::dbus::Manager::Nautilus,
     };
     app::run(None, requests, vec![show]);
     ExitCode::SUCCESS

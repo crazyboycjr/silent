@@ -23,16 +23,28 @@ pub const PATH: &str = "/org/gnome/NautilusPreviewer";
 /// silent's own interface, on the same object: calling it through the
 /// previewer's name starts silent the way Nautilus's calls do.
 pub const CLIENT: &str = "host.cjr.Silent1";
+/// Nemo's previewer, nemo-preview's name, which silent answers as well.
+pub const NEMO: &str = "org.nemo.Preview";
+pub const NEMO_PATH: &str = "/org/nemo/Preview";
+
+/// The file manager that calls a previewer interface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Manager {
+    Nautilus,
+    /// Nemo, which hears nothing back: no selection moves, no renames.
+    Nemo,
+}
 
 #[derive(Clone, Debug)]
 pub enum Request {
-    /// Nautilus's ShowFile.
+    /// Nautilus's or Nemo's ShowFile.
     Show {
         uri: String,
-        /// `x11:<hex xid>` of the Nautilus window, or `x11:0`.
+        /// `x11:<hex xid>` of the file manager's window, or `x11:0`.
         window_handle: String,
         close_if_shown: bool,
         activation_token: String,
+        from: Manager,
     },
     /// A client's call, about the preview of process `owner`; `answer` is
     /// told whether that preview is shown once the call is done.
@@ -46,8 +58,8 @@ pub enum Request {
         focus: bool,
         answer: async_channel::Sender<bool>,
     },
-    /// Nautilus's Close.
-    Close,
+    /// Nautilus's or Nemo's Close.
+    Close(Manager),
     /// How many of the previewer's callers are still on the bus.
     Callers(usize),
     /// How many processes client previews are for are still running.
@@ -132,11 +144,12 @@ impl Previewer {
             window_handle,
             close_if_shown: close_if_already_shown,
             activation_token,
+            from: Manager::Nautilus,
         });
     }
 
     fn close(&self) {
-        let _ = self.requests.try_send(Request::Close);
+        let _ = self.requests.try_send(Request::Close(Manager::Nautilus));
     }
 
     #[zbus(property)]
@@ -160,6 +173,29 @@ impl Previewer {
 
     #[zbus(signal)]
     async fn trash(emitter: &SignalEmitter<'_>, uri: &str) -> zbus::Result<()>;
+}
+
+/// What nemo-preview serves Nemo: the first previewer interface sushi had,
+/// ShowFile with the window as a number.
+struct Nemo {
+    requests: async_channel::Sender<Request>,
+}
+
+#[zbus::interface(name = "org.nemo.Preview")]
+impl Nemo {
+    fn show_file(&self, uri: String, xid: i32, close_if_already_visible: bool) {
+        let _ = self.requests.try_send(Request::Show {
+            uri,
+            window_handle: format!("x11:{:x}", xid as u32),
+            close_if_shown: close_if_already_visible,
+            activation_token: String::new(),
+            from: Manager::Nemo,
+        });
+    }
+
+    fn close(&self) {
+        let _ = self.requests.try_send(Request::Close(Manager::Nemo));
+    }
 }
 
 struct Client {
@@ -364,12 +400,18 @@ impl Bus {
             requests: requests.clone(),
             owners: Arc::default(),
         };
+        let nemo = Nemo {
+            requests: requests.clone(),
+        };
         let conn = zbus::blocking::connection::Builder::session()?
             .serve_at(PATH, previewer)?
             .serve_at(PATH, client)?
+            .serve_at(NEMO_PATH, nemo)?
             .build()?;
         watch_callers(&conn, requests)?;
         conn.request_name(NAME)?;
+        // nemo-preview may hold it; Nemo is not silent's to insist on.
+        let _ = conn.request_name(NEMO);
         Ok(Self { conn })
     }
 
@@ -431,12 +473,14 @@ impl Bus {
     /// Gives up the name before the process exits, so that the next call
     /// activates a fresh process instead of reaching this one.
     pub fn release(&self) -> zbus::Result<()> {
+        let _ = self.conn.release_name(NEMO);
         self.conn.release_name(NAME)?;
         Ok(())
     }
 
     /// Takes the name back when a call slipped in while it was being released.
     pub fn reclaim(&self) -> zbus::Result<()> {
+        let _ = self.conn.request_name(NEMO);
         self.conn.request_name(NAME)
     }
 }
