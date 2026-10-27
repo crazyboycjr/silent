@@ -39,5 +39,15 @@ vendor` shows every change; in the code, `silent:` comments mark them.
   its last frame at its top left (north-west bit gravity) until the next is
   drawn.
 
+- **Mailbox under a compositor** (`x11/window.rs`): a window's frames
+  present with mailbox when a compositor owns the screen's
+  `_NET_WM_CM_S<n>` selection as the window is made, else FIFO. A FIFO
+  present pending into a composited window makes NVIDIA's X driver wait
+  for a vertical blank inside the compositor's GLX calls for every window
+  resized meanwhile (6.6 ms a resize at 240 Hz, 14 ms at 60, against 0.9
+  with mailbox), and blocks while the monitor's blanks stop. gpui's X11
+  frames are paced by a timer at the monitor's refresh rate, not by the
+  present, so mailbox draws no more frames than FIFO.
+
 To take a newer gpui, copy its crates over these, drop their `Cargo.lock`
 and benchmarks, and carry the changes over.

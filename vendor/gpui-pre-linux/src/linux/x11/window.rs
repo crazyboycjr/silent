@@ -98,6 +98,17 @@ fn query_render_extent(
     })
 }
 
+/// silent: whether a compositor owns the screen's `_NET_WM_CM_S<n>` selection.
+fn compositing(xcb: &Rc<XCBConnection>, screen_index: usize) -> bool {
+    let name = format!("_NET_WM_CM_S{screen_index}");
+    xcb.intern_atom(false, name.as_bytes())
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+        .and_then(|reply| xcb.get_selection_owner(reply.atom).ok())
+        .and_then(|cookie| cookie.reply().ok())
+        .is_some_and(|reply| reply.owner != x11rb::NONE)
+}
+
 fn resize_edge_to_moveresize(edge: ResizeEdge) -> u32 {
     match edge {
         ResizeEdge::TopLeft => 0,
@@ -784,7 +795,14 @@ impl X11WindowState {
                     // If the window appearance changes, then the renderer will get updated
                     // too
                     transparent: false,
-                    preferred_present_mode: None,
+                    // silent: under a compositor, mailbox. A FIFO present pending into a
+                    // composited window makes NVIDIA's X driver wait for a vertical blank inside
+                    // the compositor's GLX calls for every window resized meanwhile, 6.6 ms a
+                    // resize at 240 Hz and 14 ms at 60, and blocks outright while the monitor's
+                    // blanks stop. Frames are paced by the refresh timer, not by presenting, so
+                    // mailbox draws no more of them. Without a compositor, FIFO.
+                    preferred_present_mode: compositing(xcb, x_screen_index)
+                        .then_some(gpui_wgpu::wgpu::PresentMode::Mailbox),
                 };
                 WgpuRenderer::new(gpu_context, &raw_window, config, compositor_gpu)?
             };
