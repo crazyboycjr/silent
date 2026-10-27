@@ -11,6 +11,18 @@ local function hovered()
 	return h and tostring(h.path) or nil
 end
 
+-- silent from PATH, else where an install of a user's own puts it.
+local function run(state, args)
+	local bins = state.bin and { state.bin } or { "silent", os.getenv("HOME") .. "/.local/bin/silent" }
+	for _, bin in ipairs(bins) do
+		local out = Command(bin):arg(args):stdout(Command.PIPED):stderr(Command.NULL):output()
+		if out then
+			state.bin = bin
+			return out
+		end
+	end
+end
+
 -- Runs `silent VERB [FILE]` one at a time; while one runs, the newest file
 -- to follow replaces any older one still waiting. silent says whether the
 -- preview is open, which also catches it being closed with Esc there.
@@ -29,8 +41,7 @@ local function ask(state, verb, file)
 	state.busy = true
 	ya.async(function()
 		while #state.queue > 0 do
-			local args = table.remove(state.queue, 1)
-			local out = Command("silent"):arg(args):stdout(Command.PIPED):stderr(Command.NULL):output()
+			local out = run(state, table.remove(state.queue, 1))
 			state.open = out ~= nil and out.status.success and out.stdout:find("shown", 1, true) ~= nil
 		end
 		state.busy = false
@@ -44,8 +55,10 @@ local toggle = ya.sync(function(state)
 	end
 end)
 
-function M:setup()
+-- opts.bin: the silent to run, if neither PATH nor ~/.local/bin has it.
+function M:setup(opts)
 	local state = self
+	state.bin = opts and opts.bin
 	ask(state, "warm")
 	-- yazi says hover more than once for the same file.
 	ps.sub("hover", function()
