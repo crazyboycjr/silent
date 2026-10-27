@@ -97,6 +97,8 @@ pub struct Preview {
     opening: Option<Opening>,
     /// The file shown rendered or as its source, on its way after `s`.
     switching: Option<Task<()>>,
+    /// The card of keys over the content.
+    help: bool,
     _archive: Option<Subscription>,
     _appearance: Subscription,
     _activation: Subscription,
@@ -284,6 +286,7 @@ impl Preview {
             inside: None,
             opening: None,
             switching: None,
+            help: false,
             _archive: None,
             _appearance: appearance,
             _activation: activation,
@@ -317,6 +320,7 @@ impl Preview {
         self.strip = Strip::default();
         self.hide = None;
         self.was_fullscreen = false;
+        self.help = false;
         self.show(loaded, window, cx);
     }
 
@@ -564,6 +568,13 @@ impl Preview {
         if m.alt || m.platform || m.function {
             return;
         }
+        // Esc takes the help away first, as it drops a half-typed command.
+        if self.help && keystroke.key == "escape" {
+            self.help = false;
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         // Space stops an entry being taken out, and the archive stays.
         if keystroke.key == "space"
             && !m.control
@@ -640,6 +651,7 @@ impl Preview {
             Act::Strip => self.cycle_strip(window, cx),
             Act::Wrap => self.toggle_wrap(window, cx),
             Act::Source => self.toggle_source(window, cx),
+            Act::Help => self.help = !self.help,
             Act::SelectAll => match &self.pane {
                 Pane::Lines(t) => t.update(cx, |t, cx| t.select_all(cx)),
                 Pane::Rendered(r) => r.update(cx, |r, cx| r.select_all(cx)),
@@ -1625,6 +1637,7 @@ impl Render for Preview {
             .child(content)
             .children(strip)
             .children(self.opening(theme))
+            .children(self.help.then(|| help(theme, cx)))
             .children(ring)
     }
 }
@@ -1704,5 +1717,107 @@ fn folder_glyph() -> Div {
                 .h(px(74.))
                 .rounded(px(9.))
                 .bg(color),
+        )
+}
+
+/// silent's own keys, a few words each.
+const KEYS: [(&str, &str); 16] = [
+    ("Space", "Close; in an archive, show the entry"),
+    ("Esc", "Close everything"),
+    ("← → ↑ ↓", "The next file; after a click, move inside"),
+    ("Shift + arrows", "A page, a sheet, or 30 seconds"),
+    ("Enter", "Open in its application"),
+    ("F2, Delete", "Rename or trash it in Nautilus"),
+    ("F", "Fullscreen"),
+    ("M", "Minimap or page rail; mute"),
+    ("i", "The strip: while moving, never, always"),
+    ("w", "Wrap long lines"),
+    ("s", "Markdown and HTML rendered, or the source"),
+    ("r, Shift + R", "Turn a quarter clockwise, or back"),
+    ("K or a click", "Pause or play"),
+    ("J, L", "Back or on ten seconds"),
+    ("Ctrl + C, Ctrl + A", "Copy, select all"),
+    ("?, F1", "This card"),
+];
+
+/// The card of keys over the content; a click, Esc or ? takes it away.
+fn help(theme: Theme, cx: &mut Context<Preview>) -> Stateful<Div> {
+    let row = |key: &str, what: &str| {
+        div()
+            .flex()
+            .flex_row()
+            .border_t_1()
+            .border_color(theme.rule)
+            .child(
+                div()
+                    .w(px(150.))
+                    .flex_none()
+                    .py(px(5.))
+                    .pr(px(12.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(key.to_owned()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .py(px(5.))
+                    .pl(px(12.))
+                    .border_l_1()
+                    .border_color(theme.rule)
+                    .child(what.to_owned()),
+            )
+    };
+    let vim = "Text, documents, PDFs and slides also move with vim's keys: \
+               j k h l, gg and G, 20G for line or page 20, Ctrl+d and Ctrl+u, \
+               Ctrl+f and Ctrl+b, and a count first, as in 5j.";
+    div()
+        .id("help")
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                this.help = false;
+                cx.stop_propagation();
+                cx.notify();
+            }),
+        )
+        .child(
+            div()
+                .id("help-card")
+                .w(px(480.))
+                .max_w(relative(0.94))
+                .max_h(relative(0.94))
+                .overflow_y_scroll()
+                .px(px(22.))
+                .py(px(18.))
+                .rounded(px(10.))
+                .bg(theme.surface)
+                .border_1()
+                .border_color(theme.rule)
+                .text_size(px(13.))
+                .text_color(theme.text)
+                .child(
+                    div()
+                        .pb(px(10.))
+                        .text_size(px(15.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("Keys"),
+                )
+                .children(KEYS.iter().map(|(key, what)| row(key, what)))
+                .child(
+                    div()
+                        .border_t_1()
+                        .border_color(theme.rule)
+                        .pt(px(12.))
+                        .text_color(theme.muted)
+                        .child(vim),
+                ),
         )
 }

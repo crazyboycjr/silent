@@ -78,6 +78,8 @@ pub enum Act {
     Wrap,
     /// s: Markdown and HTML rendered, or their source.
     Source,
+    /// ? or F1: the card of silent's keys, shown or taken away.
+    Help,
     /// Enter or Space in an engaged archive: look inside the selected
     /// entry, which goes on top, or open or close the selected folder;
     /// with nothing selected, the key's usual act.
@@ -205,6 +207,8 @@ pub fn route(kind: Kind, engaged: bool, key: &str, mods: Mods, held: bool, vim: 
         (false, "i") => once(Act::Strip),
         (false, "w") if kind == Kind::Lines => once(Act::Wrap),
         (false, "s") if matches!(kind, Kind::Lines | Kind::Rendered) => once(Act::Source),
+        // GPUI names Shift with / by the character, but not every layout.
+        (_, "?") | (true, "/") | (false, "f1") => once(Act::Help),
         (false, "k") if kind.media() => once(Act::Pause),
         (false, "j" | "l") if kind.media() => Act::Seek {
             forward: key == "l",
@@ -471,6 +475,33 @@ mod tests {
             shifted(Kind::Rendered, "down"),
             Act::Move(Motion::PageDown(1))
         );
+    }
+
+    #[test]
+    fn question_mark_and_f1_bring_the_help_everywhere() {
+        for kind in [
+            Kind::Still,
+            Kind::Video,
+            Kind::Lines,
+            Kind::Pdf,
+            Kind::Archive,
+        ] {
+            assert_eq!(shifted(kind, "?"), Act::Help, "{kind:?}");
+            assert_eq!(press(kind, true, "f1"), Act::Help, "{kind:?}");
+        }
+        assert_eq!(shifted(Kind::Lines, "/"), Act::Help);
+        // A count typed first is dropped by it, not kept for the next key.
+        let mut vim = Keys::default();
+        route(Kind::Lines, false, "5", Mods::default(), false, &mut vim);
+        let shift = Mods {
+            ctrl: false,
+            shift: true,
+        };
+        assert_eq!(
+            route(Kind::Lines, false, "?", shift, false, &mut vim),
+            Act::Help
+        );
+        assert_eq!(vim.pending(), None);
     }
 
     #[test]
