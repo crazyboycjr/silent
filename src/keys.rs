@@ -42,6 +42,12 @@ impl Kind {
     fn media(self) -> bool {
         matches!(self, Kind::Video | Kind::Audio)
     }
+
+    /// Whether r turns it: pictures, PDFs and video. Cards are pictures
+    /// too, as far as keys know; they stay as they are.
+    fn turns(self) -> bool {
+        matches!(self, Kind::Still | Kind::Pdf | Kind::Video)
+    }
 }
 
 /// What a key asks for.
@@ -80,6 +86,9 @@ pub enum Act {
     Source,
     /// ? or F1: the card of silent's keys, shown or taken away.
     Help,
+    /// r: a quarter turn of a picture, a PDF or a video, clockwise; with
+    /// Shift, back.
+    Turn(bool),
     /// Enter or Space in an engaged archive: look inside the selected
     /// entry, which goes on top, or open or close the selected folder;
     /// with nothing selected, the key's usual act.
@@ -209,6 +218,8 @@ pub fn route(kind: Kind, engaged: bool, key: &str, mods: Mods, held: bool, vim: 
         (false, "s") if matches!(kind, Kind::Lines | Kind::Rendered) => once(Act::Source),
         // GPUI names Shift with / by the character, but not every layout.
         (_, "?") | (true, "/") | (false, "f1") => once(Act::Help),
+        (false, "r") if kind.turns() => once(Act::Turn(true)),
+        (true, "r") | (_, "R") if kind.turns() => once(Act::Turn(false)),
         (false, "k") if kind.media() => once(Act::Pause),
         (false, "j" | "l") if kind.media() => Act::Seek {
             forward: key == "l",
@@ -502,6 +513,18 @@ mod tests {
             Act::Help
         );
         assert_eq!(vim.pending(), None);
+    }
+
+    #[test]
+    fn r_turns_pictures_pdfs_and_video_and_shift_turns_back() {
+        for kind in [Kind::Still, Kind::Pdf, Kind::Video] {
+            assert_eq!(press(kind, false, "r"), Act::Turn(true), "{kind:?}");
+            assert_eq!(shifted(kind, "r"), Act::Turn(false), "{kind:?}");
+            assert_eq!(shifted(kind, "R"), Act::Turn(false), "{kind:?}");
+        }
+        for kind in [Kind::Lines, Kind::Slides, Kind::Sheet, Kind::Archive] {
+            assert_eq!(press(kind, false, "r"), Act::Pass, "{kind:?}");
+        }
     }
 
     #[test]

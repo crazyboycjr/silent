@@ -14,14 +14,53 @@ pub struct Prepared {
     pub image: Arc<RenderImage>,
 }
 
-pub fn decode(uri: &str, screen: Screen) -> Decoder<Prepared> {
+/// Decodes `uri` for `screen`, turned `turns` quarters clockwise by r.
+pub fn decode(uri: &str, screen: Screen, turns: u8) -> Decoder<Prepared> {
     let accepted = MemoryFormatSelection::R8g8b8
         | MemoryFormatSelection::B8g8r8
         | MemoryFormatSelection::R8g8b8a8
         | MemoryFormatSelection::B8g8r8a8;
     decode::start(uri.to_owned(), Some(screen), accepted, move |frame| {
-        prepare(frame, &screen)
+        prepare(frame, &screen, turns)
     })
+}
+
+/// The orientation of `turns` quarter turns clockwise.
+pub fn quarter(turns: u8) -> Orientation {
+    match turns % 4 {
+        1 => Orientation::Rotate90,
+        2 => Orientation::Rotate180,
+        3 => Orientation::Rotate270,
+        _ => Orientation::NoTransforms,
+    }
+}
+
+/// `size` once turned `turns` quarters.
+pub fn turned(size: (u32, u32), turns: u8) -> (u32, u32) {
+    if turns % 2 == 1 {
+        (size.1, size.0)
+    } else {
+        size
+    }
+}
+
+/// A picture drawn already, such as a PDF page, turned `turns` quarters
+/// clockwise; its first frame only.
+pub fn turn(image: Arc<RenderImage>, turns: u8) -> Arc<RenderImage> {
+    if turns % 4 == 0 {
+        return image;
+    }
+    let size = image.size(0);
+    let Some(bytes) = image.as_bytes(0) else {
+        return image;
+    };
+    let size = (size.width.0 as u32, size.height.0 as u32);
+    let (pixels, size) = upright(bytes.to_vec(), size, MemoryFormat::B8g8r8a8, quarter(turns));
+    let buffer = image::RgbaImage::from_raw(size.0, size.1, pixels).expect("pixels match the size");
+    Arc::new(RenderImage::new(SmallVec::from_elem(
+        image::Frame::new(buffer),
+        1,
+    )))
 }
 
 /// Runs on the decoder's thread. GPUI samples images bilinearly without
@@ -30,26 +69,33 @@ pub fn decode(uri: &str, screen: Screen) -> Decoder<Prepared> {
 /// Resizing happens in the decoder's own layout; what the frame still
 /// needs, its colours taken to sRGB and the picture turned upright, follows
 /// on the smaller image, and the swizzle to GPUI's straight BGRA comes last.
-fn prepare(frame: Frame, screen: &Screen) -> Prepared {
+fn prepare(frame: Frame, screen: &Screen, turned_by_r: u8) -> Prepared {
     crate::trace::mark("frame decoded");
     let turns = silent::native::turns(frame.orientation);
     let stored = (frame.width, frame.height);
     let (width, height) = if turns { (stored.1, stored.0) } else { stored };
+    // As shown: upright, and then as r turned it.
+    let shown = turned((width, height), turned_by_r);
     let monitor = screen.monitor;
-    let shrink = (monitor.width as f64 / width as f64).min(monitor.height as f64 / height as f64);
-    let fit = screen.fit_media((width, height));
+    let shrink =
+        (monitor.width as f64 / shown.0 as f64).min(monitor.height as f64 / shown.1 as f64);
+    let fit = screen.fit_media(shown);
     let (pixels, size) = if shrink < 1.0 {
         let upright = (
             ((width as f64 * shrink).round() as u32).max(1),
             ((height as f64 * shrink).round() as u32).max(1),
         );
-        let to = if turns { (upright.1, upright.0) } else { upright };
+        let to = if turns {
+            (upright.1, upright.0)
+        } else {
+            upright
+        };
         (
             resize(&frame, to, ResizeAlg::Convolution(FilterType::Bilinear)),
             to,
         )
     } else if fit.filter == Filter::Nearest {
-        let factor = (fit.width as u32 / width).max(1);
+        let factor = (fit.width as u32 / shown.0).max(1);
         let to = (stored.0 * factor, stored.1 * factor);
         (resize(&frame, to, ResizeAlg::Nearest), to)
     } else {
@@ -58,6 +104,7 @@ fn prepare(frame: Frame, screen: &Screen) -> Prepared {
     crate::trace::mark("frame resized");
     let pixels = to_srgb(pixels, frame.format, frame.icc.as_deref());
     let (pixels, size) = upright(pixels, size, frame.format, frame.orientation);
+    let (pixels, size) = upright(pixels, size, frame.format, quarter(turned_by_r));
     let bgra = to_bgra(pixels, frame.format);
     crate::trace::mark("frame prepared");
     let buffer = image::RgbaImage::from_raw(size.0, size.1, bgra).expect("pixels match the size");
@@ -191,7 +238,10 @@ fn to_bgra(pixels: Vec<u8>, format: MemoryFormat) -> Vec<u8> {
                 std::thread::scope(|scope| {
                     for part in pixels.chunks_mut(chunk.max(4)) {
                         scope.spawn(move || {
-                            part.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p.swap(0, 2));
+                            part.as_chunks_mut::<4>()
+                                .0
+                                .iter_mut()
+                                .for_each(|p| p.swap(0, 2));
                         });
                     }
                 });
@@ -243,7 +293,11 @@ mod tests {
         let srgb = to_srgb(pixels.clone(), MemoryFormat::R8g8b8, Some(&p3));
         assert_ne!(srgb, pixels);
         // Display P3's orange is more saturated than sRGB's, and stays so.
-        assert!(srgb[0] > pixels[0] && srgb[2] < pixels[2], "{:?}", &srgb[..3]);
+        assert!(
+            srgb[0] > pixels[0] && srgb[2] < pixels[2],
+            "{:?}",
+            &srgb[..3]
+        );
     }
 
     #[test]
@@ -252,8 +306,14 @@ mod tests {
         let mut profile = moxcms::ColorProfile::new_display_p3();
         profile.description = Some(moxcms::ProfileText::PlainString("sRGB IEC61966-2.1".into()));
         let named = profile.encode().unwrap();
-        assert_eq!(to_srgb(pixels.clone(), MemoryFormat::R8g8b8a8, Some(&named)), pixels);
-        assert_eq!(to_srgb(pixels.clone(), MemoryFormat::R8g8b8a8, None), pixels);
+        assert_eq!(
+            to_srgb(pixels.clone(), MemoryFormat::R8g8b8a8, Some(&named)),
+            pixels
+        );
+        assert_eq!(
+            to_srgb(pixels.clone(), MemoryFormat::R8g8b8a8, None),
+            pixels
+        );
     }
 
     #[test]
@@ -263,7 +323,12 @@ mod tests {
         let (turned, size) = upright(pixels, (2, 1), MemoryFormat::R8g8b8, Orientation::Rotate90);
         assert_eq!(size, (1, 2));
         assert_eq!(turned, vec![255, 0, 0, 0, 0, 255]);
-        let (flipped, _) = upright(vec![255, 0, 0, 0, 0, 255], (2, 1), MemoryFormat::R8g8b8, Orientation::FlipHorizontal);
+        let (flipped, _) = upright(
+            vec![255, 0, 0, 0, 0, 255],
+            (2, 1),
+            MemoryFormat::R8g8b8,
+            Orientation::FlipHorizontal,
+        );
         assert_eq!(flipped, vec![0, 0, 255, 255, 0, 0]);
     }
 

@@ -4,6 +4,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::FluentBuilder as _;
@@ -93,7 +94,10 @@ fn reported(pipeline: &impl IsA<gst::Element>) -> (Option<Duration>, bool) {
     let position = pipeline
         .query_position::<gst::ClockTime>()
         .map(|t| Duration::from_nanos(t.nseconds()));
-    (position, pipeline.pending_state() == gst::State::VoidPending)
+    (
+        position,
+        pipeline.pending_state() == gst::State::VoidPending,
+    )
 }
 
 /// What a playbar needs of a player.
@@ -333,9 +337,31 @@ pub struct VideoPane {
     seeking: Seeking,
     /// The playbar's veil, and when the frames were last looked at for it.
     veil: Option<(Instant, Scrim)>,
+    /// Quarter turns clockwise, for a phone's clip that says it wrongly;
+    /// the converter turns each frame.
+    turns: Arc<AtomicU8>,
 }
 
 impl VideoPane {
+    /// Turns the frame shown, for a paused video, and the frames to come;
+    /// the video's size, as shown.
+    pub fn set_turns(
+        &mut self,
+        turns: u8,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (u32, u32) {
+        let before = self.turns.swap(turns % 4, Ordering::Relaxed);
+        if let Some(frame) = self.frame.take() {
+            let turned = crate::picture::turn(frame.clone(), (turns + 4 - before) % 4);
+            cx.drop_image(frame, Some(window));
+            self.frame = Some(turned);
+            cx.notify();
+        }
+        let (w, h) = self.video.size();
+        crate::picture::turned((w.max(1) as u32, h.max(1) as u32), turns)
+    }
+
     /// Lets the window's atlas go of the frame shown.
     pub fn drop_pictures(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(frame) = self.frame.take() {
@@ -346,6 +372,7 @@ impl VideoPane {
     pub fn new(
         video: Video,
         loudness: Loudness,
+        turns: u8,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -353,9 +380,11 @@ impl VideoPane {
         video.set_muted(loudness.muted);
         let (sender, frames) = async_channel::bounded(1);
         let source = video.clone();
+        let turns = Arc::new(AtomicU8::new(turns % 4));
+        let turned = turns.clone();
         std::thread::Builder::new()
             .name("frames".into())
-            .spawn(move || convert(source, sender))
+            .spawn(move || convert(source, sender, &turned))
             .expect("spawning the frame converter");
         let feed = cx.spawn_in(window, async move |this, cx| {
             while let Ok(image) = frames.recv().await {
@@ -378,6 +407,7 @@ impl VideoPane {
             bar: Bar::default(),
             seeking: Seeking::default(),
             veil: None,
+            turns,
         }
     }
 
@@ -500,7 +530,7 @@ impl Render for VideoPane {
 
 /// Runs until the pane is dropped. The player marks each new frame; this
 /// polls the mark, which costs nothing between frames.
-fn convert(video: Video, sender: async_channel::Sender<Arc<RenderImage>>) {
+fn convert(video: Video, sender: async_channel::Sender<Arc<RenderImage>>, turns: &AtomicU8) {
     while !sender.is_closed() {
         if !video.take_frame_ready() {
             std::thread::sleep(Duration::from_millis(2));
@@ -512,6 +542,7 @@ fn convert(video: Video, sender: async_channel::Sender<Arc<RenderImage>>) {
         let Some(image) = to_bgra(&nv12, width, height) else {
             continue;
         };
+        let image = crate::picture::turn(image, turns.load(Ordering::Relaxed));
         if sender.send_blocking(image).is_err() {
             break;
         }
@@ -835,7 +866,10 @@ mod tests {
         // While the first is on its way, the position read for the next is its target.
         assert_eq!(seeking.position(None, false), Duration::from_secs(20));
         seeking.start(Duration::from_secs(30));
-        assert_eq!(seeking.position(Some(Duration::ZERO), false), Duration::from_secs(30));
+        assert_eq!(
+            seeking.position(Some(Duration::ZERO), false),
+            Duration::from_secs(30)
+        );
     }
 
     #[test]

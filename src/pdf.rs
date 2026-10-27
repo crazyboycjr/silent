@@ -40,6 +40,8 @@ pub struct PdfPane {
     thumbs_pending: HashSet<usize>,
     /// Where the file was left, gone to on the first frame.
     restore: Option<View>,
+    /// Quarter turns clockwise of every page, which r gave.
+    turns: u8,
 }
 
 /// A selection by dragging over one page.
@@ -79,6 +81,7 @@ impl PdfPane {
             thumbs: HashMap::new(),
             thumbs_pending: HashSet::new(),
             restore: view,
+            turns: pdf.turns,
         }
     }
 
@@ -138,6 +141,10 @@ impl PdfPane {
     }
 
     fn press(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // The text of a page is laid out as the page stands, not turned.
+        if self.turns != 0 {
+            return;
+        }
         let Some((page, point)) = self.point_on_page(event.position) else {
             return;
         };
@@ -258,11 +265,14 @@ impl PdfPane {
             }
             let document = self.document.clone();
             let scale = device_width / self.pages.sizes[i].0;
-            let wanted = self.width;
+            let (wanted, turns) = (self.width, self.turns);
             cx.spawn_in(window, async move |this, cx| {
                 let image = cx
                     .background_executor()
-                    .spawn(async move { gpui_pdf::render_page(&document, i, scale) })
+                    .spawn(async move {
+                        gpui_pdf::render_page(&document, i, scale)
+                            .map(|page| crate::picture::turn(page, turns))
+                    })
                     .await;
                 let _ = this.update(cx, |this, cx| {
                     this.pending.remove(&i);
@@ -304,10 +314,14 @@ impl PdfPane {
             }
             let document = self.document.clone();
             let scale = device / self.pages.sizes[i].0.max(1.);
+            let turns = self.turns;
             cx.spawn_in(window, async move |this, cx| {
                 let image = cx
                     .background_executor()
-                    .spawn(async move { gpui_pdf::render_page(&document, i, scale) })
+                    .spawn(async move {
+                        gpui_pdf::render_page(&document, i, scale)
+                            .map(|page| crate::picture::turn(page, turns))
+                    })
                     .await;
                 let _ = this.update(cx, |this, cx| {
                     this.thumbs_pending.remove(&i);

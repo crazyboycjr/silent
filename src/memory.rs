@@ -200,7 +200,32 @@ fn unescape(text: &str) -> Result<String, ()> {
 struct Entry {
     key: Key,
     saved: u64,
-    view: View,
+    view: Option<View>,
+    /// Quarter turns clockwise r gave a picture, a PDF or a video.
+    turns: u8,
+}
+
+/// The view field: `turned N` before the view when the file was turned.
+fn encode(view: &Option<View>, turns: u8) -> String {
+    match (view, turns) {
+        (Some(view), 0) => view.encode(),
+        (Some(view), turns) => format!("turned {turns} {}", view.encode()),
+        (None, turns) => format!("turned {turns}"),
+    }
+}
+
+fn decode(field: &str) -> Option<(Option<View>, u8)> {
+    let Some(rest) = field.strip_prefix("turned ") else {
+        return Some((Some(View::decode(field)?), 0));
+    };
+    let (turns, view) = rest.split_once(' ').unwrap_or((rest, ""));
+    let turns = turns.parse::<u8>().ok().filter(|t| *t < 4)?;
+    let view = if view.is_empty() {
+        None
+    } else {
+        Some(View::decode(view)?)
+    };
+    Some((view, turns))
 }
 
 fn dir() -> Option<PathBuf> {
@@ -217,22 +242,42 @@ fn now() -> u64 {
 /// How `key` was left within the last hour.
 pub fn recall(key: &Key) -> Option<View> {
     let text = fs::read_to_string(dir()?.join("positions")).ok()?;
-    find(&parse(&text), key, now())
+    find(&parse(&text), key, now())?.view.clone()
+}
+
+/// The quarter turns `key` was given within the last hour.
+pub fn turns(key: &Key) -> u8 {
+    let text = dir().and_then(|dir| fs::read_to_string(dir.join("positions")).ok());
+    text.and_then(|text| find(&parse(&text), key, now()).map(|e| e.turns))
+        .unwrap_or(0)
 }
 
 /// Records how `key` was left, or forgets it: a view that is where a new
-/// preview starts anyway is not worth a line.
+/// preview starts anyway is not worth a line. Its turns stay.
 pub fn remember(key: &Key, view: Option<View>) {
+    store(key, |entry| entry.view = view);
+}
+
+/// Records the quarter turns `key` was given; its view stays.
+pub fn turn(key: &Key, turns: u8) {
+    store(key, |entry| entry.turns = turns % 4);
+}
+
+fn store(key: &Key, change: impl FnOnce(&mut Entry)) {
     let Some(dir) = dir() else {
         return;
     };
     let text = fs::read_to_string(dir.join("positions")).unwrap_or_default();
-    let entry = view.map(|view| Entry {
-        key: key.clone(),
-        saved: now(),
-        view,
-    });
     let before = parse(&text);
+    let mut entry = find(&before, key, now()).cloned().unwrap_or(Entry {
+        key: key.clone(),
+        saved: 0,
+        view: None,
+        turns: 0,
+    });
+    change(&mut entry);
+    entry.saved = now();
+    let entry = (entry.view.is_some() || entry.turns != 0).then_some(entry);
     let updated = update(before.clone(), key, entry, now());
     if updated != before {
         write(&dir, "positions", &format(&updated));
@@ -298,11 +343,10 @@ fn write(dir: &Path, name: &str, text: &str) {
     }
 }
 
-fn find(entries: &[Entry], key: &Key, now: u64) -> Option<View> {
+fn find<'a>(entries: &'a [Entry], key: &Key, now: u64) -> Option<&'a Entry> {
     entries
         .iter()
         .find(|e| &e.key == key && now.saturating_sub(e.saved) < KEEP.as_secs())
-        .map(|e| e.view.clone())
 }
 
 fn update(entries: Vec<Entry>, key: &Key, entry: Option<Entry>, now: u64) -> Vec<Entry> {
@@ -324,7 +368,7 @@ fn parse(text: &str) -> Vec<Entry> {
             let saved = fields.next()?.parse().ok()?;
             let size = fields.next()?.parse().ok()?;
             let modified = fields.next()?.parse().ok()?;
-            let view = View::decode(fields.next()?)?;
+            let (view, turns) = decode(fields.next()?)?;
             let path = PathBuf::from(fields.next()?);
             Some(Entry {
                 key: Key {
@@ -334,6 +378,7 @@ fn parse(text: &str) -> Vec<Entry> {
                 },
                 saved,
                 view,
+                turns,
             })
         })
         .collect()
@@ -349,7 +394,7 @@ fn format(entries: &[Entry]) -> String {
                 e.saved,
                 e.key.size,
                 e.key.modified,
-                e.view.encode()
+                encode(&e.view, e.turns)
             ))
         })
         .collect()
@@ -371,8 +416,34 @@ mod tests {
         Entry {
             key: key(path),
             saved,
-            view,
+            view: Some(view),
+            turns: 0,
         }
+    }
+
+    #[test]
+    fn turns_ride_along_with_the_view_or_alone() {
+        let turned = Entry {
+            turns: 3,
+            ..entry(
+                "/p/photo.jpg",
+                100,
+                View::Pages {
+                    page: 2,
+                    within: 0.5,
+                },
+            )
+        };
+        let alone = Entry {
+            view: None,
+            turns: 1,
+            ..entry("/p/clip.mp4", 200, media(1))
+        };
+        let entries = vec![turned, alone];
+        assert_eq!(parse(&format(&entries)), entries);
+        assert!(format(&entries).contains("\tturned 1\t/p/clip.mp4"));
+        // Only quarter turns.
+        assert_eq!(parse("1\t2\t3\tturned 4\t/p/x.jpg\n"), vec![]);
     }
 
     fn media(secs: u64) -> View {
@@ -470,7 +541,7 @@ mod tests {
     #[test]
     fn views_last_an_hour_and_only_for_the_same_file() {
         let entries = vec![entry("/a/movie.mkv", 1000, media(42))];
-        let at = |now| find(&entries, &key("/a/movie.mkv"), now);
+        let at = |now| find(&entries, &key("/a/movie.mkv"), now).and_then(|e| e.view.clone());
         assert_eq!(at(1000 + 3599), Some(media(42)));
         assert_eq!(at(1000 + 3600), None);
         let mut changed = key("/a/movie.mkv");

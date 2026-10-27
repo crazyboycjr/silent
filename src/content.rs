@@ -62,6 +62,8 @@ pub struct Loaded {
     /// The markup a Markdown or HTML file is in, which `s` shows rendered
     /// or as its source.
     pub markup: Option<Markup>,
+    /// Quarter turns clockwise r gave a picture, a PDF or a video.
+    pub turns: u8,
 }
 
 pub struct Packed {
@@ -151,10 +153,12 @@ pub struct Audio {
 
 pub struct Pdf {
     pub document: Arc<gpui_pdf::Document>,
-    /// Page sizes in points.
+    /// Page sizes in points, as the pages are shown, turned.
     pub pages: Vec<(f32, f32)>,
     /// The page shown first, by its index, rendered at the pages' width.
     pub first: Option<(usize, Arc<RenderImage>)>,
+    /// Quarter turns clockwise of every page.
+    pub turns: u8,
 }
 
 /// Markdown or HTML to render.
@@ -239,22 +243,30 @@ pub struct Entry {
 /// picture; without it the image comes as soon as its size is known, so a
 /// new window can open while it decodes.
 pub fn load(uri: &str, screen: Screen, wait_for_pixels: bool) -> Loaded {
-    load_as(uri, screen, wait_for_pixels, None)
+    load_as(uri, screen, wait_for_pixels, None, None)
 }
 
 /// [`load`], with Markdown and HTML rendered or shown as their source when
-/// `rendered` says, else as they were left, else rendered.
-pub fn load_as(uri: &str, screen: Screen, wait_for_pixels: bool, rendered: Option<bool>) -> Loaded {
+/// `rendered` says, else as they were left, else rendered; and a picture, a
+/// PDF or a video turned by `turns` quarters, else as it was left.
+pub fn load_as(
+    uri: &str,
+    screen: Screen,
+    wait_for_pixels: bool,
+    rendered: Option<bool>,
+    turns: Option<u8>,
+) -> Loaded {
     let facts = match detect::probe(uri) {
         Ok(facts) => facts,
         Err(error) => return missing(uri, &error.to_string(), screen),
     };
     let description = gio::content_type_get_description(&facts.content_type).into();
     let path = facts.path.clone();
-    let view = path
+    let key = path
         .as_deref()
-        .and_then(|p| Key::new(p, facts.size, facts.modified))
-        .and_then(|key| memory::recall(&key));
+        .and_then(|p| Key::new(p, facts.size, facts.modified));
+    let view = key.as_ref().and_then(memory::recall);
+    let turns = turns.unwrap_or_else(|| key.as_ref().map_or(0, memory::turns));
     let mut loaded = Loaded {
         size: card(screen, CARD),
         dock: 0.,
@@ -264,6 +276,7 @@ pub fn load_as(uri: &str, screen: Screen, wait_for_pixels: bool, rendered: Optio
         description,
         view,
         markup: None,
+        turns,
     };
     let resume = match loaded.view {
         Some(View::Media(position)) => Some(position),
@@ -274,7 +287,7 @@ pub fn load_as(uri: &str, screen: Screen, wait_for_pixels: bool, rendered: Optio
         _ => 0,
     };
     let (size, dock, body) = match (loaded.facts.kind, path) {
-        (Kind::Image, _) => match image(&loaded.facts.uri, screen, wait_for_pixels) {
+        (Kind::Image, _) => match image(&loaded.facts.uri, screen, wait_for_pixels, turns) {
             Some((size, picture)) => (size, 0., Body::Image(picture)),
             None => return loaded,
         },
@@ -282,7 +295,8 @@ pub fn load_as(uri: &str, screen: Screen, wait_for_pixels: bool, rendered: Optio
         (Kind::Video, _) => match video(&loaded.facts.uri, resume) {
             Some(video) => {
                 let (w, h) = video.size();
-                let size = media(screen, (w.max(1) as u32, h.max(1) as u32));
+                let natural = (w.max(1) as u32, h.max(1) as u32);
+                let size = media(screen, picture::turned(natural, turns));
                 (size, 0., Body::Video(video))
             }
             None => return loaded,
@@ -291,7 +305,7 @@ pub fn load_as(uri: &str, screen: Screen, wait_for_pixels: bool, rendered: Optio
             Some(audio) => (card(screen, AUDIO_CARD), 0., Body::Audio(audio)),
             None => return loaded,
         },
-        (Kind::Pdf, Some(path)) => match pdf(&path, screen, page) {
+        (Kind::Pdf, Some(path)) => match pdf(&path, screen, page, turns) {
             Some((size, dock, pdf)) => (size, dock, Body::Pdf(pdf)),
             None => return loaded,
         },
@@ -382,6 +396,7 @@ impl Loaded {
             body: Body::Info,
             view: None,
             markup: None,
+            turns: 0,
         }
     }
 
@@ -410,6 +425,7 @@ fn missing(uri: &str, error: &str, screen: Screen) -> Loaded {
         body: Body::Info,
         view: None,
         markup: None,
+        turns: 0,
     }
 }
 
@@ -434,10 +450,16 @@ fn rail_dock(pages: usize) -> f64 {
     }
 }
 
-fn image(uri: &str, screen: Screen, wait_for_pixels: bool) -> Option<((i32, i32), Picture)> {
-    let frames = picture::decode(uri, screen);
+/// A picture, its size and shape as r turned it.
+fn image(
+    uri: &str,
+    screen: Screen,
+    wait_for_pixels: bool,
+    turns: u8,
+) -> Option<((i32, i32), Picture)> {
+    let frames = picture::decode(uri, screen, turns);
     let natural = match frames.events.recv_blocking().ok()? {
-        Event::Size { width, height } => (width, height),
+        Event::Size { width, height } => picture::turned((width, height), turns),
         _ => return None,
     };
     let first = if wait_for_pixels {
@@ -678,17 +700,21 @@ pub fn render_slide(path: &Path, deck: &pptx::Deck, index: usize, width: u32) ->
 }
 
 /// A PDF, with page `page` rendered: the first, or the one it was left on.
-fn pdf(path: &Path, screen: Screen, page: usize) -> Option<((i32, i32), f64, Pdf)> {
+/// Every page turned `turns` quarters: a scan made on its side.
+fn pdf(path: &Path, screen: Screen, page: usize, turns: u8) -> Option<((i32, i32), f64, Pdf)> {
     let bytes = std::fs::read(path).ok()?;
     let document = gpui_pdf::parse(Arc::new(bytes)).ok()?;
-    let pages = gpui_pdf::page_dims(&document);
+    let mut pages = gpui_pdf::page_dims(&document);
+    if turns % 2 == 1 {
+        pages = pages.into_iter().map(|(w, h)| (h, w)).collect();
+    }
     let &(width, height) = pages.first()?;
     let dock = rail_dock(pages.len());
     let shown = screen.fit_page((width as f64, height as f64), dock);
     let page = page.min(pages.len() - 1);
     let first = gpui_pdf::render_page(&document, page, shown.0 as f32 / pages[page].0)
         .ok()
-        .map(|image| (page, image));
+        .map(|image| (page, picture::turn(image, turns)));
     Some((
         screen.window(shown, dock),
         dock,
@@ -696,6 +722,7 @@ fn pdf(path: &Path, screen: Screen, page: usize) -> Option<((i32, i32), f64, Pdf
             document,
             pages,
             first,
+            turns,
         },
     ))
 }

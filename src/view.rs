@@ -412,7 +412,8 @@ impl Preview {
         self.sized_docked = docked;
         self.pane = match std::mem::replace(&mut self.loaded.body, Body::Info) {
             Body::Video(video) => {
-                Pane::Video(cx.new(|cx| VideoPane::new(video, loudness, window, cx)))
+                let turns = self.loaded.turns;
+                Pane::Video(cx.new(|cx| VideoPane::new(video, loudness, turns, window, cx)))
             }
             Body::Audio(audio) => {
                 Pane::Audio(cx.new(|cx| AudioPane::new(audio, name, loudness, window, cx)))
@@ -652,6 +653,7 @@ impl Preview {
             Act::Wrap => self.toggle_wrap(window, cx),
             Act::Source => self.toggle_source(window, cx),
             Act::Help => self.help = !self.help,
+            Act::Turn(clockwise) => self.turn(clockwise, window, cx),
             Act::SelectAll => match &self.pane {
                 Pane::Lines(t) => t.update(cx, |t, cx| t.select_all(cx)),
                 Pane::Rendered(r) => r.update(cx, |r, cx| r.select_all(cx)),
@@ -846,7 +848,7 @@ impl Preview {
         let name = self.loaded.facts.name.clone();
         let job = cx
             .background_executor()
-            .spawn(async move { content::load_as(&uri, screen, true, Some(rendered)) });
+            .spawn(async move { content::load_as(&uri, screen, true, Some(rendered), None) });
         self.switching = Some(cx.spawn_in(window, async move |this, cx| {
             let mut loaded = job.await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -865,6 +867,73 @@ impl Preview {
                 this.note(Some(word.into()), window, cx);
             });
         }));
+    }
+
+    /// r: a quarter turn of a picture, every page of a PDF or a video,
+    /// clockwise or back. The window takes the turned shape about its
+    /// centre, and the file opens turned again within the hour.
+    fn turn(&mut self, clockwise: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let turns = (self.loaded.turns + if clockwise { 1 } else { 3 }) % 4;
+        let word = match turns {
+            0 => "Upright".to_owned(),
+            turns => format!("Turned {}°", u32::from(turns) * 90),
+        };
+        if let Pane::Video(video) = &self.pane {
+            let shown = video.update(cx, |video, cx| video.set_turns(turns, window, cx));
+            self.loaded.turns = turns;
+            self.remember_turns();
+            if !window.is_fullscreen() {
+                let fit = self.screen.fit_media(shown);
+                self.intent(Intent::Fit((fit.width, fit.height)));
+            }
+            return self.note(Some(word), window, cx);
+        }
+        let turnable = matches!(self.pane, Pane::Pdf(_))
+            || matches!(
+                (&self.pane, &self.loaded.body),
+                (Pane::None, Body::Image(_))
+            );
+        if !turnable || self.switching.is_some() {
+            return;
+        }
+        // Read again, turned: pictures are turned as they are decoded, and
+        // a PDF's pages as they are drawn.
+        let (uri, screen) = (self.loaded.facts.uri.clone(), self.screen);
+        let name = self.loaded.facts.name.clone();
+        let view = view_of(&self.pane, cx);
+        let job = cx
+            .background_executor()
+            .spawn(async move { content::load_as(&uri, screen, true, None, Some(turns)) });
+        self.switching = Some(cx.spawn_in(window, async move |this, cx| {
+            let mut loaded = job.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.switching = None;
+                loaded.facts.name = name;
+                loaded.view = view;
+                let size = loaded.size;
+                this.loaded = loaded;
+                this.remember_turns();
+                this.attach(window, cx);
+                if !window.is_fullscreen() {
+                    this.intent(Intent::Fit(size));
+                }
+                this.note(Some(word), window, cx);
+            });
+        }));
+    }
+
+    /// Keeps the turns of the file shown for an hour, unless it was taken
+    /// out of an archive.
+    fn remember_turns(&self) {
+        let facts = &self.loaded.facts;
+        if self.inside.is_none()
+            && let Some(key) = facts
+                .path
+                .as_deref()
+                .and_then(|path| Key::new(path, facts.size, facts.modified))
+        {
+            memory::turn(&key, self.loaded.turns);
+        }
     }
 
     /// Looks inside the selected entry of the archive in view, or opens or
@@ -1243,7 +1312,10 @@ impl Preview {
             }
             Pane::None => {}
         }
+        let turned = (self.loaded.turns != 0)
+            .then(|| format!("turned {}°", u32::from(self.loaded.turns) * 90));
         if !matches!(self.pane, Pane::None) {
+            parts.extend(turned);
             return parts.join(" · ");
         }
         parts.truncate(1);
@@ -1251,6 +1323,7 @@ impl Preview {
             Body::Image(picture) => {
                 parts.push(format::size(facts.size));
                 parts.push(format!("{} × {}", picture.natural.0, picture.natural.1));
+                parts.extend(turned);
             }
             Body::Still(_) => {
                 parts.push(format::size(facts.size));
