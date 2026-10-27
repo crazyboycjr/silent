@@ -1,6 +1,6 @@
 //! Warm neutrals for light and dark desktops.
 
-use gpui_kit::{Hsla, WindowAppearance, rgb, rgba};
+use gpui_kit::{App, Global, Hsla, Window, WindowAppearance, rgb, rgba};
 use silent::detect::Kind;
 
 #[derive(Clone, Copy)]
@@ -62,4 +62,17 @@ pub fn accent(kind: Kind) -> Hsla {
         Kind::Other => 0x8b7e70,
     })
     .into()
+}
+
+struct ComponentsReady;
+impl Global for ComponentsReady {}
+
+/// gpui-component, set up once and following the window's light or dark:
+/// its tree and its text view take their colours from it.
+pub fn components(window: &mut Window, cx: &mut App) {
+    if !cx.has_global::<ComponentsReady>() {
+        gpui_kit::component::init(cx);
+        cx.set_global(ComponentsReady);
+    }
+    gpui_kit::component::Theme::change(window.appearance(), Some(window), cx);
 }

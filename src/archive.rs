@@ -20,8 +20,6 @@ use crate::theme::Theme;
 
 /// gpui-component is set up only when an archive is shown, so that other
 /// previews do not pay for it.
-struct ComponentsReady;
-impl Global for ComponentsReady {}
 
 pub struct ArchivePane {
     tree: Entity<TreeState>,
@@ -51,12 +49,8 @@ impl ArchivePane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        if !cx.has_global::<ComponentsReady>() {
-            gpui_kit::component::init(cx);
-            cx.set_global(ComponentsReady);
-        }
         // The rows' hover and selection follow the desktop's light or dark.
-        gpui_kit::component::Theme::change(window.appearance(), Some(window), cx);
+        crate::theme::components(window, cx);
         let mut root = Node::default();
         for entry in &archive.entries {
             let mut node = &mut root;

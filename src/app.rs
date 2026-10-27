@@ -49,6 +49,9 @@ pub enum Intent {
     Fit((i32, i32)),
     /// A click in a window without the keyboard: it takes it.
     Focus,
+    /// The content parsed in the background is in: a window held back for
+    /// it is mapped.
+    Ready,
 }
 
 /// Whose preview the window shows.
@@ -61,6 +64,9 @@ enum Owner {
 
 /// How long a released name waits for calls that were already on their way.
 const LINGER: Duration = Duration::from_millis(50);
+/// How long a window waits for content parsed in the background before it
+/// is mapped anyway.
+const HOLD: Duration = Duration::from_millis(250);
 /// How long the previewer waits, with nothing shown and no caller on the
 /// bus, before it leaves: a script that called and left may call again.
 const IDLE: Duration = Duration::from_secs(3);
@@ -84,6 +90,8 @@ struct Open {
     /// The input hint the window carries: whether the window manager gives
     /// it the keyboard.
     input: bool,
+    /// Shown, but held back from the screen until its content is in.
+    held: bool,
 }
 
 struct Controller {
@@ -498,6 +506,10 @@ impl Controller {
             view.reopen(loaded, screen, window, cx)
         });
         open.shown = true;
+        let parsing = open
+            .handle
+            .update(cx, |view, _, cx| view.parsing(cx))
+            .unwrap_or(false);
         if let (Some(x11), Some(xid)) = (&self.x11, open.xid) {
             if open.input != focus {
                 let _ = x11.set_input_hint(xid, focus);
@@ -505,6 +517,31 @@ impl Controller {
             }
             let _ = x11.set_transient_for(xid, parent);
             let _ = x11.complete_startup(xid, &token);
+            if !parsing {
+                trace::mark("map");
+                let _ = x11.map(xid);
+            } else {
+                // A long Markdown text is parsed in the background: the
+                // window waits for it rather than show an empty page.
+                open.held = true;
+                let (input, executor) = (self.input.clone(), cx.background_executor().clone());
+                cx.background_executor()
+                    .spawn(async move {
+                        executor.timer(HOLD).await;
+                        let _ = input.send(Input::Intent(Intent::Ready)).await;
+                    })
+                    .detach();
+            }
+        }
+    }
+
+    /// Maps the window held back for its content.
+    fn release(&mut self) {
+        let (Some(x11), Some(open)) = (&self.x11, &mut self.window) else {
+            return;
+        };
+        if let Some(xid) = open.xid.filter(|_| open.held && open.shown) {
+            open.held = false;
             trace::mark("map");
             let _ = x11.map(xid);
         }
@@ -603,6 +640,7 @@ impl Controller {
             size,
             shown: visible,
             input: !quiet,
+            held: false,
         });
     }
 
@@ -639,6 +677,7 @@ impl Controller {
                 let _ = x11.unmap(xid);
             }
             open.shown = false;
+            open.held = false;
             if self.bus.is_some() {
                 content::prepare();
                 // The heap the file took goes back to the system while
@@ -662,6 +701,7 @@ impl Controller {
             Intent::Redock(by) => return self.redock(by),
             Intent::Fit(size) => return self.fit(size),
             Intent::Focus => return self.take_focus(),
+            Intent::Ready => return self.release(),
             _ => {}
         }
         let Some(shown) = &self.shown else {
@@ -708,7 +748,7 @@ impl Controller {
                     let _ = bus.trash(&uri);
                 }
             }
-            Intent::Redock(_) | Intent::Fit(_) | Intent::Focus => {}
+            Intent::Redock(_) | Intent::Fit(_) | Intent::Focus | Intent::Ready => {}
         }
     }
 

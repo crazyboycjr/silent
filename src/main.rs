@@ -12,6 +12,7 @@ mod paged;
 mod pdf;
 mod pdftext;
 mod picture;
+mod rendered;
 mod slides;
 mod strip;
 mod theme;

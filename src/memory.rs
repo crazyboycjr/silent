@@ -43,8 +43,12 @@ pub enum View {
     /// Video and sound: the playing position.
     Media(Duration),
     /// Text, code and hexdumps: the first line in view, with the fraction of
-    /// it scrolled past, and the columns scrolled sideways.
+    /// it scrolled past, and the columns scrolled sideways. For Markdown and
+    /// HTML, also that `s` showed the source.
     Lines { top: f64, side: f32 },
+    /// Markdown and HTML rendered: the block at the top and the pixels
+    /// scrolled into it.
+    Rendered { block: usize, offset: f32 },
     /// PDFs and slides: the page at the top, and how far down it the view
     /// starts, from 0 to 1.
     Pages { page: usize, within: f32 },
@@ -75,6 +79,7 @@ impl View {
             View::Lines { top, side } => format!("lines {top} {side}"),
             View::Pages { page, within } => format!("pages {page} {within}"),
             View::Blocks { block, offset } => format!("blocks {block} {offset}"),
+            View::Rendered { block, offset } => format!("rendered {block} {offset}"),
             View::Sheet {
                 sheet,
                 cell,
@@ -122,6 +127,10 @@ impl View {
                     within: number(next()?)? as f32,
                 },
                 "blocks" => View::Blocks {
+                    block: next()?.parse().map_err(drop)?,
+                    offset: number(next()?)? as f32,
+                },
+                "rendered" => View::Rendered {
                     block: next()?.parse().map_err(drop)?,
                     offset: number(next()?)? as f32,
                 },
@@ -397,6 +406,14 @@ mod tests {
                 View::Blocks {
                     block: 40,
                     offset: 18.5,
+                },
+            ),
+            entry(
+                "/e/README.md",
+                550,
+                View::Rendered {
+                    block: 12,
+                    offset: 31.5,
                 },
             ),
             entry(

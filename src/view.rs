@@ -32,6 +32,7 @@ use crate::lines::{Doc, LinesPane};
 use crate::media::{self, AudioPane, Loudness, Player, VideoPane};
 use crate::overview::{Docking, Family, Mode};
 use crate::pdf::PdfPane;
+use crate::rendered::RenderedPane;
 use crate::slides::SlidesPane;
 use crate::strip::{self, Mode as StripMode};
 use crate::theme::{Theme, accent};
@@ -94,6 +95,8 @@ pub struct Preview {
     inside: Option<Extracted>,
     /// An entry being taken out.
     opening: Option<Opening>,
+    /// The file shown rendered or as its source, on its way after `s`.
+    switching: Option<Task<()>>,
     _archive: Option<Subscription>,
     _appearance: Subscription,
     _activation: Subscription,
@@ -134,6 +137,7 @@ enum Pane {
     Audio(Entity<AudioPane>),
     Pdf(Entity<PdfPane>),
     Lines(Entity<LinesPane>),
+    Rendered(Entity<RenderedPane>),
     Archive(Entity<ArchivePane>),
     Doc(Entity<DocPane>),
     Sheet(Entity<SheetPane>),
@@ -148,6 +152,7 @@ impl Pane {
             Pane::Audio(v) => v.clone().into(),
             Pane::Pdf(v) => v.clone().into(),
             Pane::Lines(v) => v.clone().into(),
+            Pane::Rendered(v) => v.clone().into(),
             Pane::Archive(v) => v.clone().into(),
             Pane::Doc(v) => v.clone().into(),
             Pane::Sheet(v) => v.clone().into(),
@@ -162,6 +167,7 @@ impl Pane {
             Pane::Audio(_) => keys::Kind::Audio,
             Pane::Pdf(_) => keys::Kind::Pdf,
             Pane::Lines(_) => keys::Kind::Lines,
+            Pane::Rendered(_) => keys::Kind::Rendered,
             Pane::Archive(_) => keys::Kind::Archive,
             Pane::Doc(_) => keys::Kind::Doc,
             Pane::Sheet(_) => keys::Kind::Sheet,
@@ -202,6 +208,7 @@ impl Pane {
             Pane::Pdf(p) => p.update(cx, |p, cx| p.drop_pictures(window, cx)),
             Pane::Doc(d) => d.update(cx, |d, cx| d.drop_pictures(window, cx)),
             Pane::Slides(s) => s.update(cx, |s, cx| s.drop_pictures(window, cx)),
+            Pane::Rendered(r) => r.update(cx, |r, cx| r.drop_pictures(window, cx)),
             Pane::None | Pane::Lines(_) | Pane::Archive(_) | Pane::Sheet(_) => {}
         }
     }
@@ -276,6 +283,7 @@ impl Preview {
             levels: Vec::new(),
             inside: None,
             opening: None,
+            switching: None,
             _archive: None,
             _appearance: appearance,
             _activation: activation,
@@ -335,8 +343,13 @@ impl Preview {
                 .as_deref()
                 .and_then(|path| Key::new(path, facts.size, facts.modified))
         {
-            memory::remember(&key, view_of(pane, cx));
+            // Markdown and HTML left as their source open so again.
+            let source = loaded.markup.is_some() && matches!(pane, Pane::Lines(_));
+            let view =
+                view_of(pane, cx).or_else(|| source.then_some(View::Lines { top: 0., side: 0. }));
+            memory::remember(&key, view);
         }
+        self.switching = None;
         if let Some(opening) = self.opening.take() {
             opening.cancel.store(true, Ordering::Relaxed);
         }
@@ -412,6 +425,9 @@ impl Preview {
                 let mode = self.mode(Family::Minimap);
                 Pane::Lines(cx.new(|_| LinesPane::new(Doc::Hex(hex), mode, docked, view)))
             }
+            Body::Rendered(doc) => {
+                Pane::Rendered(cx.new(|cx| RenderedPane::new(*doc, view, window, cx)))
+            }
             Body::Document(paper) => {
                 let mode = self.mode(Family::Rail);
                 Pane::Doc(cx.new(|_| DocPane::new(*paper, mode, docked, view, window)))
@@ -437,6 +453,14 @@ impl Preview {
             Pane::Pdf(v) => Some(cx.observe(v, |_, _, cx| cx.notify())),
             Pane::Sheet(v) => Some(cx.observe(v, |_, _, cx| cx.notify())),
             Pane::Slides(v) => Some(cx.observe(v, |_, _, cx| cx.notify())),
+            // A text parsed in the background is in: a window held back for
+            // it can show.
+            Pane::Rendered(v) => Some(cx.observe(v, |this, _, cx| {
+                if !this.traced && !this.parsing(cx) {
+                    this.intent(Intent::Ready);
+                }
+                cx.notify();
+            })),
             _ => None,
         };
         self.watch_archive(window, cx);
@@ -492,7 +516,7 @@ impl Preview {
     fn family(&self) -> &'static str {
         match &self.pane {
             Pane::Video(_) | Pane::Audio(_) => "media",
-            Pane::Lines(_) => "text",
+            Pane::Lines(_) | Pane::Rendered(_) => "text",
             Pane::Pdf(_) | Pane::Slides(_) | Pane::Doc(_) => "pages",
             Pane::Sheet(_) => "sheet",
             Pane::Archive(_) => "archive",
@@ -503,9 +527,16 @@ impl Preview {
         }
     }
 
+    /// Whether a long Markdown or HTML text is still being parsed, in the
+    /// background, before it can be drawn.
+    pub fn parsing(&self, cx: &App) -> bool {
+        matches!(&self.pane, Pane::Rendered(r) if !r.read(cx).ready())
+    }
+
     fn ready(&self, cx: &App) -> bool {
         match &self.pane {
             Pane::Video(video) => video.read(cx).ready(),
+            Pane::Rendered(r) => r.read(cx).ready(),
             Pane::None => !matches!(self.loaded.body, Body::Image(_)) || self.image.is_some(),
             _ => true,
         }
@@ -608,13 +639,15 @@ impl Preview {
             Act::Overview => self.cycle_overview(window, cx),
             Act::Strip => self.cycle_strip(window, cx),
             Act::Wrap => self.toggle_wrap(window, cx),
-            Act::SelectAll => {
-                if let Pane::Lines(t) = &self.pane {
-                    t.update(cx, |t, cx| t.select_all(cx));
-                }
-            }
+            Act::Source => self.toggle_source(window, cx),
+            Act::SelectAll => match &self.pane {
+                Pane::Lines(t) => t.update(cx, |t, cx| t.select_all(cx)),
+                Pane::Rendered(r) => r.update(cx, |r, cx| r.select_all(cx)),
+                _ => {}
+            },
             Act::Copy => match &self.pane {
                 Pane::Lines(t) => t.update(cx, |t, cx| t.copy(cx)),
+                Pane::Rendered(r) => r.update(cx, |r, cx| r.copy(cx)),
                 Pane::Pdf(p) => p.update(cx, |p, cx| p.copy(cx)),
                 _ => {}
             },
@@ -666,6 +699,7 @@ impl Preview {
     fn move_pane(&mut self, motion: Motion, window: &mut Window, cx: &mut Context<Self>) {
         match &self.pane {
             Pane::Lines(t) => t.update(cx, |t, cx| t.motion(motion, cx)),
+            Pane::Rendered(r) => r.update(cx, |r, cx| r.motion(motion, cx)),
             Pane::Doc(d) => d.update(cx, |d, cx| d.motion(motion, window, cx)),
             Pane::Pdf(p) => p.update(cx, |p, cx| p.motion(motion, cx)),
             Pane::Slides(s) => s.update(cx, |s, cx| s.motion(motion, cx)),
@@ -787,6 +821,38 @@ impl Preview {
             None => "Hexdumps do not wrap",
         };
         self.note(Some(word.into()), window, cx);
+    }
+
+    /// s: Markdown and HTML rendered, or as their source, in the window as
+    /// it is; the file opens the same way again within the hour.
+    fn toggle_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.loaded.markup.is_none() || self.switching.is_some() {
+            return;
+        }
+        let rendered = !matches!(self.pane, Pane::Rendered(_));
+        let (uri, screen) = (self.loaded.facts.uri.clone(), self.screen);
+        let name = self.loaded.facts.name.clone();
+        let job = cx
+            .background_executor()
+            .spawn(async move { content::load_as(&uri, screen, true, Some(rendered)) });
+        self.switching = Some(cx.spawn_in(window, async move |this, cx| {
+            let mut loaded = job.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.switching = None;
+                if rendered && !matches!(loaded.body, Body::Rendered(_)) {
+                    return this.note(Some("Too long to render".into()), window, cx);
+                }
+                // The name a file taken out of an archive is shown by.
+                loaded.facts.name = name;
+                loaded.dock = 0.;
+                loaded.view = None;
+                this.loaded = loaded;
+                this.attach(window, cx);
+                this.redock(window, cx);
+                let word = if rendered { "Rendered" } else { "Source" };
+                this.note(Some(word.into()), window, cx);
+            });
+        }));
     }
 
     /// Looks inside the selected entry of the archive in view, or opens or
@@ -1153,7 +1219,7 @@ impl Preview {
                 parts.extend(t.read(cx).summary());
             }
             Pane::Archive(a) => parts.push(a.read(cx).summary()),
-            Pane::Doc(_) => parts.push(self.loaded.description.clone()),
+            Pane::Doc(_) | Pane::Rendered(_) => parts.push(self.loaded.description.clone()),
             Pane::Sheet(s) => parts.push(s.read(cx).summary()),
             Pane::Slides(s) => {
                 let s = s.read(cx);
@@ -1209,9 +1275,11 @@ impl Preview {
         let area = window.viewport_size();
         let colours = match &self.pane {
             Pane::Video(v) => return v.update(cx, |v, _| v.scrim(area, band)),
-            Pane::Audio(_) | Pane::Lines(_) | Pane::Sheet(_) | Pane::Archive(_) => {
-                vec![theme.surface, theme.text]
-            }
+            Pane::Audio(_)
+            | Pane::Lines(_)
+            | Pane::Rendered(_)
+            | Pane::Sheet(_)
+            | Pane::Archive(_) => vec![theme.surface, theme.text],
             Pane::Doc(_) => vec![rgb(docview::PAPER).into(), rgb(docview::INK).into()],
             // Pages are drawn white whatever their ink, between the
             // window's own ground.
@@ -1575,6 +1643,7 @@ fn view_of(pane: &Pane, cx: &App) -> Option<View> {
         Pane::Pdf(p) => p.read(cx).view(),
         Pane::Slides(s) => s.read(cx).view(),
         Pane::Lines(t) => t.read(cx).view(),
+        Pane::Rendered(r) => r.read(cx).view(cx),
         Pane::Doc(d) => d.read(cx).view(),
         Pane::Sheet(s) => s.read(cx).view(),
         Pane::Archive(a) => a.read(cx).view(cx),

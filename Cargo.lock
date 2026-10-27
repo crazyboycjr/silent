@@ -6950,6 +6950,7 @@ version = "0.1.0"
 dependencies = [
  "async-channel",
  "async-io",
+ "base64",
  "calamine",
  "compress-tools",
  "encoding_rs",
@@ -6969,8 +6970,10 @@ dependencies = [
  "libc",
  "lofty",
  "log",
+ "markdown",
  "memmap2",
  "moxcms",
+ "percent-encoding",
  "raw-window-handle",
  "ropey",
  "roxmltree 0.21.2",

@@ -6,6 +6,7 @@ pub mod detect;
 pub mod extract;
 pub mod format;
 pub mod geometry;
+pub mod markup;
 pub mod hexdump;
 pub mod memory;
 pub mod native;

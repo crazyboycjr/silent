@@ -19,6 +19,8 @@ pub enum Kind {
     Slides,
     /// Text, code and hexdumps.
     Lines,
+    /// Markdown and HTML rendered.
+    Rendered,
     Doc,
     Sheet,
     Archive,
@@ -31,7 +33,10 @@ impl Kind {
     }
 
     fn vim(self) -> bool {
-        matches!(self, Kind::Lines | Kind::Doc | Kind::Pdf | Kind::Slides)
+        matches!(
+            self,
+            Kind::Lines | Kind::Rendered | Kind::Doc | Kind::Pdf | Kind::Slides
+        )
     }
 
     fn media(self) -> bool {
@@ -71,6 +76,8 @@ pub enum Act {
     Strip,
     /// w: text wraps at the window's width, or scrolls sideways again.
     Wrap,
+    /// s: Markdown and HTML rendered, or their source.
+    Source,
     /// Enter or Space in an engaged archive: look inside the selected
     /// entry, which goes on top, or open or close the selected folder;
     /// with nothing selected, the key's usual act.
@@ -164,8 +171,8 @@ pub fn route(kind: Kind, engaged: bool, key: &str, mods: Mods, held: bool, vim: 
     }
     if ctrl {
         return match (shift, key) {
-            (false, "a") if kind == Kind::Lines => Act::SelectAll,
-            (false, "c") if matches!(kind, Kind::Lines | Kind::Pdf) => Act::Copy,
+            (false, "a") if matches!(kind, Kind::Lines | Kind::Rendered) => Act::SelectAll,
+            (false, "c") if matches!(kind, Kind::Lines | Kind::Rendered | Kind::Pdf) => Act::Copy,
             _ => Act::Pass,
         };
     }
@@ -197,6 +204,7 @@ pub fn route(kind: Kind, engaged: bool, key: &str, mods: Mods, held: bool, vim: 
         }
         (false, "i") => once(Act::Strip),
         (false, "w") if kind == Kind::Lines => once(Act::Wrap),
+        (false, "s") if matches!(kind, Kind::Lines | Kind::Rendered) => once(Act::Source),
         (false, "k") if kind.media() => once(Act::Pause),
         (false, "j" | "l") if kind.media() => Act::Seek {
             forward: key == "l",
@@ -212,11 +220,13 @@ fn shift_arrow(kind: Kind, direction: Direction) -> Act {
     let forward = matches!(direction, Direction::Down | Direction::Right);
     let vertical = matches!(direction, Direction::Up | Direction::Down);
     match kind {
-        Kind::Lines | Kind::Doc | Kind::Sheet if vertical => Act::Move(if forward {
-            Motion::PageDown(1)
-        } else {
-            Motion::PageUp(1)
-        }),
+        Kind::Lines | Kind::Rendered | Kind::Doc | Kind::Sheet if vertical => {
+            Act::Move(if forward {
+                Motion::PageDown(1)
+            } else {
+                Motion::PageUp(1)
+            })
+        }
         Kind::Pdf | Kind::Slides if vertical => Act::Move(if forward {
             Motion::Down(1)
         } else {
@@ -238,7 +248,7 @@ fn engaged_arrow(kind: Kind, direction: Direction, count: usize) -> Act {
     let forward = matches!(direction, Direction::Down | Direction::Right);
     let vertical = matches!(direction, Direction::Up | Direction::Down);
     match kind {
-        Kind::Lines | Kind::Doc => Act::Move(match direction {
+        Kind::Lines | Kind::Rendered | Kind::Doc => Act::Move(match direction {
             Direction::Down => Motion::Down(count),
             Direction::Up => Motion::Up(count),
             Direction::Right => Motion::Right(count),
@@ -438,6 +448,28 @@ mod tests {
         assert_eq!(
             route(Kind::Lines, false, "w", mods, true, &mut vim),
             Act::Nothing
+        );
+    }
+
+    #[test]
+    fn s_turns_markdown_to_its_source_and_back_and_rendered_text_scrolls() {
+        assert_eq!(press(Kind::Rendered, false, "s"), Act::Source);
+        assert_eq!(press(Kind::Lines, true, "s"), Act::Source);
+        for kind in [Kind::Pdf, Kind::Doc, Kind::Still, Kind::Video] {
+            assert_eq!(press(kind, false, "s"), Act::Pass, "{kind:?}");
+        }
+        assert_eq!(
+            press(Kind::Rendered, false, "j"),
+            Act::Move(Motion::Down(1))
+        );
+        assert_eq!(press(Kind::Rendered, true, "up"), Act::Move(Motion::Up(1)));
+        assert_eq!(
+            press(Kind::Rendered, false, "right"),
+            Act::Select(Direction::Right)
+        );
+        assert_eq!(
+            shifted(Kind::Rendered, "down"),
+            Act::Move(Motion::PageDown(1))
         );
     }
 

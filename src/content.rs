@@ -8,20 +8,21 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use gpui_kit::RenderImage;
 use gpui_kit::component::highlighter::{Language, SyntaxHighlighter};
-use tree_sitter::{InputEdit, Point};
+use gpui_kit::{Image, ImageFormat, ImageSource, RenderImage};
 use gpui_video_player::{Video, VideoOptions};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use silent::decode::{Decoder, Event};
 use silent::detect::{self, Facts, Kind};
 use silent::geometry::Screen;
+use silent::markup::{self, Markup};
 use silent::memory::{self, Key, View};
 use silent::office::miniature::Miniature;
 use silent::office::{self, doc, docx, odf, ppt, pptx};
 use silent::{extract, hexdump, pretty, unpack};
 use smallvec::SmallVec;
+use tree_sitter::{InputEdit, Point};
 use unicode_width::UnicodeWidthChar;
 
 use crate::overview::{Family, Mode};
@@ -33,6 +34,14 @@ const CARD: (f64, f64) = (600.0, 340.0);
 const AUDIO_CARD: (f64, f64) = (640.0, 300.0);
 /// Text beyond this is not read; the head is shown.
 pub const TEXT_LIMIT: usize = 2 << 20;
+/// Markdown and HTML past this open as their source, unless `s` asks: the
+/// text view parses and lays out every block of a document before its first
+/// frame, some 0.4 ms a kilobyte.
+const RENDER_LIMIT: usize = 256 << 10;
+/// The column rendered Markdown and HTML are read in, in logical pixels.
+const COLUMN: f64 = 860.0;
+/// The pixels a rendered document's pictures may take, decoded, in all.
+const PICTURE_BUDGET: u64 = 48 << 20;
 /// Columns a tab stretches to.
 pub const TAB: usize = 4;
 
@@ -50,6 +59,9 @@ pub struct Loaded {
     pub body: Body,
     /// Where the file was left, if it was within the hour.
     pub view: Option<View>,
+    /// The markup a Markdown or HTML file is in, which `s` shows rendered
+    /// or as its source.
+    pub markup: Option<Markup>,
 }
 
 pub struct Packed {
@@ -65,6 +77,7 @@ pub enum Body {
     Audio(Audio),
     Pdf(Pdf),
     Text(Box<Text>),
+    Rendered(Box<Rendered>),
     Hex(Hex),
     Archive(Archive),
     Document(Box<Paper>),
@@ -144,6 +157,33 @@ pub struct Pdf {
     pub first: Option<(usize, Arc<RenderImage>)>,
 }
 
+/// Markdown or HTML to render.
+pub struct Rendered {
+    pub text: String,
+    pub markup: Markup,
+    /// The pictures the text draws, by their URLs as written: those beside
+    /// the file, decoded; the rest are their words in `text`.
+    pub pictures: HashMap<String, Drawn>,
+    /// Where the file is, for its relative links.
+    pub dir: PathBuf,
+}
+
+/// A picture in a rendered document.
+pub enum Drawn {
+    Raster(Arc<RenderImage>),
+    /// For gpui to draw.
+    Svg(Arc<Image>),
+}
+
+impl Drawn {
+    pub fn source(&self) -> ImageSource {
+        match self {
+            Drawn::Raster(image) => image.clone().into(),
+            Drawn::Svg(image) => image.clone().into(),
+        }
+    }
+}
+
 pub struct Text {
     pub text: String,
     /// Byte range of each line, without its line break.
@@ -199,6 +239,12 @@ pub struct Entry {
 /// picture; without it the image comes as soon as its size is known, so a
 /// new window can open while it decodes.
 pub fn load(uri: &str, screen: Screen, wait_for_pixels: bool) -> Loaded {
+    load_as(uri, screen, wait_for_pixels, None)
+}
+
+/// [`load`], with Markdown and HTML rendered or shown as their source when
+/// `rendered` says, else as they were left, else rendered.
+pub fn load_as(uri: &str, screen: Screen, wait_for_pixels: bool, rendered: Option<bool>) -> Loaded {
     let facts = match detect::probe(uri) {
         Ok(facts) => facts,
         Err(error) => return missing(uri, &error.to_string(), screen),
@@ -217,6 +263,7 @@ pub fn load(uri: &str, screen: Screen, wait_for_pixels: bool) -> Loaded {
         facts,
         description,
         view,
+        markup: None,
     };
     let resume = match loaded.view {
         Some(View::Media(position)) => Some(position),
@@ -250,9 +297,27 @@ pub fn load(uri: &str, screen: Screen, wait_for_pixels: bool) -> Loaded {
         },
         (Kind::Text, Some(path)) => match read_head(&path) {
             Some((bytes, truncated)) => {
-                let text = text(bytes, truncated, &path, &loaded.facts.content_type);
-                let (size, dock) = text_size(&text, screen);
-                (size, dock, Body::Text(Box::new(text)))
+                loaded.markup = Markup::of(&path);
+                let left_as_source = matches!(loaded.view, Some(View::Lines { .. }));
+                let short = bytes.len() <= RENDER_LIMIT;
+                match loaded
+                    .markup
+                    .filter(|_| !truncated && rendered.unwrap_or(short && !left_as_source))
+                {
+                    Some(markup) => {
+                        let rendered = render(bytes, markup, &path, screen);
+                        (
+                            rendered_size(&rendered, screen),
+                            0.,
+                            Body::Rendered(Box::new(rendered)),
+                        )
+                    }
+                    None => {
+                        let text = text(bytes, truncated, &path, &loaded.facts.content_type);
+                        let (size, dock) = text_size(&text, screen);
+                        (size, dock, Body::Text(Box::new(text)))
+                    }
+                }
             }
             None => return loaded,
         },
@@ -316,6 +381,7 @@ impl Loaded {
             packed: None,
             body: Body::Info,
             view: None,
+            markup: None,
         }
     }
 
@@ -343,6 +409,7 @@ fn missing(uri: &str, error: &str, screen: Screen) -> Loaded {
         packed: None,
         body: Body::Info,
         view: None,
+        markup: None,
     }
 }
 
@@ -633,6 +700,95 @@ fn pdf(path: &Path, screen: Screen, page: usize) -> Option<((i32, i32), f64, Pdf
     ))
 }
 
+/// Markdown or HTML to render, with the pictures beside the file decoded at
+/// no more than the column's width, and the others, and those that cannot
+/// be read, put as their words: silent fetches nothing.
+fn render(bytes: Vec<u8>, markup: Markup, path: &Path, screen: Screen) -> Rendered {
+    let text = match markup {
+        Markup::Html => markup::without_head(&decode_text(&bytes)),
+        Markup::Markdown => decode_text(&bytes),
+    };
+    let dir = path.parent().map(Path::to_owned).unwrap_or_default();
+    let found = markup::pictures(&text, markup);
+    let width = screen.card(COLUMN, 0.0, 0.0).0.max(1) as u32;
+    let mut budget = PICTURE_BUDGET;
+    let mut pictures = HashMap::new();
+    for picture in &found {
+        if pictures.contains_key(&picture.url) {
+            continue;
+        }
+        if let Some(source) = picture_source(&picture.url, &dir, width, &mut budget) {
+            pictures.insert(picture.url.clone(), source);
+        }
+    }
+    let text = markup::rewrite(&text, &found, |p| pictures.contains_key(&p.url));
+    crate::trace::mark("rendered pictures");
+    Rendered {
+        text,
+        markup,
+        pictures,
+        dir,
+    }
+}
+
+/// A picture beside the file or carried in a `data:` URL: raster pictures
+/// decoded here, the first frame of an animation, SVG for gpui to draw.
+fn picture_source(url: &str, dir: &Path, width: u32, budget: &mut u64) -> Option<Drawn> {
+    let bytes = match url.strip_prefix("data:") {
+        Some(data) => data_url(data)?,
+        None => std::fs::read(markup::local_path(url, dir)?).ok()?,
+    };
+    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(256)]).to_ascii_lowercase();
+    if head.contains("<svg") || (head.trim_start().starts_with("<?xml") && head.contains("svg")) {
+        return Some(Drawn::Svg(Arc::new(Image::from_bytes(
+            ImageFormat::Svg,
+            bytes,
+        ))));
+    }
+    let decoded = image::load_from_memory(&bytes).ok()?;
+    let decoded = if decoded.width() > width {
+        decoded.thumbnail(width, u32::MAX)
+    } else {
+        decoded
+    };
+    *budget = budget.checked_sub(u64::from(decoded.width()) * u64::from(decoded.height()))?;
+    let mut bgra = decoded.into_rgba8();
+    for pixel in bgra.pixels_mut() {
+        pixel.0.swap(0, 2);
+    }
+    let image = RenderImage::new(SmallVec::from_elem(image::Frame::new(bgra), 1));
+    Some(Drawn::Raster(Arc::new(image)))
+}
+
+/// The bytes of a `data:` URL, past its `data:`.
+fn data_url(data: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    let (meta, payload) = data.split_once(',')?;
+    if meta.ends_with(";base64") {
+        let payload: String = payload
+            .chars()
+            .filter(|c| !c.is_ascii_whitespace())
+            .collect();
+        base64::engine::general_purpose::STANDARD
+            .decode(payload)
+            .ok()
+    } else {
+        Some(percent_encoding::percent_decode_str(payload).collect())
+    }
+}
+
+/// A rendered document's window: the column, as tall as its source's lines
+/// would make it, which pictures and headings outgrow.
+fn rendered_size(rendered: &Rendered, screen: Screen) -> (i32, i32) {
+    let rows = rendered
+        .text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .count();
+    let rows = (rows + rendered.pictures.len() * 6).clamp(12, 44) as f64;
+    card(screen, (COLUMN, rows * 22.0 + 80.0))
+}
+
 /// The first [`TEXT_LIMIT`] bytes, and whether there were more.
 fn read_head(path: &Path) -> Option<(Vec<u8>, bool)> {
     let mut bytes = Vec::new();
@@ -711,7 +867,10 @@ static READY: Mutex<Vec<Ready>> = Mutex::new(Vec::new());
 /// The languages a resident previewer makes highlighters for as it starts,
 /// with a text to run them over first.
 const COMMON: [(&str, &str); 8] = [
-    ("rust", "/// A `doc` comment.\nfn f() {\n    println!(\"{}\", vec![1]);\n}\n"),
+    (
+        "rust",
+        "/// A `doc` comment.\nfn f() {\n    println!(\"{}\", vec![1]);\n}\n",
+    ),
     ("python", ""),
     ("javascript", ""),
     ("json", ""),
@@ -796,13 +955,11 @@ pub fn prepare() {
                 prepare_highlighter(language, primer.to_owned());
             }
         }
-        let _ = std::thread::Builder::new()
-            .name("media".into())
-            .spawn(|| {
-                if gst::init().is_ok() {
-                    let _ = gst::ElementFactory::make("playbin").build();
-                }
-            });
+        let _ = std::thread::Builder::new().name("media".into()).spawn(|| {
+            if gst::init().is_ok() {
+                let _ = gst::ElementFactory::make("playbin").build();
+            }
+        });
     });
 }
 
@@ -1060,10 +1217,18 @@ mod tests {
             fresh.styles(&(0..text.len()), &*theme)
         };
         // One made ahead over the warm-up's sample, then one over this file.
-        let (_, primer) = COMMON.iter().find(|(language, _)| *language == "rust").unwrap();
+        let (_, primer) = COMMON
+            .iter()
+            .find(|(language, _)| *language == "rust")
+            .unwrap();
         for primer in [primer.to_string(), text[..text.len() / 2].to_string()] {
             prepare_highlighter("rust", primer);
-            while !super::READY.lock().unwrap().iter().any(|r: &Ready| r.highlighter.language().as_ref() == "rust") {
+            while !super::READY
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r: &Ready| r.highlighter.language().as_ref() == "rust")
+            {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
             let made_ahead = highlight("rust", text);

@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 async-channel = "2.5"
 async-io = "2.6"
+base64 = "0.22"
 calamine = "0.37"
 compress-tools = "0.16"
 encoding_rs = "0.8"
@@ -51,8 +52,10 @@ kurbo = "0.13"
 libc = "0.2"
 lofty = "0.25"
 log = "0.4"
+markdown = "1.0"
 memmap2 = "0.9"
 moxcms = { version = "0.8", features = ["in_place"] }
+percent-encoding = "2.3"
 raw-window-handle = "0.6"
 ropey = "=2.0.0-beta.1"
 roxmltree = "0.21"
