@@ -34,6 +34,7 @@ screen, at a size you can see. It takes the place of GNOME's sushi.
 | Video | Plays at its own aspect, with sound; hardware decoding when GStreamer has it; a playbar over the bottom of the picture, with the seek track, the times and the volume, while the pointer moves and after each seek |
 | Audio | A card with the cover art, title, artist and album, playing, with the same playbar |
 | PDF | The pages in a scroll, shaped by the first page, rendered as they come into view; a rail of page thumbnails docked at the right; text can be selected and copied |
+| Markdown and HTML | Rendered: headings, lists, tables, code highlighted, pictures beside the file; s shows the source and back. A picture from the web shows its words: silent fetches nothing. Files over 256 KB open as their source |
 | Text and code | Highlighted, with line numbers; a minimap over the right edge while it scrolls, or docked beside the text; long lines scroll sideways, or wrap at the window's width with w; select with the mouse and copy; UTF-8, UTF-16 and GB18030 (GBK) text; minified JSON laid out; the first 2 MB of large files |
 | Binary files | As `hexdump -C` prints them, read from a memory map, so a dump of gigabytes opens at once, minimap and all; select and copy as text |
 | Compressed files | gzip, xz, zstd, bzip2, lz4 and lzma files show what is inside: text and code as above, a tar as its listing, anything else as a hexdump; the strip gives both sizes when the format records them |
@@ -47,7 +48,7 @@ screen, at a size you can see. It takes the place of GNOME's sushi.
 
 The Office files are read the way macOS Quick Look reads them: silent opens
 the package and parses its XML itself, or the binary streams of the formats
-of Office 97 to 2003, with no office suite, and draws the result natively. Rendered Markdown and HTML, and fonts, come later.
+of Office 97 to 2003, with no office suite, and draws the result natively. Fonts come later.
 
 Pictures are decoded by glycin's loaders, each in a sandbox of its own,
 except JPEG and still PNG: silent decodes those itself, with the same
@@ -91,7 +92,8 @@ A file you leave, by moving to another or closing the preview, comes back
 as you left it if you return within the hour: video and sound play on from
 there (unless they were nearly over), PDFs and slides open at the page,
 text at the line, documents at the paragraph, spreadsheets on the sheet and
-the cell, archives with the same folders open and the same entry selected.
+the cell, archives with the same folders open and the same entry selected,
+Markdown and HTML rendered or as source, pictures, PDFs and videos turned.
 That, and the modes M, i and w last chose, for the minimap, for the rail
 of pages and documents, for the strip of each family of files (pictures,
 video and sound, text, pages, sheets, archives, cards), and for wrapping
@@ -129,6 +131,9 @@ cleared at the next start.
 | M | The minimap of text: shown while scrolling, docked beside the text, or none (a slim scrollbar instead); the rail of a PDF, slides or a document: docked or none; mute video and audio |
 | i | The strip: shown while the pointer moves, never, or always; while it is never shown, a key that changes something (M, i, w, the volume, a seek, a pause) still answers with a word at the bottom right for a second |
 | w | Wrap the long lines of text and code at the window's width, or scroll them sideways again |
+| s | Markdown and HTML rendered, or their source |
+| r, Shift+R | Turn a picture, every page of a PDF, or a video a quarter clockwise, or back; the window takes the turned shape |
+| ? | The keys, on a card over the content; Esc takes it away first (F1 too, where the window manager leaves it) |
 | K or a click | Pause or play video and audio |
 | J, L | Back or forward ten seconds |
 | Shift+← , Shift+→ | Half a screen sideways in text that does not wrap; back or forward thirty seconds in video and audio; the previous or next sheet of a spreadsheet |
@@ -202,6 +207,14 @@ sudo pacman -S sushi
 
 pacman removes silent in the same step, since the two conflict.
 
+## Other file managers
+
+yazi, Nemo, ranger, lf, nnn, Thunar, PCManFM and Dolphin preview with
+silent too: `silent show FILE` and its kin hand a file to the resident
+previewer, as warm as Nautilus's, and a terminal file manager keeps the
+keyboard while the preview follows its cursor. How to set each one up is
+in [docs/integration.md](docs/integration.md).
+
 ## Development
 
 `scripts/harness` makes test files, starts a private X display (3840×2160 at
@@ -231,3 +244,8 @@ user's back. The results are in [docs/benchmark.md](docs/benchmark.md):
 scripts/bench fixtures
 scripts/bench run --n 5
 ```
+
+## License
+
+silent is licensed under the Apache License, Version 2.0; see
+[LICENSE](LICENSE).

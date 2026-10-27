@@ -4,10 +4,10 @@ pkgver=0.1.0
 pkgrel=1
 pkgdesc='A borderless, fast file previewer for Nautilus (replaces sushi)'
 arch=('x86_64')
-license=('unknown')
-depends=('glycin' 'bubblewrap' 'vulkan-icd-loader' 'fontconfig' 'freetype2' 'glib2'
+license=('Apache-2.0')
+depends=('glycin' 'bubblewrap' 'vulkan-icd-loader' 'fontconfig' 'glib2'
          'libxcb' 'libxkbcommon' 'libxkbcommon-x11' 'libseccomp' 'gcc-libs' 'glibc'
-         'gstreamer' 'gst-plugins-base' 'gst-plugins-good' 'libarchive' 'openssl')
+         'gstreamer' 'gst-plugins-base' 'gst-plugins-good' 'libarchive')
 optdepends=('gst-libav: more video and audio formats'
             'gst-plugins-bad: more video formats and hardware decoding'
             'libjpeg-turbo: very large JPEGs decoded at a fraction of their size')

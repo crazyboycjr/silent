@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "A borderless, fast file previewer for Nautilus (a sushi replacement)"
+license = "Apache-2.0"
 publish = false
 
 [dependencies]
