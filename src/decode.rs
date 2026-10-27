@@ -143,7 +143,7 @@ async fn here<T>(
             }
         })
     });
-    let (orientation, icc) = (opened.orientation, opened.icc.clone());
+    let orientation = opened.orientation;
     let decoded = match opened.decode(at_least) {
         Ok(decoded) => decoded,
         Err(error) => {
@@ -163,7 +163,7 @@ async fn here<T>(
         pixels: glib::Bytes::from_owned(decoded.pixels),
         delay: None,
         orientation,
-        icc,
+        icc: decoded.icc,
     };
     let _ = sender.send(Event::Frame(prepare(frame))).await;
     true

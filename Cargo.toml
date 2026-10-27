@@ -51,6 +51,7 @@ hayro = "0.7"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 kurbo = "0.13"
 libc = "0.2"
+libjpeg-turbo-rs = "0.8"
 lofty = "0.25"
 log = "0.4"
 markdown = "1.0"
@@ -65,8 +66,6 @@ tree-sitter = "0.26"
 unicode-width = "0.2"
 url = "2"
 x11rb = { version = "0.14", features = ["randr"] }
-zune-core = "0.5"
-zune-jpeg = "0.5"
 yuv = "0.8"
 zbus = { version = "5.15", default-features = false, features = ["async-io", "blocking-api"] }
 zip = { version = "9", default-features = false, features = ["deflate"] }

@@ -51,11 +51,12 @@ the package and parses its XML itself, or the binary streams of the formats
 of Office 97 to 2003, with no office suite, and draws the result natively. Fonts come later.
 
 Pictures are decoded by glycin's loaders, each in a sandbox of its own,
-except JPEG and still PNG: silent decodes those itself, with the same
-pure-Rust decoders glycin's loader uses, which saves the loader's process,
-some 35 ms a picture, at the price of the sandbox for these two formats. A
-JPEG twice the size of the screen or more is decoded at a half, a quarter
-or an eighth of its size by libjpeg-turbo, when it is installed.
+except JPEG and still PNG: silent decodes those itself, in pure Rust, JPEG
+by libjpeg-turbo-rs, a port of libjpeg-turbo, and PNG by the decoder
+glycin's loader uses, which saves the loader's process, some 35 ms a
+picture, at the price of the sandbox for these two formats. A JPEG twice
+the size of the screen or more is decoded at a half, a quarter or an
+eighth of its size.
 
 The strip of facts lies over the bottom of the content, and i says when:
 while the pointer moves (it fades 1.5 s after it rests, a playbar 1 s
@@ -194,8 +195,7 @@ notices its file replaced and leaves as soon as no preview is open, and the
 next Space starts the new one.
 
 silent needs X11, a Vulkan driver, glycin's image loaders with bubblewrap,
-and GStreamer for video and audio; libjpeg-turbo, if installed, speeds up
-very large JPEGs. Its windows have the class `silent`;
+and GStreamer for video and audio. Its windows have the class `silent`;
 window managers that tile should float it, for example in xmonad:
 `className =? "silent" --> doCenterFloat`.
 
