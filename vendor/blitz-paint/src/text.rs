@@ -11,7 +11,7 @@ use style::values::computed::{
 use style::values::generics::text::{GenericTextDecorationInset, GenericTextDecorationLength};
 
 use crate::color::{Color, ToColorColor as _};
-use crate::{FONT_EMBOLDEN_ENABLED, SELECTION_COLOR};
+use crate::FONT_EMBOLDEN_ENABLED;
 
 /// Draw the backgrounds of inline elements (e.g. `<span style="background: ...">`).
 ///
@@ -570,6 +570,8 @@ pub(crate) fn stroke_text<'a>(
     scale: f64,
     inline_root_id: NodeId,
     context: &mut DrawTextContext,
+    // silent: a list marker's `::marker` colour, over its item's.
+    color: Option<Color>,
 ) {
     let DrawTextContext {
         stack,
@@ -635,7 +637,9 @@ pub(crate) fn stroke_text<'a>(
 
                 // The glyph colour comes from the run's own node (the stack top): `color`
                 // inherits, so the innermost inline element already carries the right value.
-                let text_color = stack.last().map(|e| e.text_color).unwrap_or(Color::BLACK);
+                let text_color = color
+                    .or_else(|| stack.last().map(|e| e.text_color))
+                    .unwrap_or(Color::BLACK);
 
                 let embolden = if FONT_EMBOLDEN_ENABLED {
                     let fs = font_size as f64 / scale;
@@ -735,6 +739,8 @@ pub(crate) fn draw_text_selection(
     transform: Affine,
     selection_start: usize,
     selection_end: usize,
+    // silent: the `::selection` background, which render.rs finds.
+    color: Color,
 ) {
     let anchor = Cursor::from_byte_index(layout, selection_start, Affinity::Downstream);
     let focus = Cursor::from_byte_index(layout, selection_end, Affinity::Downstream);
@@ -742,6 +748,6 @@ pub(crate) fn draw_text_selection(
 
     selection.geometry_with(layout, |rect, _line_idx| {
         let rect = kurbo::Rect::new(rect.x0, rect.y0, rect.x1, rect.y1);
-        scene.fill(Fill::NonZero, transform, SELECTION_COLOR, None, &rect);
+        scene.fill(Fill::NonZero, transform, color, None, &rect);
     });
 }

@@ -45,6 +45,34 @@ use peniko::{self, Fill, ImageData, ImageSampler};
 use style::values::generics::color::GenericColor;
 use taffy::Layout;
 
+/// silent: selected text is drawn on its `::selection` background, as the
+/// page or the user-agent sheet sets it on the text's element or the nearest
+/// one above, and only failing that on Blitz's own blue.
+fn selection_color(dom: &BaseDocument, node_id: NodeId) -> Color {
+    use style::selector_parser::PseudoElement;
+    let mut next = Some(node_id);
+    while let Some(id) = next {
+        let Some(node) = dom.get_node(id) else {
+            break;
+        };
+        let ground = node
+            .try_stylo_element_data()
+            .and_then(|data| data.get())
+            .and_then(|data| {
+                let style = data.styles.pseudos.get(&PseudoElement::Selection)?.clone();
+                let ground = style.clone_background_color();
+                Some(ground.resolve_to_absolute(&style.clone_color()))
+            });
+        if let Some(ground) = ground
+            && ground.alpha > 0.0
+        {
+            return ground.as_srgb_color();
+        }
+        next = node.parent;
+    }
+    SELECTION_COLOR
+}
+
 /// A view of the track positions reported by taffy in physical (left-to-right /
 /// top-to-bottom) order. Taffy reports tracks in logical order, which for RTL grid
 /// containers is physically reversed.
@@ -881,6 +909,7 @@ impl ElementCx<'_, '_> {
                     transform,
                     sel_start,
                     sel_end,
+                    selection_color(self.context.dom, self.node.id),
                 );
             }
 
@@ -894,6 +923,7 @@ impl ElementCx<'_, '_> {
                 self.scale,
                 self.node.id,
                 &mut draw_text_context,
+                None,
             );
         }
     }
@@ -960,6 +990,7 @@ impl ElementCx<'_, '_> {
                 self.scale,
                 self.node.id,
                 &mut draw_text_context,
+                None,
             );
         }
     }
@@ -968,6 +999,7 @@ impl ElementCx<'_, '_> {
         if let Some(ListItemLayout {
             marker,
             position: ListItemLayoutPosition::Outside(layout),
+            color,
         }) = self.list_item
         {
             // Right align and pad the bullet when rendering outside
@@ -1015,6 +1047,7 @@ impl ElementCx<'_, '_> {
                 self.scale,
                 self.node.id,
                 &mut draw_text_context,
+                *color,
             );
         }
     }

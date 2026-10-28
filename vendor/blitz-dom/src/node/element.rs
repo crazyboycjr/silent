@@ -918,6 +918,9 @@ impl std::fmt::Debug for SpecialElementData {
 pub struct ListItemLayout {
     pub marker: Marker,
     pub position: ListItemLayoutPosition,
+    /// silent: the colour the item's `::marker` gives an outside marker,
+    /// when it is not the item's own.
+    pub color: Option<crate::util::Color>,
 }
 
 //We seperate chars from strings in order to optimise rendering - ie not needing to

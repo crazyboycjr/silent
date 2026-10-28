@@ -376,7 +376,44 @@ impl BaseDocument {
     /// Collect all inline root nodes between start_node and end_node in document order.
     /// Both start and end are assumed to be inline roots.
     /// Returns the nodes in document order (from first to last).
+    ///
+    /// silent: the inline roots in the order they are laid out, anonymous
+    /// blocks among them wherever they are. The walk of the DOM below found
+    /// anonymous blocks only at either end, so a selection across one in the
+    /// middle, such as the bare links of a groff page's contents, left it out
+    /// of what was drawn and of what was copied.
     pub fn collect_inline_roots_in_range(
+        &self,
+        start_node: NodeId,
+        end_node: NodeId,
+    ) -> Vec<NodeId> {
+        let mut all = Vec::new();
+        if let Some(root) = self.try_root_element() {
+            self.inline_roots_in_layout_order(root.id, &mut all);
+        }
+        let at = |node: NodeId| all.iter().position(|&id| id == node);
+        match (at(start_node), at(end_node)) {
+            (Some(start), Some(end)) => all[start.min(end)..=start.max(end)].to_vec(),
+            _ => self.collect_inline_roots_in_dom_range(start_node, end_node),
+        }
+    }
+
+    /// silent: every inline root under `node_id`, in layout order.
+    fn inline_roots_in_layout_order(&self, node_id: NodeId, out: &mut Vec<NodeId>) {
+        let node = &self.nodes[node_id];
+        if node.flags.is_inline_root() {
+            out.push(node_id);
+            return;
+        }
+        let layout_children = node.layout_children.borrow();
+        for &child_id in layout_children.iter().flatten() {
+            self.inline_roots_in_layout_order(child_id, out);
+        }
+    }
+
+    /// Blitz's own walk, which `collect_inline_roots_in_range` falls back
+    /// to for nodes it does not find laid out.
+    fn collect_inline_roots_in_dom_range(
         &self,
         start_node: NodeId,
         end_node: NodeId,

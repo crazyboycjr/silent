@@ -47,8 +47,49 @@ use usvg::fontdb;
 pub(crate) static FONT_DB: LazyLock<Arc<fontdb::Database>> = LazyLock::new(|| {
     let mut db = fontdb::Database::new();
     db.load_system_fonts();
+    generic_families_as_fontconfig_has_them(&mut db);
     Arc::new(db)
 });
+
+/// silent: SVG text in `serif` or `sans-serif` came out in Greek letters.
+/// fontdb takes each generic family from the last fontconfig `<alias>` that
+/// prefers something for it, and urw-base35's 69-urw-standard-symbols-ps.conf
+/// prefers Standard Symbols PS for serif. fontique asks fontconfig the way
+/// the page's own text does, so SVG text now gets the same faces.
+#[cfg(feature = "svg")]
+fn generic_families_as_fontconfig_has_them(db: &mut fontdb::Database) {
+    use parley::fontique::{Collection, CollectionOptions, GenericFamily};
+    let mut fonts = Collection::new(CollectionOptions {
+        shared: false,
+        system_fonts: true,
+    });
+    let mut first = |generic: GenericFamily| {
+        let id = fonts.generic_families(generic).next()?;
+        fonts.family_name(id).map(str::to_owned)
+    };
+    if let Some(name) = first(GenericFamily::Serif) {
+        db.set_serif_family(name);
+    }
+    if let Some(name) = first(GenericFamily::SansSerif) {
+        db.set_sans_serif_family(name);
+    }
+    if let Some(name) = first(GenericFamily::Monospace) {
+        db.set_monospace_family(name);
+    }
+    if let Some(name) = first(GenericFamily::Cursive) {
+        db.set_cursive_family(name);
+    }
+    if let Some(name) = first(GenericFamily::Fantasy) {
+        db.set_fantasy_family(name);
+    }
+}
+
+/// silent: the system's fonts for SVG text found now, as a resident
+/// previewer starts, rather than on the first page with a picture in SVG.
+#[cfg(feature = "svg")]
+pub fn prepare_svg_fonts() {
+    LazyLock::force(&FONT_DB);
+}
 
 /// Which kind of CSS image layer list (`background-image` or `mask-image`) to
 /// flush from style to dedicated storage on the node.

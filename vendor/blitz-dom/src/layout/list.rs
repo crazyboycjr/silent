@@ -109,7 +109,40 @@ fn node_list_item_child(
         }
     };
 
-    Some(ListItemLayout { marker, position })
+    let color = marker_color(doc, child_id, &styles);
+    Some(ListItemLayout {
+        marker,
+        position,
+        color,
+    })
+}
+
+/// silent: the colour a list item's `::marker` gives its marker, when it is
+/// not the item's own. Browsers draw the marker in it; Blitz, which does
+/// not cascade `::marker`, drew the item's.
+fn marker_color(
+    doc: &BaseDocument,
+    node_id: NodeId,
+    styles: &style::properties::ComputedValues,
+) -> Option<crate::util::Color> {
+    use crate::util::ToColorColor as _;
+    use style::selector_parser::PseudoElement;
+    use style::shared_lock::StylesheetGuards;
+    use style::stylist::RuleInclusion;
+
+    let read_guard = doc.guard.read();
+    let guards = StylesheetGuards::same(&read_guard);
+    let marker = doc.stylist.lazily_compute_pseudo_element_style(
+        &guards,
+        &doc.nodes[node_id],
+        &PseudoElement::Marker,
+        RuleInclusion::All,
+        styles,
+        false,
+        None,
+    )?;
+    let color = marker.clone_color();
+    (color != styles.clone_color()).then(|| color.as_color_color())
 }
 
 // Determine the marker to render for a given list style type

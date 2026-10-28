@@ -1,11 +1,12 @@
-# gpui's Linux and wgpu backends and gpui-base, vendored
+# gpui's Linux and wgpu backends, gpui-base and Blitz, vendored
 
-`gpui-pre-linux` and `gpui-pre-wgpu` 0.3.9, and `gpui-base` 0.8.0, as
-crates.io publishes them, taken in through `[patch.crates-io]` in the top
-`Cargo.toml`, with silent's changes on top. The first commit that touches
-each adds it unchanged, without its `Cargo.lock` (and for the backends
-their benchmarks), so `git log -p -- vendor` shows every change; in the
-code, `silent:` comments mark them.
+`gpui-pre-linux` and `gpui-pre-wgpu` 0.3.9, `gpui-base` 0.8.0, and Blitz's
+`blitz-dom` and `blitz-paint` 0.3.0-beta.4, as crates.io publishes them,
+taken in through `[patch.crates-io]` in the top `Cargo.toml`, with
+silent's changes on top. The first commit that touches each adds it
+unchanged, without its `Cargo.lock` (and for the backends their
+benchmarks), so `git log -p -- vendor` shows every change; in the code,
+`silent:` comments mark them.
 
 - **Start-up marks**, everywhere: log records with the target
   `silent::trace`, which silent prints with `SILENT_TRACE` set, and with
@@ -81,5 +82,37 @@ code, `silent:` comments mark them.
   own; what changes is the gap under a heading followed by a container's
   first block, which now follows the heading as in Markdown.
 
-To take a newer gpui, copy its crates over these, drop their `Cargo.lock`
-and benchmarks, and carry the changes over.
+- **SVG text in the generic families fontconfig gives** (`blitz-dom`,
+  `src/util.rs`): Blitz hands usvg a fontdb of the system's fonts, and
+  fontdb takes each generic family from the last fontconfig `<alias>`
+  that prefers something for it; urw-base35's
+  `69-urw-standard-symbols-ps.conf` prefers Standard Symbols PS for
+  `serif`, so the graphs in gi-docgen's pages (`Times,serif`) read in Greek
+  letters. The generic families now come from fontique, which asks
+  fontconfig as the page's own text does. `prepare_svg_fonts` finds the
+  fonts as silent starts rather than on the first page with SVG in it.
+
+- **A selection across anonymous blocks** (`blitz-dom`,
+  `src/traversal.rs`): the blocks a selection runs through were found by
+  a walk of the DOM, which saw an anonymous block (text and inline boxes
+  straight in a block with blocks beside them) only at either end, so
+  groff's contents, bare links between `<br>`s, were neither drawn
+  selected nor copied. They are now taken in the order they are laid
+  out, the DOM walk kept for an end that is not laid out.
+
+- **List markers in their `::marker` colour** (`blitz-dom`,
+  `src/layout/list.rs`, `src/node/element.rs`; `blitz-paint`,
+  `src/render.rs`, `src/text.rs`): Blitz cascades no `::marker` style,
+  so a bullet took its item's colour. A list item's `::marker` style is
+  now computed when its marker is laid out, and an outside marker drawn
+  in its colour where that differs, as silent's Markdown sheet asks for
+  muted bullets as the text view draws them.
+
+- **The selection in its `::selection` colour** (`blitz-paint`,
+  `src/render.rs`, `src/text.rs`): Blitz drew selected text on a fixed
+  light blue. It now takes the `::selection` background of the text's
+  element or the nearest one above, as the page or silent's sheet sets
+  it, silent's amber by default, and the blue only failing that.
+
+To take a newer gpui or Blitz, copy its crates over these, drop their
+`Cargo.lock` and benchmarks, and carry the changes over.
