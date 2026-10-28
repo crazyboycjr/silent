@@ -164,6 +164,12 @@ pub struct TextViewState {
     pub(super) selection_revision: usize,
     compatible_layout_update: bool,
     layout_text_style: Option<(gpui::TextStyle, Pixels)>,
+    /// silent: whether the blocks out of view are measured again over the
+    /// frames after a font or rem change; the first not yet measured again;
+    /// whether the frame after the change, which measures none, was drawn.
+    remeasure_gradually: bool,
+    remeasure_from: Option<usize>,
+    remeasure_shown: bool,
     parsed_error: Option<SharedString>,
     tx: Sender<UpdateOptions>,
     _parse_task: Task<()>,
@@ -179,6 +185,15 @@ impl TextViewState {
     /// Create a HTML TextViewState.
     pub fn html(text: &str, cx: &mut Context<Self>) -> Self {
         Self::new(TextViewFormat::Html, text, cx)
+    }
+
+    /// silent: after a font or rem change, lays out only the blocks in view
+    /// at once and measures the others again over the next frames, their
+    /// old heights standing in meanwhile, rather than all in the frame of
+    /// the change, which took a 250 KB page a quarter of a second.
+    pub fn remeasure_gradually(mut self) -> Self {
+        self.remeasure_gradually = true;
+        self
     }
 
     /// Create a new TextViewState.
@@ -257,6 +272,9 @@ impl TextViewState {
             selection_revision: 0,
             compatible_layout_update: false,
             layout_text_style: None,
+            remeasure_gradually: false,
+            remeasure_from: None,
+            remeasure_shown: false,
             tx,
             _parse_task,
             _receive_task,
@@ -1062,6 +1080,9 @@ impl TextViewState {
     }
 }
 
+/// silent: blocks measured again in a frame after a font or rem change.
+const REMEASURED_PER_FRAME: usize = 16;
+
 impl Render for TextViewState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let typography = (window.text_style(), window.rem_size());
@@ -1074,7 +1095,34 @@ impl Render for TextViewState {
             // ListState invalidates its cached rows for width changes, but does
             // not know that an inherited font or rem change affects offscreen
             // inline metrics. Retain logical selections just as for resources.
-            self.preserve_selection_for_reflow();
+            if self.remeasure_gradually {
+                // silent: the blocks in view are laid out at the new size in
+                // every frame regardless; the others are measured again a
+                // slice a frame, from the second frame on: a draw made for a
+                // key is shown by the next frame, which would carry a slice.
+                self.preserve_inline_selection = true;
+                self.compatible_layout_update = true;
+                self.remeasure_from = Some(0);
+                self.remeasure_shown = false;
+                window.request_animation_frame();
+            } else {
+                self.preserve_selection_for_reflow();
+            }
+        } else if let Some(from) = self.remeasure_from.take() {
+            let count = self.list_state.item_count();
+            let to = if self.remeasure_shown {
+                (from + REMEASURED_PER_FRAME).min(count)
+            } else {
+                from
+            };
+            self.remeasure_shown = true;
+            if from < to {
+                self.list_state.remeasure_items(from..to);
+            }
+            if to < count {
+                self.remeasure_from = Some(to);
+                window.request_animation_frame();
+            }
         }
         self.layout_text_style = Some(typography);
         let state = cx.entity();

@@ -64,5 +64,14 @@ code, `silent:` comments mark them.
   parsed document. Drop this once gpui-base gives such paragraphs ids of
   their own.
 
+- **Text resized without laying out the whole page** (`gpui-base`,
+  `src/text/state.rs`): the text view's list measures every block, and a
+  font or rem change measured them all again in its frame: 90 ms for a
+  226 KB Markdown file at each step of the text size. A text view made
+  with `remeasure_gradually()`, as silent makes its own, lays out the
+  blocks in view at once, as in every frame, and measures the others again
+  sixteen a frame from the second frame after the change, their old
+  heights standing in meanwhile.
+
 To take a newer gpui, copy its crates over these, drop their `Cargo.lock`
 and benchmarks, and carry the changes over.

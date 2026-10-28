@@ -44,9 +44,12 @@ impl RenderedPane {
         cx: &mut Context<Self>,
     ) -> Self {
         crate::theme::components(window, cx);
-        let state = cx.new(|cx| match doc.markup {
-            Markup::Markdown => TextViewState::markdown(&doc.text, cx),
-            Markup::Html => TextViewState::html(&doc.text, cx),
+        let state = cx.new(|cx| {
+            match doc.markup {
+                Markup::Markdown => TextViewState::markdown(&doc.text, cx),
+                Markup::Html => TextViewState::html(&doc.text, cx),
+            }
+            .remeasure_gradually()
         });
         // The first word from the text view is a long text parsed.
         cx.observe(&state, |this: &mut Self, _, cx| {
@@ -70,13 +73,14 @@ impl RenderedPane {
         }
     }
 
-    /// The text at another size, which the window's rem size sets: the
-    /// blocks are measured again, with the place under the pointer at
-    /// `at`, or else the block at the top, kept where it is.
+    /// The text at another size, which the window's rem size sets, with the
+    /// place under the pointer at `at`, or else at the top, kept where it
+    /// is. The text view lays out the blocks in view at once and measures
+    /// the others over the next frames.
     pub fn set_zoom(&mut self, at: Option<Point<Pixels>>, cx: &mut Context<Self>) {
         let list = self.list(cx);
-        self.held = at.and_then(|at| zoom::hold(&list, at.y));
-        list.remeasure();
+        let y = at.map_or_else(|| list.viewport_bounds().top(), |at| at.y);
+        self.held = zoom::hold(&list, y);
         cx.notify();
     }
 
