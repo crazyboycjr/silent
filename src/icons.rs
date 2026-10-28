@@ -29,9 +29,6 @@ gpui_kit_assets::icon_assets!(pub Icons, [
     ArrowRight,
     ArrowUp,
     ArrowDown,
-    Mouse,
-    MousePointer,
-    MousePointerClick,
 ]);
 
 /// The icon and its colour for an entry called `name`.

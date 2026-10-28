@@ -195,8 +195,8 @@ fn pages(slides: bool) -> Section {
     Section {
         title,
         lines: vec![
-            Keys("Shift+↑ ↓", step),
             PAGE_KEYS,
+            Keys("Shift+↑ ↓", step),
             Keys("Home / End", ends),
             subject.after_a_click(),
             Keys("← →", step),
@@ -211,8 +211,8 @@ fn sheets(tabs: bool) -> Section {
         lines.push(Keys("Shift+← →", "Go to the previous or next sheet"));
     }
     lines.extend([
-        SCREEN,
         PAGE_KEYS,
+        SCREEN,
         Keys("Home / End", "Go to the first or the last row"),
         Subject::Sheet { tabs }.after_a_click(),
         Keys("← → ↑ ↓", "Move the cell cursor"),
@@ -247,7 +247,8 @@ fn view(subject: Subject) -> Section {
     }
     if subject.zooms() {
         lines.extend([
-            Keys("Ctrl+Shift+= | / Ctrl+−", "Make the text bigger or smaller"),
+            Keys("Ctrl+Shift+=", "Make the text bigger"),
+            Keys("Ctrl+−", "Make the text smaller"),
             Keys("Ctrl+0", "Reset the text size"),
             Keys("Ctrl+@Scroll", "Make the text bigger or smaller"),
         ]);
@@ -264,7 +265,7 @@ fn navigation(subject: Subject) -> Option<Section> {
         Subject::Rendered(_) | Subject::Document => false,
         _ => return None,
     };
-    let mut lines = vec![SCREEN, PAGE_KEYS];
+    let mut lines = vec![PAGE_KEYS, SCREEN];
     if sideways {
         lines.push(Keys("Shift+← →", "Scroll half a screen sideways"));
     }
@@ -302,46 +303,42 @@ fn selection(subject: Subject) -> Option<Section> {
 }
 
 fn vim(subject: Subject) -> Option<Section> {
-    let ends = Keys("G G | / Shift+G", "Go to the start or the end");
-    let lines = match subject {
+    let ends = [
+        Keys("G G", "Go to the start"),
+        Keys("Shift+G", "Go to the end"),
+    ];
+    let mut lines = match subject {
         Subject::Text | Subject::Hexdump | Subject::Source(_) => vec![
             Keys("K / J", "Scroll a line up or down"),
             Keys("H / L", "Scroll left or right"),
             Keys("0", "Go back to the left edge"),
-            HALF_SCREEN[0],
-            HALF_SCREEN[1],
-            ends,
-            Keys("2 0 Shift+G", "Go to line 20"),
         ],
-        Subject::Rendered(_) => vec![
-            Keys("K / J", "Scroll a line up or down"),
-            HALF_SCREEN[0],
-            HALF_SCREEN[1],
-            ends,
-        ],
-        Subject::Document => vec![
-            Keys("K / J", "Scroll a line up or down"),
-            HALF_SCREEN[0],
-            HALF_SCREEN[1],
-            ends,
-            Keys("2 0 Shift+G", "Go to paragraph 20"),
-        ],
-        Subject::Pdf => vec![
-            Keys("K / J", "Go to the previous or next page"),
-            HALF_SCREEN[0],
-            HALF_SCREEN[1],
-            Keys("G G | / Shift+G", "Go to the first or the last page"),
-            Keys("2 0 Shift+G", "Go to page 20"),
-        ],
-        Subject::Slides => vec![
-            Keys("K / J", "Go to the previous or next slide"),
-            HALF_SCREEN[0],
-            HALF_SCREEN[1],
-            Keys("G G | / Shift+G", "Go to the first or the last slide"),
-            Keys("2 0 Shift+G", "Go to slide 20"),
-        ],
+        Subject::Rendered(_) | Subject::Document => {
+            vec![Keys("K / J", "Scroll a line up or down")]
+        }
+        Subject::Pdf => vec![Keys("K / J", "Go to the previous or next page")],
+        Subject::Slides => vec![Keys("K / J", "Go to the previous or next slide")],
         _ => return None,
     };
+    lines.extend(HALF_SCREEN);
+    lines.extend(match subject {
+        Subject::Pdf => [
+            Keys("G G", "Go to the first page"),
+            Keys("Shift+G", "Go to the last page"),
+        ],
+        Subject::Slides => [
+            Keys("G G", "Go to the first slide"),
+            Keys("Shift+G", "Go to the last slide"),
+        ],
+        _ => ends,
+    });
+    lines.extend(match subject {
+        Subject::Rendered(_) => None,
+        Subject::Document => Some(Keys("2 0 Shift+G", "Go to paragraph 20")),
+        Subject::Pdf => Some(Keys("2 0 Shift+G", "Go to page 20")),
+        Subject::Slides => Some(Keys("2 0 Shift+G", "Go to slide 20")),
+        _ => Some(Keys("2 0 Shift+G", "Go to line 20")),
+    });
     Some(Section {
         title: "Vim keys",
         lines,
@@ -397,30 +394,26 @@ enum Token {
     Or,
     /// What the mouse does: `Click`, `Scroll`, `Drag`.
     Mouse(&'static str),
-    /// The keys go on below.
-    Break,
 }
 
 /// `Shift+← →` as tokens: keys side by side are pressed one after the
 /// other (`G G`), or are arrows; `+` joins keys held together; `/` stands
-/// between two ways; `@` marks what the mouse does; `|` breaks the line.
+/// between two ways; `@` marks what the mouse does.
 fn tokens(keys: &'static str) -> Vec<Token> {
     let mut out = Vec::new();
     for word in keys.split(' ') {
-        match word {
-            "/" => out.push(Token::Or),
-            "|" => out.push(Token::Break),
-            word => {
-                for (i, part) in word.split('+').enumerate() {
-                    if i > 0 {
-                        out.push(Token::Plus);
-                    }
-                    out.push(match part.strip_prefix('@') {
-                        Some(mouse) => Token::Mouse(mouse),
-                        None => Token::Cap(part),
-                    });
-                }
+        if word == "/" {
+            out.push(Token::Or);
+            continue;
+        }
+        for (i, part) in word.split('+').enumerate() {
+            if i > 0 {
+                out.push(Token::Plus);
             }
+            out.push(match part.strip_prefix('@') {
+                Some(mouse) => Token::Mouse(mouse),
+                None => Token::Cap(part),
+            });
         }
     }
     out
@@ -442,10 +435,8 @@ const CAP_ONE: f32 = 22.;
 const CAP_TEXT: f32 = 11.5;
 const CAP_PAD: f32 = 5.;
 const ARROW: f32 = 12.;
-const MOUSE: f32 = 13.;
 const CAP_GAP: f32 = 3.;
 const JOIN_PAD: f32 = 3.;
-const KEY_LINES_GAP: f32 = 4.;
 /// The arrow between two modes, and the room either side of it.
 const MODE_ARROW: f32 = 9.;
 const MODE_ARROW_PAD: f32 = 2.;
@@ -501,14 +492,6 @@ fn arrow(label: &str) -> Option<IconName> {
     })
 }
 
-fn mouse_icon(word: &str) -> IconName {
-    match word {
-        "Click" => IconName::MousePointerClick,
-        "Drag" => IconName::MousePointer,
-        _ => IconName::Mouse,
-    }
-}
-
 fn cap_width(window: &Window, label: &'static str) -> f32 {
     if label.chars().count() == 1 {
         return CAP_ONE;
@@ -516,30 +499,23 @@ fn cap_width(window: &Window, label: &'static str) -> f32 {
     (width(window, label, CAP_TEXT, FontWeight::MEDIUM) + 2. * CAP_PAD + 2.).max(CAP_ONE)
 }
 
-/// How wide each line of a row's keys is drawn.
+/// How wide a row's keys are drawn.
 fn keys_width(window: &Window, keys: &[Token]) -> f32 {
     let join = width(window, "+", CAP_TEXT, FontWeight::NORMAL) + 2. * JOIN_PAD;
-    let mut widest: f32 = 0.;
-    let mut line = 0.;
+    let mut total = 0.;
     for (i, token) in keys.iter().enumerate() {
         let side_by_side = i > 0 && matches!(keys[i - 1], Token::Cap(_) | Token::Mouse(_));
         let gap = if side_by_side { CAP_GAP } else { 0. };
-        line += match *token {
+        total += match *token {
             Token::Cap(label) => cap_width(window, label) + gap,
             Token::Plus | Token::Or => join,
-            Token::Mouse(word) => MOUSE + 3. + width(window, word, TEXT, FontWeight::NORMAL) + gap,
-            Token::Break => {
-                widest = widest.max(line);
-                line = 0.;
-                continue;
-            }
+            Token::Mouse(word) => width(window, word, TEXT, FontWeight::NORMAL) + gap,
         };
     }
-    widest.max(line)
+    total
 }
 
 fn keys_element(keys: &[Token], theme: Theme) -> Div {
-    let line = || div().flex_none().flex().flex_row().items_center();
     let joiner = |sign: &'static str| {
         div()
             .flex_none()
@@ -548,47 +524,25 @@ fn keys_element(keys: &[Token], theme: Theme) -> Div {
             .text_color(theme.caption)
             .child(sign)
     };
-    let mut lines = Vec::new();
-    let mut row = line();
+    let mut row = div().flex_none().flex().flex_row().items_center();
     for (i, token) in keys.iter().enumerate() {
         let side_by_side = i > 0 && matches!(keys[i - 1], Token::Cap(_) | Token::Mouse(_));
         if side_by_side && matches!(token, Token::Cap(_) | Token::Mouse(_)) {
             row = row.child(div().flex_none().w(px(CAP_GAP)));
         }
-        row = match *token {
-            Token::Cap(label) => row.child(keycap(label, theme)),
-            Token::Plus => row.child(joiner("+")),
-            Token::Or => row.child(joiner("/")),
-            Token::Mouse(word) => row.child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(3.))
-                    .text_size(px(TEXT))
-                    .text_color(theme.text)
-                    .child(
-                        svg()
-                            .path(mouse_icon(word).path())
-                            .size(px(MOUSE))
-                            .text_color(theme.caption),
-                    )
-                    .child(word),
-            ),
-            Token::Break => {
-                lines.push(std::mem::replace(&mut row, line()));
-                continue;
-            }
-        };
+        row = row.child(match *token {
+            Token::Cap(label) => keycap(label, theme),
+            Token::Plus => joiner("+"),
+            Token::Or => joiner("/"),
+            Token::Mouse(word) => div()
+                .flex_none()
+                .text_size(px(TEXT))
+                .line_height(px(CAP))
+                .text_color(theme.text)
+                .child(word),
+        });
     }
-    lines.push(row);
-    div()
-        .flex_none()
-        .flex()
-        .flex_col()
-        .gap(px(KEY_LINES_GAP))
-        .children(lines)
+    row
 }
 
 /// A key as a keycap: a rounded box with a thin edge, a little thicker at
@@ -678,15 +632,9 @@ fn heights(sections: &[Section], words: f32, window: &Window) -> Vec<f32> {
                 .lines
                 .iter()
                 .map(|line| match *line {
-                    Keys(keys, what) => {
-                        let key_lines = tokens(keys)
-                            .iter()
-                            .filter(|t| **t == Token::Break)
-                            .count() as f32
-                            + 1.;
+                    Keys(_, what) => {
                         let wide = width(window, what, TEXT, FontWeight::NORMAL);
-                        let keys_tall = key_lines * CAP + (key_lines - 1.) * KEY_LINES_GAP;
-                        ROW - CAP + keys_tall.max(lines_of(wide) * CAP)
+                        ROW + CAP * (lines_of(wide) - 1.)
                     }
                     Modes(_, what, modes) => {
                         let wide = width(window, what, TEXT, FontWeight::NORMAL);
@@ -949,19 +897,8 @@ mod tests {
             [cap("Ctrl"), plus, Token::Mouse("Scroll")]
         );
         assert_eq!(
-            tokens("Ctrl+Shift+= | / Ctrl+−"),
-            [
-                cap("Ctrl"),
-                plus,
-                cap("Shift"),
-                plus,
-                cap("="),
-                Token::Break,
-                Token::Or,
-                cap("Ctrl"),
-                plus,
-                cap("−")
-            ]
+            tokens("2 0 Shift+G"),
+            [cap("2"), cap("0"), cap("Shift"), plus, cap("G")]
         );
     }
 
