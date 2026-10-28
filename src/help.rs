@@ -269,11 +269,16 @@ fn navigation(subject: Subject) -> Option<Section> {
     if sideways {
         lines.push(Keys("Shift+← →", "Scroll half a screen sideways"));
     }
-    lines.extend([
-        Keys("Home / End", "Go to the start or the end"),
-        subject.after_a_click(),
-        Keys("↑ ↓", "Scroll a line up or down"),
-    ]);
+    lines.push(Keys("Home / End", "Go to the start or the end"));
+    // A page laid out by Blitz: its links lead to their place in it or to
+    // their file, and its folded sections open where they are.
+    if subject == Subject::Rendered(Markup::Html) {
+        lines.extend([
+            Keys("@Click", "Follow a link"),
+            Keys("@Click", "Open or close a folded section"),
+        ]);
+    }
+    lines.extend([subject.after_a_click(), Keys("↑ ↓", "Scroll a line up or down")]);
     if sideways {
         lines.push(Keys("← →", "Scroll left or right"));
     }
@@ -830,7 +835,8 @@ mod tests {
     use silent::markup::Markup;
 
     use super::{
-        INFO_LINE, Keys, MINIMAP, Modes, Note, Shown, Subject, Token, sections, split, tokens,
+        INFO_LINE, Keys, Line, MINIMAP, Modes, Note, Shown, Subject, Token, sections, split,
+        tokens,
     };
     use crate::{overview, strip};
 
@@ -881,6 +887,10 @@ mod tests {
             inside: false,
             nautilus: true,
         }
+    }
+
+    fn lines_of(shown: Shown) -> Vec<Line> {
+        sections(shown).into_iter().flat_map(|s| s.lines).collect()
     }
 
     #[test]
@@ -1002,6 +1012,11 @@ mod tests {
         assert!(has(Subject::Rendered(Markup::Markdown), "s") && !has(Subject::Text, "s"));
         // Sideways only where lines can be wider than the window.
         assert!(has(Subject::Text, "h / l") && !has(Subject::Rendered(Markup::Html), "h / l"));
+        // An HTML page's links and folded sections answer a click.
+        let html = lines_of(shown(Subject::Rendered(Markup::Html)));
+        assert!(html.contains(&Keys("@Click", "Follow a link")));
+        assert!(html.contains(&Keys("@Click", "Open or close a folded section")));
+        assert!(!lines_of(shown(Subject::Source(Markup::Html))).contains(&Keys("@Click", "Follow a link")));
         // The text size where there is text to size.
         assert!(has(Subject::Document, "Ctrl+0") && !has(Subject::Pdf, "Ctrl+0"));
         // A workbook of one sheet has no sheets to go to.

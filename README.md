@@ -34,7 +34,8 @@ screen, at a size you can see. It takes the place of GNOME's sushi.
 | Video | Plays at its own aspect, with sound; hardware decoding when GStreamer has it; a playbar over the bottom of the picture, with the seek track, the times and the volume, while the pointer moves and after each seek |
 | Audio | A card with the cover art, title, artist and album, playing, with the same playbar |
 | PDF | The pages in a scroll, shaped by the first page, rendered as they come into view; page thumbnails docked at the right; text can be selected and copied |
-| Markdown and HTML | Rendered: headings, lists, tables, code highlighted, pictures beside the file; `s` shows the source and back. A picture from the web shows its words: silent fetches nothing. Files over 256 KB open as their source |
+| Markdown | Rendered: headings, lists, tables, code highlighted, pictures beside the file; `s` shows the source and back. A picture from the web shows its words: silent fetches nothing. Files over 256 KB open as their source |
+| HTML | Laid out by [Blitz](https://github.com/DioxusLabs/blitz) as a browser would, with the page's own CSS (silent's paper, ink and fonts only where it sets none), its pictures and stylesheets beside the file, and nothing fetched: a picture from the web shows its words. Links open with the desktop or scroll to their place in the page, folded sections open and close with a click, text selects and copies; `s` shows the source and back. A page over 1 MB, or one whose layout takes over 0.4 s, opens as its source |
 | Text and code | Highlighted, with line numbers; a minimap over the right edge while it scrolls, or docked beside the text; long lines scroll sideways, or wrap at the window's width with `w`; the text bigger or smaller with Ctrl and the wheel; select with the mouse and copy; UTF-8, UTF-16 and GB18030 (GBK) text; minified JSON laid out; the first 2 MB of large files |
 | Binary files | As `hexdump -C` prints them, read from a memory map, so a dump of gigabytes opens at once, minimap and all; select and copy as text |
 | Compressed files | gzip, xz, zstd, bzip2, lz4 and lzma files show what is inside: text and code as above, a tar as its listing, anything else as a hexdump; the info line gives both sizes when the format records them |
@@ -157,7 +158,7 @@ with it.
 | Shift+↑ , Shift+↓ | A screen up or down; the previous or next page of a PDF, or slide |
 | Page Up, Page Down | A screen up or down |
 | Home, End | The start or the end |
-| Drag, double-click, triple-click | Select text, a word, a line; the selection is also the primary selection |
+| Drag, double-click, triple-click | Select text, a word, a line (in an HTML page, a block); the selection is also the primary selection |
 | Ctrl+a, Ctrl+c | Select all, copy |
 
 Text, code, hexdumps, Word documents, PDFs and slides also move with vim's

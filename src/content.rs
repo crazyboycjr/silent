@@ -28,6 +28,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::overview::{Family, Mode};
 use crate::paged::RAIL;
 use crate::picture::{self, Prepared};
+use crate::{web, zoom};
 
 /// Card sizes in logical pixels; they grow with the desktop scale.
 const CARD: (f64, f64) = (600.0, 340.0);
@@ -38,6 +39,12 @@ pub const TEXT_LIMIT: usize = 2 << 20;
 /// text view parses and lays out every block of a document before its first
 /// frame, some 0.4 ms a kilobyte.
 const RENDER_LIMIT: usize = 256 << 10;
+/// The same for pages laid out by Blitz, which takes 50 ms for a 126 KB
+/// page and 120 to 320 ms for most of 0.4 to 1.8 MB; past `PAGE_TIME` a
+/// page opens as its source all the same, unless `s` asked: a few take
+/// seconds, such as one of 150 KB with 275 tables.
+const PAGE_LIMIT: usize = 1 << 20;
+const PAGE_TIME: Duration = Duration::from_millis(400);
 /// The column rendered Markdown and HTML are read in, in logical pixels.
 const COLUMN: f64 = 860.0;
 /// The pixels a rendered document's pictures may take, decoded, in all.
@@ -64,6 +71,9 @@ pub struct Loaded {
     pub markup: Option<Markup>,
     /// Quarter turns clockwise r gave a picture, a PDF or a video.
     pub turns: u8,
+    /// A word for the info line as the file shows, such as why a page
+    /// shows as its source.
+    pub note: Option<String>,
 }
 
 pub struct Packed {
@@ -80,6 +90,8 @@ pub enum Body {
     Pdf(Pdf),
     Text(Box<Text>),
     Rendered(Box<Rendered>),
+    /// HTML, or Markdown made HTML, laid out by Blitz.
+    Page(Box<crate::web::Page>),
     Hex(Hex),
     Archive(Archive),
     Document(Box<Paper>),
@@ -277,6 +289,7 @@ pub fn load_as(
         view,
         markup: None,
         turns,
+        note: None,
     };
     let resume = match loaded.view {
         Some(View::Media(position)) => Some(position),
@@ -313,12 +326,28 @@ pub fn load_as(
             Some((bytes, truncated)) => {
                 loaded.markup = Markup::of(&path);
                 let left_as_source = matches!(loaded.view, Some(View::Lines { .. }));
-                let short = bytes.len() <= RENDER_LIMIT;
-                match loaded
-                    .markup
-                    .filter(|_| !truncated && rendered.unwrap_or(short && !left_as_source))
-                {
-                    Some(markup) => {
+                let by_blitz = |markup| markup == Markup::Html || web::markdown_by_blitz();
+                let short = |markup| {
+                    let limit = if by_blitz(markup) {
+                        PAGE_LIMIT
+                    } else {
+                        RENDER_LIMIT
+                    };
+                    bytes.len() <= limit
+                };
+                let shown = loaded.markup.filter(|&markup| {
+                    !truncated && rendered.unwrap_or(short(markup) && !left_as_source)
+                });
+                let page = shown.filter(|&markup| by_blitz(markup)).map(|markup| {
+                    // Asked for with s, a page takes as long as it takes.
+                    let within = rendered.is_none().then_some(PAGE_TIME);
+                    let view = loaded.view.as_ref();
+                    let text = decode_text(&bytes);
+                    web::open(text, markup, &path, screen, zoom::level(), view, within)
+                });
+                match (shown, page) {
+                    (_, Some(Ok(page))) => (page.size, 0., Body::Page(Box::new(page))),
+                    (Some(markup), None) => {
                         let rendered = render(bytes, markup, &path, screen);
                         (
                             rendered_size(&rendered, screen),
@@ -326,7 +355,10 @@ pub fn load_as(
                             Body::Rendered(Box::new(rendered)),
                         )
                     }
-                    None => {
+                    (_, failed) => {
+                        if let Some(Err(web::Failed::Slow)) = failed {
+                            loaded.note = Some("Too slow to render: s renders it anyway".into());
+                        }
                         let text = text(bytes, truncated, &path, &loaded.facts.content_type);
                         let (size, dock) = text_size(&text, screen);
                         (size, dock, Body::Text(Box::new(text)))
@@ -397,6 +429,7 @@ impl Loaded {
             view: None,
             markup: None,
             turns: 0,
+            note: None,
         }
     }
 
@@ -426,6 +459,7 @@ fn missing(uri: &str, error: &str, screen: Screen) -> Loaded {
         view: None,
         markup: None,
         turns: 0,
+        note: None,
     }
 }
 
@@ -973,8 +1007,9 @@ fn end_of(text: &str) -> Point {
 
 /// Prepares, in the background and once, what the next previews of a
 /// resident previewer would wait for: highlighters for the commonest
-/// languages, and GStreamer with the plugins playback takes, some 60 ms. It
-/// would slow a preview being opened, so it waits for none to be.
+/// languages, GStreamer with the plugins playback takes, some 60 ms, and
+/// the fonts and sheets web pages are laid out with. It would slow a preview
+/// being opened, so it waits for none to be.
 pub fn prepare() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -988,6 +1023,7 @@ pub fn prepare() {
                 let _ = gst::ElementFactory::make("playbin").build();
             }
         });
+        web::prepare();
     });
 }
 

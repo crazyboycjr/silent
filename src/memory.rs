@@ -49,6 +49,9 @@ pub enum View {
     /// Markdown and HTML rendered: the block at the top and the pixels
     /// scrolled into it.
     Rendered { block: usize, offset: f32 },
+    /// A page laid out by Blitz: how far down it the view starts, as a
+    /// share of its height, which another text size or width keeps close.
+    Page { within: f32 },
     /// PDFs and slides: the page at the top, and how far down it the view
     /// starts, from 0 to 1.
     Pages { page: usize, within: f32 },
@@ -80,6 +83,7 @@ impl View {
             View::Pages { page, within } => format!("pages {page} {within}"),
             View::Blocks { block, offset } => format!("blocks {block} {offset}"),
             View::Rendered { block, offset } => format!("rendered {block} {offset}"),
+            View::Page { within } => format!("page {within}"),
             View::Sheet {
                 sheet,
                 cell,
@@ -133,6 +137,9 @@ impl View {
                 "rendered" => View::Rendered {
                     block: next()?.parse().map_err(drop)?,
                     offset: number(next()?)? as f32,
+                },
+                "page" => View::Page {
+                    within: number(next()?)? as f32,
                 },
                 "sheet" => View::Sheet {
                     sheet: next()?.parse().map_err(drop)?,
@@ -487,6 +494,7 @@ mod tests {
                     offset: 31.5,
                 },
             ),
+            entry("/e/class.SocketClient.html", 575, View::Page { within: 0.25 }),
             entry(
                 "/f/sales.xlsx",
                 600,

@@ -8,15 +8,26 @@ license = "Apache-2.0"
 publish = false
 
 [dependencies]
+# HTML pages, and Markdown made HTML, laid out by Blitz and painted on the
+# CPU by vello_cpu.
+anyrender = "0.14"
+anyrender_vello_cpu = { version = "0.18", features = ["multithreading"] }
 async-channel = "2.5"
 async-io = "2.6"
 base64 = "0.22"
+blitz-dom = { version = "=0.3.0-beta.4", default-features = false, features = ["svg", "woff", "system-fonts", "floats"] }
+blitz-html = { version = "=0.3.0-beta.4", default-features = false }
+blitz-paint = { version = "=0.3.0-beta.4", default-features = false, features = ["svg"] }
+blitz-traits = { version = "=0.3.0-beta.4", default-features = false }
 calamine = "0.37"
+comrak = { version = "0.59", default-features = false }
 compress-tools = "0.16"
 encoding_rs = "0.8"
 fast_image_resize = { version = "6.1", features = ["rayon"] }
 futures-lite = "2.6"
 gio = "0.22"
+# vello_cpu draws the colour emoji's PNG glyphs only with this.
+glifo = { version = "0.4", features = ["png"] }
 glycin = "4.0"
 gpui-kit = { version = "0.8", default-features = false, features = [
     "component",
@@ -57,11 +68,13 @@ log = "0.4"
 markdown = "1.0"
 memmap2 = "0.9"
 moxcms = { version = "0.8", features = ["in_place"] }
+parley = { version = "0.12", default-features = false, features = ["std"] }
 percent-encoding = "2.3"
 raw-window-handle = "0.6"
 ropey = "=2.0.0-beta.1"
 roxmltree = "0.21"
 smallvec = "1"
+taffy = { version = "0.15", default-features = false }
 tree-sitter = "0.26"
 unicode-width = "0.2"
 url = "2"
@@ -76,9 +89,12 @@ codegen-units = 4
 strip = true
 
 # gpui's X11 and wgpu backends, with silent's start-up marks and switches,
-# and gpui-base, whose text view silent renders Markdown and HTML with.
-# vendor/README.md says what differs from the published crates.
+# gpui-base, whose text view silent renders Markdown with, and Blitz's DOM
+# and painter, which lay out and paint HTML pages. vendor/README.md says
+# what differs from the published crates.
 [patch.crates-io]
+blitz-dom = { path = "vendor/blitz-dom" }
+blitz-paint = { path = "vendor/blitz-paint" }
 gpui-base = { path = "vendor/gpui-base" }
 gpui-pre-linux = { path = "vendor/gpui-pre-linux" }
 gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }

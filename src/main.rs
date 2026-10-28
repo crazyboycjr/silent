@@ -9,6 +9,7 @@ mod keys;
 mod lines;
 mod media;
 mod overview;
+mod page;
 mod paged;
 mod pdf;
 mod pdftext;
@@ -19,6 +20,7 @@ mod strip;
 mod theme;
 mod trace;
 mod view;
+mod web;
 mod zoom;
 
 use std::process::ExitCode;

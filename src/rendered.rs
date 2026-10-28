@@ -179,7 +179,7 @@ fn style(theme: Theme, dark: bool) -> TextViewStyle {
 }
 
 /// A click on a link: the desktop opens it, a relative one beside the file.
-fn open(url: &SharedString, dir: &std::path::Path, cx: &mut App) {
+pub(crate) fn open(url: &SharedString, dir: &std::path::Path, cx: &mut App) {
     let url = url.as_ref();
     if url.starts_with('#') {
         return;

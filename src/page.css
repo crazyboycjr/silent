@@ -1,0 +1,40 @@
+/* silent's defaults for an HTML page, at the user agent's level, so that
+   whatever the page's own CSS says wins: silent's ink, fonts, link blue,
+   selection and the rendered view's 36 px margins. The warm paper is laid
+   under the canvas by the painter, so that a page's own body background
+   still reaches the canvas. */
+
+html {
+    color: #2b2520;
+    font-family: "Noto Sans", "Noto Color Emoji", sans-serif;
+    font-size: 16px;
+    line-height: 1.5;
+}
+
+body {
+    margin: 14px 36px 40px;
+}
+
+code, kbd, pre, samp, tt {
+    font-family: "JetBrains Mono", monospace;
+}
+
+a:link, a:visited {
+    color: #3f6a98;
+}
+
+::selection {
+    background: rgba(232, 176, 122, 0.5);
+}
+
+@media (prefers-color-scheme: dark) {
+    html {
+        color: #ede5d9;
+    }
+    a:link, a:visited {
+        color: #8eb3dd;
+    }
+    ::selection {
+        background: rgba(154, 106, 63, 0.55);
+    }
+}

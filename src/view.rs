@@ -33,6 +33,7 @@ use crate::keys::{self, Act, Mods};
 use crate::lines::{Doc, LinesPane};
 use crate::media::{self, AudioPane, Loudness, Player, VideoPane};
 use crate::overview::{Docking, Family, Mode};
+use crate::page::PagePane;
 use crate::pdf::PdfPane;
 use crate::rendered::RenderedPane;
 use crate::slides::SlidesPane;
@@ -149,6 +150,7 @@ enum Pane {
     Pdf(Entity<PdfPane>),
     Lines(Entity<LinesPane>),
     Rendered(Entity<RenderedPane>),
+    Page(Entity<PagePane>),
     Archive(Entity<ArchivePane>),
     Doc(Entity<DocPane>),
     Sheet(Entity<SheetPane>),
@@ -164,6 +166,7 @@ impl Pane {
             Pane::Pdf(v) => v.clone().into(),
             Pane::Lines(v) => v.clone().into(),
             Pane::Rendered(v) => v.clone().into(),
+            Pane::Page(v) => v.clone().into(),
             Pane::Archive(v) => v.clone().into(),
             Pane::Doc(v) => v.clone().into(),
             Pane::Sheet(v) => v.clone().into(),
@@ -178,7 +181,7 @@ impl Pane {
             Pane::Audio(_) => keys::Kind::Audio,
             Pane::Pdf(_) => keys::Kind::Pdf,
             Pane::Lines(_) => keys::Kind::Lines,
-            Pane::Rendered(_) => keys::Kind::Rendered,
+            Pane::Rendered(_) | Pane::Page(_) => keys::Kind::Rendered,
             Pane::Archive(_) => keys::Kind::Archive,
             Pane::Doc(_) => keys::Kind::Doc,
             Pane::Sheet(_) => keys::Kind::Sheet,
@@ -220,6 +223,7 @@ impl Pane {
             Pane::Doc(d) => d.update(cx, |d, cx| d.drop_pictures(window, cx)),
             Pane::Slides(s) => s.update(cx, |s, cx| s.drop_pictures(window, cx)),
             Pane::Rendered(r) => r.update(cx, |r, cx| r.drop_pictures(window, cx)),
+            Pane::Page(p) => p.update(cx, |p, cx| p.drop_pictures(window, cx)),
             Pane::None | Pane::Lines(_) | Pane::Archive(_) | Pane::Sheet(_) => {}
         }
     }
@@ -451,6 +455,7 @@ impl Preview {
             Body::Rendered(doc) => {
                 Pane::Rendered(cx.new(|cx| RenderedPane::new(*doc, view, window, cx)))
             }
+            Body::Page(page) => Pane::Page(cx.new(|_| PagePane::new(*page, window))),
             Body::Document(paper) => {
                 let (mode, zoom) = (self.mode(Family::Rail), self.zoom);
                 Pane::Doc(cx.new(|_| DocPane::new(*paper, mode, docked, view, zoom, window)))
@@ -532,6 +537,9 @@ impl Preview {
             _ => {}
         }
         self.image = image;
+        if let Some(note) = self.loaded.note.take() {
+            self.note(Some(note), window, cx);
+        }
         cx.notify();
     }
 
@@ -539,7 +547,7 @@ impl Preview {
     fn family(&self) -> &'static str {
         match &self.pane {
             Pane::Video(_) | Pane::Audio(_) => "media",
-            Pane::Lines(_) | Pane::Rendered(_) => "text",
+            Pane::Lines(_) | Pane::Rendered(_) | Pane::Page(_) => "text",
             Pane::Pdf(_) | Pane::Slides(_) | Pane::Doc(_) => "pages",
             Pane::Sheet(_) => "sheet",
             Pane::Archive(_) => "archive",
@@ -559,6 +567,7 @@ impl Preview {
             Pane::Rendered(_) => {
                 Subject::Rendered(self.loaded.markup.unwrap_or(Markup::Markdown))
             }
+            Pane::Page(p) => Subject::Rendered(p.read(cx).markup()),
             Pane::Pdf(_) => Subject::Pdf,
             Pane::Slides(_) => Subject::Slides,
             Pane::Doc(_) => Subject::Document,
@@ -701,17 +710,20 @@ impl Preview {
             Act::Strip => self.cycle_strip(window, cx),
             Act::Wrap => self.toggle_wrap(window, cx),
             Act::Source => self.toggle_source(window, cx),
+            Act::Engine => self.flip_engine(window, cx),
             Act::Help => self.help = !self.help,
             Act::Turn(clockwise) => self.turn(clockwise, window, cx),
             Act::Zoom(zoom) => self.zoom_text(zoom, None, window, cx),
             Act::SelectAll => match &self.pane {
                 Pane::Lines(t) => t.update(cx, |t, cx| t.select_all(cx)),
                 Pane::Rendered(r) => r.update(cx, |r, cx| r.select_all(cx)),
+                Pane::Page(p) => p.update(cx, |p, cx| p.select_all(cx)),
                 _ => {}
             },
             Act::Copy => match &self.pane {
                 Pane::Lines(t) => t.update(cx, |t, cx| t.copy(cx)),
                 Pane::Rendered(r) => r.update(cx, |r, cx| r.copy(cx)),
+                Pane::Page(p) => p.update(cx, |p, cx| p.copy(cx)),
                 Pane::Pdf(p) => p.update(cx, |p, cx| p.copy(cx)),
                 _ => {}
             },
@@ -764,6 +776,7 @@ impl Preview {
         match &self.pane {
             Pane::Lines(t) => t.update(cx, |t, cx| t.motion(motion, cx)),
             Pane::Rendered(r) => r.update(cx, |r, cx| r.motion(motion, cx)),
+            Pane::Page(p) => p.update(cx, |p, cx| p.motion(motion, cx)),
             Pane::Doc(d) => d.update(cx, |d, cx| d.motion(motion, window, cx)),
             Pane::Pdf(p) => p.update(cx, |p, cx| p.motion(motion, cx)),
             Pane::Slides(s) => s.update(cx, |s, cx| s.motion(motion, cx)),
@@ -893,7 +906,35 @@ impl Preview {
         if self.loaded.markup.is_none() || self.switching.is_some() {
             return;
         }
-        let rendered = !matches!(self.pane, Pane::Rendered(_));
+        let rendered = !matches!(self.pane, Pane::Rendered(_) | Pane::Page(_));
+        let word = if rendered { "Rendered" } else { "Source" };
+        self.read_again(rendered, word, window, cx);
+    }
+
+    /// B: rendered Markdown drawn by the text view or by Blitz, this file
+    /// and the next, so that the two can be compared.
+    fn flip_engine(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rendered = matches!(self.pane, Pane::Rendered(_) | Pane::Page(_));
+        if self.loaded.markup != Some(Markup::Markdown) || !rendered || self.switching.is_some() {
+            return;
+        }
+        let word = if crate::web::flip_markdown() {
+            "Markdown by Blitz"
+        } else {
+            "Markdown by the text view"
+        };
+        self.read_again(true, word, window, cx);
+    }
+
+    /// The file read again, rendered or as its source, into the window as
+    /// it is, and `word` on the info line.
+    fn read_again(
+        &mut self,
+        rendered: bool,
+        word: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let (uri, screen) = (self.loaded.facts.uri.clone(), self.screen);
         let name = self.loaded.facts.name.clone();
         let job = cx
@@ -903,7 +944,7 @@ impl Preview {
             let mut loaded = job.await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.switching = None;
-                if rendered && !matches!(loaded.body, Body::Rendered(_)) {
+                if rendered && !matches!(loaded.body, Body::Rendered(_) | Body::Page(_)) {
                     return this.note(Some("Too long to render".into()), window, cx);
                 }
                 // The name a file taken out of an archive is shown by.
@@ -913,7 +954,6 @@ impl Preview {
                 this.loaded = loaded;
                 this.attach(window, cx);
                 this.redock(window, cx);
-                let word = if rendered { "Rendered" } else { "Source" };
                 this.note(Some(word.into()), window, cx);
             });
         }));
@@ -991,6 +1031,7 @@ impl Preview {
             match &self.pane {
                 Pane::Lines(t) => t.update(cx, |t, cx| t.set_zoom(level, at, window, cx)),
                 Pane::Rendered(r) => r.update(cx, |r, cx| r.set_zoom(at, cx)),
+                Pane::Page(p) => p.update(cx, |p, cx| p.set_zoom(level, at, cx)),
                 Pane::Doc(d) => d.update(cx, |d, cx| d.set_zoom(level, at, cx)),
                 _ => {}
             }
@@ -1396,7 +1437,9 @@ impl Preview {
                 parts.extend(t.read(cx).summary());
             }
             Pane::Archive(a) => parts.push(a.read(cx).summary()),
-            Pane::Doc(_) | Pane::Rendered(_) => parts.push(self.loaded.description.clone()),
+            Pane::Doc(_) | Pane::Rendered(_) | Pane::Page(_) => {
+                parts.push(self.loaded.description.clone())
+            }
             Pane::Sheet(s) => parts.push(s.read(cx).summary()),
             Pane::Slides(s) => {
                 let s = s.read(cx);
@@ -1459,6 +1502,7 @@ impl Preview {
             Pane::Audio(_)
             | Pane::Lines(_)
             | Pane::Rendered(_)
+            | Pane::Page(_)
             | Pane::Sheet(_)
             | Pane::Archive(_) => vec![theme.surface, theme.text],
             Pane::Doc(_) => vec![rgb(docview::PAPER).into(), rgb(docview::INK).into()],
@@ -1726,6 +1770,11 @@ impl Render for Preview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         log::debug!(target: "silent::frames", "render");
         let theme = Theme::of(window.appearance());
+        // Pages are laid out in the desktop's theme before their window draws.
+        crate::web::set_dark(matches!(
+            window.appearance(),
+            WindowAppearance::Dark | WindowAppearance::VibrantDark
+        ));
         let radius = if self.rounded && !window.is_fullscreen() {
             px(RADIUS)
         } else {
@@ -1871,6 +1920,7 @@ fn view_of(pane: &Pane, cx: &App) -> Option<View> {
         Pane::Slides(s) => s.read(cx).view(),
         Pane::Lines(t) => t.read(cx).view(),
         Pane::Rendered(r) => r.read(cx).view(cx),
+        Pane::Page(p) => p.read(cx).view(),
         Pane::Doc(d) => d.read(cx).view(),
         Pane::Sheet(s) => s.read(cx).view(),
         Pane::Archive(a) => a.read(cx).view(cx),
