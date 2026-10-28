@@ -1,10 +1,11 @@
-# gpui's Linux and wgpu backends, vendored
+# gpui's Linux and wgpu backends and gpui-base, vendored
 
-`gpui-pre-linux` and `gpui-pre-wgpu` 0.3.9 as crates.io publishes them,
-taken in through `[patch.crates-io]` in the top `Cargo.toml`, with silent's
-changes on top. The first commit that touches this directory adds them
-unchanged, without their `Cargo.lock` and benchmarks, so `git log -p --
-vendor` shows every change; in the code, `silent:` comments mark them.
+`gpui-pre-linux` and `gpui-pre-wgpu` 0.3.9, and `gpui-base` 0.8.0, as
+crates.io publishes them, taken in through `[patch.crates-io]` in the top
+`Cargo.toml`, with silent's changes on top. The first commit that touches
+each adds it unchanged, without its `Cargo.lock` (and for the backends
+their benchmarks), so `git log -p -- vendor` shows every change; in the
+code, `silent:` comments mark them.
 
 - **Start-up marks**, everywhere: log records with the target
   `silent::trace`, which silent prints with `SILENT_TRACE` set, and with
@@ -48,6 +49,17 @@ vendor` shows every change; in the code, `silent:` comments mark them.
   with mailbox), and blocks while the monitor's blanks stop. gpui's X11
   frames are paced by a timer at the monitor's refresh rate, not by the
   present, so mailbox draws no more frames than FIFO.
+
+- **HTML paragraphs with code each have an id of their own**
+  (`gpui-base`, `src/text/node.rs`): the text view's HTML parser records
+  no source spans, so every paragraph laid out as an inline flow, which is
+  any with `<code>` in it, had the element id `p`. They shared one element
+  state, and each but the last was drawn with another's layout: its code
+  backgrounds as empty bars and none of its text, as in gi-docgen's pages
+  (`<pre><code>`, and inline code in the docblocks). A paragraph without a
+  span is now named by its state's address, which lives as long as the
+  parsed document. Drop this once gpui-base gives such paragraphs ids of
+  their own.
 
 To take a newer gpui, copy its crates over these, drop their `Cargo.lock`
 and benchmarks, and carry the changes over.

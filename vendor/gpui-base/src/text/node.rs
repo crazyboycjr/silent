@@ -2716,7 +2716,7 @@ impl Paragraph {
 
         if self.should_render_inline_flow() {
             return InlineFlow::new(
-                leaf_element_id(fade_key),
+                self.element_id(fade_key),
                 self.inline_flow_items(fade_key, fades, backgrounds, node_cx, cx),
                 node_cx.link_click_handler.clone(),
             )
@@ -2897,9 +2897,20 @@ impl Paragraph {
         }
 
         div()
-            .id(leaf_element_id(fade_key))
+            .id(self.element_id(fade_key))
             .children(child_nodes)
             .into_any_element()
+    }
+
+    /// silent: the paragraph's element id. Without a key, as the HTML parser
+    /// leaves every paragraph, it is named by its state, which lives as long
+    /// as the parsed document: one id for them all made their inline flows
+    /// share element state, each drawn with another's layout.
+    fn element_id(&self, fade_key: Option<TextLeafKey>) -> ElementId {
+        match fade_key {
+            Some(_) => leaf_element_id(fade_key),
+            None => ("p", Arc::as_ptr(&self.state) as usize).into(),
+        }
     }
 
     /// The key an external editor gave this leaf, if any.
