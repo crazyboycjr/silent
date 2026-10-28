@@ -985,12 +985,15 @@ impl Preview {
             return;
         }
         let level = crate::zoom::change(self.zoom, zoom);
-        self.zoom = level;
-        match &self.pane {
-            Pane::Lines(t) => t.update(cx, |t, cx| t.set_zoom(level, at, window, cx)),
-            Pane::Rendered(r) => r.update(cx, |r, cx| r.set_zoom(at, cx)),
-            Pane::Doc(d) => d.update(cx, |d, cx| d.set_zoom(level, at, cx)),
-            _ => {}
+        trace::mark(&format!("zoom to {}%", (level * 100.).round()));
+        if level != self.zoom {
+            self.zoom = level;
+            match &self.pane {
+                Pane::Lines(t) => t.update(cx, |t, cx| t.set_zoom(level, at, window, cx)),
+                Pane::Rendered(r) => r.update(cx, |r, cx| r.set_zoom(at, cx)),
+                Pane::Doc(d) => d.update(cx, |d, cx| d.set_zoom(level, at, cx)),
+                _ => {}
+            }
         }
         self.note(Some(crate::zoom::describe(level)), window, cx);
     }
@@ -1721,6 +1724,7 @@ impl Focusable for Preview {
 
 impl Render for Preview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        log::debug!(target: "silent::frames", "render");
         let theme = Theme::of(window.appearance());
         let radius = if self.rounded && !window.is_fullscreen() {
             px(RADIUS)
@@ -1734,7 +1738,9 @@ impl Render for Preview {
             _ => 1.,
         };
         window.set_rem_size(px(16. * rem));
-        // Ctrl with the wheel sizes the text before the content scrolls.
+        // Ctrl with the wheel sizes the text before the content scrolls: this
+        // is painted before the content, so that it hears the wheel first,
+        // before a rendered page's text view takes it.
         let view = cx.entity().downgrade();
         let wheel = canvas(
             |_, _, _| {},
@@ -1827,8 +1833,16 @@ impl Render for Preview {
                     this.set_strip(false, cx);
                 }
             }))
-            .child(content)
             .child(wheel)
+            .child(content)
+            // The frames trace: the content drawn since "render".
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    |_, _, _, _| log::debug!(target: "silent::frames", "painted"),
+                )
+                .absolute(),
+            )
             .children(strip)
             .children(self.opening(theme))
             .children(self.help.then(|| {

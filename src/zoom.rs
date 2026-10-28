@@ -31,8 +31,11 @@ pub fn level() -> f32 {
 /// The level after `zoom` from `level`, kept for the next file.
 pub fn change(level: f32, zoom: Zoom) -> f32 {
     let percent = next(level, zoom);
-    memory::set_setting(SETTING, &percent.to_string());
-    f32::from(percent) / 100.
+    let after = f32::from(percent) / 100.;
+    if after != level {
+        memory::set_setting(SETTING, &percent.to_string());
+    }
+    after
 }
 
 fn next(level: f32, zoom: Zoom) -> u16 {
