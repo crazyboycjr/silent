@@ -111,15 +111,17 @@ impl PdfPane {
         if let Some((page, raster)) = pdf.first {
             rendered.insert(page, raster);
         }
+        let viewport = overview::beside(window, if docked { RAIL } else { 0. });
+        let width = f32::from(viewport.width);
         Self {
             document: pdf.document,
-            pages: Pages::new(pdf.pages, zoom),
+            pages: Pages::new(pdf.pages, zoom, width, window.scale_factor()),
             rendered,
             tiles: HashMap::new(),
             pending: HashSet::new(),
             zoomed: None,
             rest: None,
-            viewport: overview::beside(window, if docked { RAIL } else { 0. }),
+            viewport,
             texts: HashMap::new(),
             selecting: None,
             overview: Overview::new(mode, docked),
@@ -679,8 +681,13 @@ impl Overviewed for PdfPane {
 impl Render for PdfPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.viewport = overview::beside(window, self.dock());
+        let (width, height) = (self.viewport.width, self.viewport.height);
+        self.pages.lay_out(
+            size(f32::from(width), f32::from(height)),
+            window.scale_factor(),
+        );
         if let Some(view) = self.restore.take() {
-            self.pages.restore(&view, f32::from(self.viewport.width));
+            self.pages.restore(&view, f32::from(width));
         }
         self.render_around_view(window, cx);
         let theme = Theme::of(window.appearance());

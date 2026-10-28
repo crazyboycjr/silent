@@ -23,14 +23,33 @@ pub struct Pages {
     pub scroll: ScrollHandle,
     /// The pages' width against the view's: 1 when they fill it.
     pub zoom: f32,
+    /// The view's width the pages were last laid out for, and device pixels
+    /// a pixel: gpui lays each page and the gap after it out to the device
+    /// pixel, and so does the layout here.
+    view: f32,
+    device: f32,
+}
+
+/// A place on the pages, whatever their size: the page, how far down it as
+/// a share of its height and then in pixels into the gap below it, and how
+/// far across the column as a share of its width.
+#[derive(Clone, Copy)]
+struct Place {
+    page: usize,
+    within: f32,
+    past: f32,
+    across: f32,
 }
 
 impl Pages {
-    pub fn new(sizes: Vec<(f32, f32)>, zoom: f32) -> Self {
+    /// Pages at `zoom` in a view `view` wide, `device` pixels a pixel.
+    pub fn new(sizes: Vec<(f32, f32)>, zoom: f32, view: f32, device: f32) -> Self {
         Self {
             sizes,
             scroll: ScrollHandle::new(),
             zoom,
+            view,
+            device,
         }
     }
 
@@ -38,12 +57,20 @@ impl Pages {
         self.sizes.len()
     }
 
-    /// Where each page starts and how tall it is when the column is `width` wide.
+    /// `length` as gpui lays it out: to the device pixel, a half down.
+    fn snap(&self, length: f32) -> f32 {
+        let device = length * self.device;
+        (device.abs() - 0.5).ceil().copysign(device) / self.device
+    }
+
+    /// Where each page starts and how tall it is when the column is `width`
+    /// wide, as gpui lays them out.
     pub fn layout_at(&self, width: f32) -> impl Iterator<Item = (f32, f32)> + '_ {
+        let gap = self.snap(GAP);
         self.sizes.iter().scan(0., move |y, &(w, h)| {
-            let height = h * width / w.max(1.);
+            let height = self.snap(h * width / w.max(1.));
             let top = *y;
-            *y += height + GAP;
+            *y += height + gap;
             Some((top, height))
         })
     }
@@ -54,7 +81,7 @@ impl Pages {
 
     /// The view's width as last laid out.
     pub fn width(&self) -> f32 {
-        f32::from(self.scroll.bounds().size.width).max(1.)
+        self.view.max(1.)
     }
 
     /// The pages' width as last laid out.
@@ -198,37 +225,69 @@ impl Pages {
         }
     }
 
-    /// The page at `y` down the column when it is `width` wide, and how far
-    /// down it, as a share of its height; in the gap below a page, past 1.
-    fn page_at(&self, width: f32, y: f32) -> (usize, f32) {
-        let mut last = (0, 0.);
-        for (i, (top, height)) in self.layout_at(width).enumerate() {
-            last = (i, (y - top) / height.max(1.));
-            if y < top + height + GAP {
+    /// The place of the pages at `at`, from the top left of a view `width`
+    /// wide, as they are laid out in it.
+    fn place(&self, at: Point<f32>, width: f32) -> Place {
+        let width = width.max(1.);
+        let column = self.column_in(width);
+        let across = (self.view_left() + at.x - self.inset(width)) / column;
+        let (y, gap) = (self.view_top() + at.y, self.snap(GAP));
+        let mut place = Place {
+            page: 0,
+            within: 0.,
+            past: 0.,
+            across,
+        };
+        for (page, (top, height)) in self.layout_at(column).enumerate() {
+            place = Place {
+                page,
+                within: ((y - top) / height.max(1.)).clamp(0., 1.),
+                past: (y - top - height).max(0.),
+                across,
+            };
+            if y < top + height + gap {
                 break;
             }
         }
-        last
+        place
+    }
+
+    /// Scrolls `place` to `at`, from the top left of a view of `view`, as
+    /// far as the pages reach.
+    fn put(&self, place: Place, at: Point<f32>, view: Size<f32>) {
+        let width = view.width.max(1.);
+        let column = self.column_in(width);
+        let (top, height) = self.layout_at(column).nth(place.page).unwrap_or_default();
+        // The offsets are kept within the column at its new size; the next
+        // layout would clamp them only then.
+        let max_top = (self.height_at(column) - view.height).max(0.);
+        let max_left = (column - width).max(0.);
+        let top = (top + place.within * height + place.past - at.y).clamp(0., max_top);
+        let left = (place.across * column + self.inset(width) - at.x).clamp(0., max_left);
+        self.scroll.set_offset(point(px(-left), px(-top)));
     }
 
     /// Zooms to `zoom` in a view of `view`, keeping the place of the pages
     /// at `at`, from the view's top left, where it is: the place under the
     /// pointer, or for a key the middle of the view's top.
     pub fn zoom_to(&mut self, zoom: f32, at: Point<f32>, view: Size<f32>) {
-        let width = view.width.max(1.);
-        let before = self.column_in(width);
-        let x = (self.view_left() + at.x - self.inset(width)) / before;
-        let (page, within) = self.page_at(before, self.view_top() + at.y);
+        let place = self.place(at, view.width);
         self.zoom = zoom;
-        let after = self.column_in(width);
-        let (top, height) = self.layout_at(after).nth(page).unwrap_or_default();
-        // The offsets are kept within the column at its new size; the next
-        // layout would clamp them only then.
-        let max_top = (self.height_at(after) - view.height).max(0.);
-        let max_left = (after - width).max(0.);
-        let top = (top + within * height - at.y).clamp(0., max_top);
-        let left = (x * after + self.inset(width) - at.x).clamp(0., max_left);
-        self.scroll.set_offset(point(px(-left), px(-top)));
+        self.put(place, at, view);
+    }
+
+    /// Lays the pages out in a view of `view`, `device` pixels a pixel: at
+    /// a new width, or on another display, they keep the place at the view's
+    /// top left there, the page, how far down it and how far across, rather
+    /// than the pixels scrolled.
+    pub fn lay_out(&mut self, view: Size<f32>, device: f32) {
+        if view.width == self.view && device == self.device {
+            return;
+        }
+        let corner = point(0., 0.);
+        let place = self.place(corner, self.view);
+        (self.view, self.device) = (view.width, device);
+        self.put(place, corner, view);
     }
 
     /// The page at the top, how far down it the view starts, and where
@@ -284,7 +343,7 @@ mod tests {
 
     /// Three portrait pages in a view 600 by 800.
     fn pages(zoom: f32) -> Pages {
-        Pages::new(vec![(600., 800.); 3], zoom)
+        Pages::new(vec![(600., 800.); 3], zoom, 600., 1.)
     }
 
     fn offset(pages: &Pages) -> (f32, f32) {
@@ -327,13 +386,63 @@ mod tests {
     }
 
     #[test]
+    fn a_new_width_keeps_the_place_at_the_top() {
+        let mut pages = pages(1.);
+        // 30% down the second page.
+        pages.scroll.set_offset(point(px(0.), px(-(810. + 240.))));
+        pages.lay_out(Size::new(900., 700.), 1.);
+        // Pages 1200 tall now, the second starting at 1210.
+        assert!((pages.view_top() - (1210. + 360.)).abs() < 0.01);
+        assert_eq!(pages.width(), 900.);
+        // And back, where it was.
+        pages.lay_out(VIEW, 1.);
+        assert!((pages.view_top() - 1050.).abs() < 0.01);
+        // In the gap below a page the pixels into the gap stay.
+        pages.scroll.set_offset(point(px(0.), px(-805.)));
+        pages.lay_out(Size::new(900., 700.), 1.);
+        assert!((pages.view_top() - 1205.).abs() < 0.01);
+        // The same width again leaves the view where it is.
+        pages.scroll.set_offset(point(px(0.), px(-1000.)));
+        pages.lay_out(Size::new(900., 900.), 1.);
+        assert_eq!(pages.view_top(), 1000.);
+    }
+
+    #[test]
+    fn a_new_width_keeps_the_place_at_the_left_of_zoomed_pages() {
+        let mut pages = pages(2.);
+        // A quarter across pages 1200 wide.
+        pages.scroll.set_offset(point(px(-300.), px(-500.)));
+        pages.lay_out(Size::new(900., 800.), 1.);
+        // A quarter across pages 1800 wide; 500 down the first page of 1600
+        // is 750 down it of 2400.
+        let (left, top) = offset(&pages);
+        assert!((left - 450.).abs() < 0.01, "{left}");
+        assert!((top - 750.).abs() < 0.01, "{top}");
+    }
+
+    #[test]
+    fn pages_are_laid_out_to_the_device_pixel_as_gpui_lays_them_out() {
+        // 800.5 tall is 1200.75 device pixels, laid out 1201; the gap of
+        // 10 is 15.
+        let pages = Pages::new(vec![(600., 800.5); 3], 1., 600., 1.5);
+        let layout: Vec<_> = pages.layout_at(600.).collect();
+        let near = |logical: f32, device: f32| (logical * 1.5 - device).abs() < 1e-3;
+        assert!(near(layout[1].0, 1201. + 15.) && near(layout[1].1, 1201.));
+        assert!(near(layout[2].0, 2. * (1201. + 15.)));
+        // A half rounds down, as gpui's does: 600.25 is 1200.5.
+        let pages = Pages::new(vec![(600., 600.25)], 1., 600., 2.);
+        let (_, height) = pages.layout_at(600.).next().unwrap();
+        assert_eq!(height * 2., 1200.);
+    }
+
+    #[test]
     fn zoomed_out_pages_stand_in_the_middle_and_do_not_scroll_sideways() {
         let mut pages = pages(1.);
         pages.zoom_to(0.5, point(300., 0.), VIEW);
         assert_eq!(pages.inset(600.), 150.);
         assert_eq!(offset(&pages).0, 0.);
         // Near the end, the top is kept within the column.
-        let mut pages = Pages::new(vec![(600., 800.); 3], 1.);
+        let mut pages = Pages::new(vec![(600., 800.); 3], 1., 600., 1.);
         pages.scroll.set_offset(point(px(0.), px(-1620.)));
         pages.zoom_to(0.5, point(300., 0.), VIEW);
         let height = pages.height_at(300.);

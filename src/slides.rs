@@ -88,7 +88,12 @@ impl SlidesPane {
         }
         Self {
             path: deck.path,
-            pages: Pages::new(vec![deck.deck.size; deck.deck.slides.len()], zoom),
+            pages: Pages::new(
+                vec![deck.deck.size; deck.deck.slides.len()],
+                zoom,
+                f32::from(viewport.width),
+                window.scale_factor(),
+            ),
             deck: Arc::new(deck.deck),
             shown,
             pending: HashSet::new(),
@@ -475,8 +480,13 @@ impl Overviewed for SlidesPane {
 impl Render for SlidesPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.viewport = overview::beside(window, self.dock());
+        let (width, height) = (self.viewport.width, self.viewport.height);
+        self.pages.lay_out(
+            size(f32::from(width), f32::from(height)),
+            window.scale_factor(),
+        );
         if let Some(view) = self.restore.take() {
-            self.pages.restore(&view, f32::from(self.viewport.width));
+            self.pages.restore(&view, f32::from(width));
         }
         self.read_around_view(window, cx);
         let theme = Theme::of(window.appearance());

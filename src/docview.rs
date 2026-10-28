@@ -481,6 +481,12 @@ impl Render for DocPane {
         let doc = self.doc.clone();
         // Pixels per point: the page's width fills the view's, at 100%.
         let scale = width / doc.page.0.max(1.) * self.zoom;
+        // At a new width the blocks are laid out again, larger or smaller:
+        // the one at the top keeps the share of it scrolled past, and with
+        // it the line there, rather than the pixels.
+        if scale != self.scale {
+            self.list.remeasure();
+        }
         self.scale = scale;
         let margin = (doc.margins.0 * scale).clamp(16., width / 4.);
         let content = width - margin * 2.;
