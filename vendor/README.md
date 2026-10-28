@@ -1,12 +1,12 @@
-# gpui's Linux and wgpu backends, gpui-base and Blitz, vendored
+# gpui's Linux and wgpu backends, gpui-base, Blitz and hayro, vendored
 
-`gpui-pre-linux` and `gpui-pre-wgpu` 0.3.9, `gpui-base` 0.8.0, and Blitz's
-`blitz-dom` and `blitz-paint` 0.3.0-beta.4, as crates.io publishes them,
-taken in through `[patch.crates-io]` in the top `Cargo.toml`, with
-silent's changes on top. The first commit that touches each adds it
-unchanged, without its `Cargo.lock` (and for the backends their
-benchmarks), so `git log -p -- vendor` shows every change; in the code,
-`silent:` comments mark them.
+`gpui-pre-linux` and `gpui-pre-wgpu` 0.3.9, `gpui-base` 0.8.0, Blitz's
+`blitz-dom` and `blitz-paint` 0.3.0-beta.4, and `hayro` 0.7.1, as
+crates.io publishes them, taken in through `[patch.crates-io]` in the top
+`Cargo.toml`, with silent's changes on top. The first commit that touches
+each adds it unchanged, without its `Cargo.lock` (and for the backends
+their benchmarks), so `git log -p -- vendor` shows every change; in the
+code, `silent:` comments mark them.
 
 - **Start-up marks**, everywhere: log records with the target
   `silent::trace`, which silent prints with `SILENT_TRACE` set, and with
