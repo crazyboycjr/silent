@@ -110,12 +110,17 @@ impl Mode {
         memory::set_setting(&format!("strip-{family}"), name);
     }
 
-    pub fn describe(self) -> &'static str {
+    /// What the info line and the card of keys call the mode.
+    pub const fn name(self) -> &'static str {
         match self {
-            Mode::Auto => "Info line: while moving",
-            Mode::Off => "Info line: never",
-            Mode::On => "Info line: always",
+            Mode::Auto => "when the mouse moves",
+            Mode::Off => "never",
+            Mode::On => "always",
         }
+    }
+
+    pub fn describe(self) -> String {
+        format!("Info line: {}", self.name())
     }
 }
 

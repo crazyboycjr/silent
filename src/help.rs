@@ -9,6 +9,7 @@ use gpui_kit_assets::IconName;
 use silent::markup::Markup;
 
 use crate::theme::Theme;
+use crate::{overview, strip};
 
 /// What the window shows, as far as its keys go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,7 +49,7 @@ impl Subject {
     fn title(self) -> &'static str {
         match self {
             Subject::Text => "Keys for text and code",
-            Subject::Hexdump => "Keys for hexdumps",
+            Subject::Hexdump => "Keys for binary files",
             Subject::Source(Markup::Markdown) | Subject::Rendered(Markup::Markdown) => {
                 "Keys for Markdown"
             }
@@ -58,12 +59,25 @@ impl Subject {
             Subject::Document => "Keys for documents",
             Subject::Sheet { .. } => "Keys for spreadsheets",
             Subject::Archive => "Keys for archives",
-            Subject::Video => "Keys for video",
-            Subject::Audio => "Keys for sound",
+            Subject::Video => "Keys for videos",
+            Subject::Audio => "Keys for audio",
             Subject::Picture => "Keys for pictures",
             Subject::Folder => "Keys for folders",
             Subject::Card => "Keys",
         }
+    }
+
+    /// What a click puts the keys on, for the rows that follow it.
+    fn after_a_click(self) -> Line {
+        Note(match self {
+            Subject::Pdf | Subject::Document => "After a click on the page",
+            Subject::Slides => "After a click on the slide",
+            Subject::Sheet { .. } => "After a click on a cell",
+            Subject::Archive => "After a click on the list",
+            Subject::Video => "After a click on the video",
+            Subject::Audio => "After a click on the card",
+            _ => "After a click on the text",
+        })
     }
 }
 
@@ -76,12 +90,12 @@ pub struct Shown {
     pub nautilus: bool,
 }
 
-/// A row of keys and what they do, a row of a key that cycles through
-/// modes, named under it, or a few words on the rows after it.
+/// A row of keys and what they do, a row of a key that goes through modes,
+/// named in their order under it, or a few words on the rows after it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Line {
     Keys(&'static str, &'static str),
-    Modes(&'static str, &'static str, &'static str),
+    Modes(&'static str, &'static str, &'static [&'static str]),
     Note(&'static str),
 }
 
@@ -92,36 +106,41 @@ struct Section {
     lines: Vec<Line>,
 }
 
-const AFTER_A_CLICK: Line = Note("After a click inside");
-const INFO_LINE: Line = Modes("I", "Show the info line", "while moving, never or always");
-const TURN: Line = Keys("R / Shift+R", "Turn a quarter clockwise or back");
-const TEXT_SIZE: [Line; 4] = [
-    Keys("Ctrl+Shift+=", "Make the text bigger"),
-    Keys("Ctrl+−", "Make the text smaller"),
-    Keys("Ctrl+0", "Reset the text size"),
-    Keys("Ctrl+wheel", "Make the text bigger or smaller"),
+/// The modes M and I go through, in their order, as the info line names
+/// them when the keys are pressed.
+const MINIMAP: [&str; 3] = [
+    overview::Mode::Auto.name(),
+    overview::Mode::On.name(),
+    overview::Mode::Off.name(),
 ];
+const INFO_LINE: [&str; 3] = [
+    strip::Mode::Auto.name(),
+    strip::Mode::Off.name(),
+    strip::Mode::On.name(),
+];
+
 const SCREEN: Line = Keys("Shift+↑ ↓", "Scroll a screen up or down");
+const PAGE_KEYS: Line = Keys("PgUp / PgDn", "Scroll a screen up or down");
 const HALF_SCREEN: [Line; 2] = [
-    Keys("Ctrl+D U", "Scroll half a screen down or up"),
-    Keys("Ctrl+F B", "Scroll a screen down or up"),
+    Keys("Ctrl+U / D", "Scroll half a screen up or down"),
+    Keys("Ctrl+B / F", "Scroll a screen up or down"),
 ];
 
 fn sections(shown: Shown) -> Vec<Section> {
     let subject = shown.subject;
     let mut out = Vec::new();
     match subject {
-        Subject::Video | Subject::Audio => out.push(playback()),
-        Subject::Archive => out.push(entries()),
+        Subject::Video | Subject::Audio => out.push(playback(subject)),
+        Subject::Archive => out.push(contents()),
         Subject::Pdf => out.push(pages(false)),
         Subject::Slides => out.push(pages(true)),
         Subject::Sheet { tabs } => out.push(sheets(tabs)),
         _ => {}
     }
     out.push(view(subject));
-    out.extend(moving(subject));
+    out.extend(navigation(subject));
+    out.extend(selection(subject));
     out.extend(vim(subject));
-    out.extend(copying(subject));
     out.push(general(shown));
     if shown.nautilus {
         out.push(nautilus(shown));
@@ -129,55 +148,57 @@ fn sections(shown: Shown) -> Vec<Section> {
     out
 }
 
-fn playback() -> Section {
+fn playback(subject: Subject) -> Section {
     Section {
         title: "Playback",
         lines: vec![
             Keys("K", "Pause or play"),
-            Keys("J L", "Skip back or forward 10 seconds"),
+            Keys("J / L", "Skip back or forward 10 seconds"),
             Keys("Shift+← →", "Skip back or forward 30 seconds"),
             Keys("M", "Mute or unmute"),
-            AFTER_A_CLICK,
+            subject.after_a_click(),
             Keys("← →", "Skip back or forward 5 seconds"),
             Keys("↑ ↓", "Turn the volume up or down"),
-            Keys("click", "Pause or play"),
+            Keys("@Click", "Pause or play"),
         ],
     }
 }
 
-fn entries() -> Section {
+fn contents() -> Section {
     Section {
-        title: "Entries",
+        title: "Contents",
         lines: vec![
-            Note("After a click inside the list"),
-            Keys("↑ ↓", "Move up or down"),
+            Subject::Archive.after_a_click(),
+            Keys("↑ ↓", "Move the selection up or down"),
             Keys("← →", "Close or open the folder"),
-            Keys("Enter Space", "Show the file over the archive"),
+            Keys("Enter / Space", "Preview the selected file"),
         ],
     }
 }
 
 fn pages(slides: bool) -> Section {
-    let (title, step, ends) = if slides {
+    let (title, step, ends, subject) = if slides {
         (
             "Slides",
             "Go to the previous or next slide",
             "Go to the first or the last slide",
+            Subject::Slides,
         )
     } else {
         (
             "Pages",
             "Go to the previous or next page",
             "Go to the first or the last page",
+            Subject::Pdf,
         )
     };
     Section {
         title,
         lines: vec![
-            Keys("M", "Show or hide the thumbnails"),
             Keys("Shift+↑ ↓", step),
-            Keys("Home End", ends),
-            AFTER_A_CLICK,
+            PAGE_KEYS,
+            Keys("Home / End", ends),
+            subject.after_a_click(),
             Keys("← →", step),
             Keys("↑ ↓", "Scroll up or down"),
         ],
@@ -191,8 +212,9 @@ fn sheets(tabs: bool) -> Section {
     }
     lines.extend([
         SCREEN,
-        Keys("Home End", "Go to the first or the last row"),
-        Note("After a click on a cell"),
+        PAGE_KEYS,
+        Keys("Home / End", "Go to the first or the last row"),
+        Subject::Sheet { tabs }.after_a_click(),
         Keys("← → ↑ ↓", "Move the cell cursor"),
     ]);
     Section {
@@ -204,15 +226,14 @@ fn sheets(tabs: bool) -> Section {
 fn view(subject: Subject) -> Section {
     let mut lines = Vec::new();
     match subject {
-        Subject::Text | Subject::Hexdump | Subject::Source(_) => lines.push(Modes(
-            "M",
-            "Show the minimap",
-            "while moving, always or never",
-        )),
+        Subject::Text | Subject::Hexdump | Subject::Source(_) => {
+            lines.push(Modes("M", "Show the minimap", &MINIMAP))
+        }
         Subject::Document => lines.push(Keys("M", "Show or hide the minimap")),
+        Subject::Pdf | Subject::Slides => lines.push(Keys("M", "Show or hide the thumbnails")),
         _ => {}
     }
-    lines.push(INFO_LINE);
+    lines.push(Modes("I", "Show the info line", &INFO_LINE));
     if matches!(subject, Subject::Text | Subject::Source(_)) {
         lines.push(Keys("W", "Wrap or unwrap long lines"));
     }
@@ -222,10 +243,14 @@ fn view(subject: Subject) -> Section {
         _ => {}
     }
     if matches!(subject, Subject::Picture | Subject::Pdf | Subject::Video) {
-        lines.push(TURN);
+        lines.push(Keys("R / Shift+R", "Rotate clockwise or counterclockwise"));
     }
     if subject.zooms() {
-        lines.extend(TEXT_SIZE);
+        lines.extend([
+            Keys("Ctrl+Shift+= | / Ctrl+−", "Make the text bigger or smaller"),
+            Keys("Ctrl+0", "Reset the text size"),
+            Keys("Ctrl+@Scroll", "Make the text bigger or smaller"),
+        ]);
     }
     Section {
         title: "View",
@@ -233,91 +258,92 @@ fn view(subject: Subject) -> Section {
     }
 }
 
-fn moving(subject: Subject) -> Option<Section> {
+fn navigation(subject: Subject) -> Option<Section> {
     let sideways = match subject {
         Subject::Text | Subject::Hexdump | Subject::Source(_) => true,
         Subject::Rendered(_) | Subject::Document => false,
         _ => return None,
     };
-    let mut lines = vec![SCREEN];
+    let mut lines = vec![SCREEN, PAGE_KEYS];
     if sideways {
         lines.push(Keys("Shift+← →", "Scroll half a screen sideways"));
     }
     lines.extend([
-        Keys("Home End", "Go to the start or the end"),
-        AFTER_A_CLICK,
+        Keys("Home / End", "Go to the start or the end"),
+        subject.after_a_click(),
         Keys("↑ ↓", "Scroll a line up or down"),
     ]);
     if sideways {
         lines.push(Keys("← →", "Scroll left or right"));
     }
     Some(Section {
-        title: "Moving",
+        title: "Navigation",
+        lines,
+    })
+}
+
+fn selection(subject: Subject) -> Option<Section> {
+    let lines = match subject {
+        Subject::Text | Subject::Hexdump | Subject::Source(_) | Subject::Rendered(_) => vec![
+            Keys("@Drag", "Select text"),
+            Keys("Ctrl+A", "Select all"),
+            Keys("Ctrl+C", "Copy the selected text"),
+        ],
+        Subject::Pdf => vec![
+            Keys("@Drag", "Select text"),
+            Keys("Ctrl+C", "Copy the selected text"),
+        ],
+        _ => return None,
+    };
+    Some(Section {
+        title: "Selection",
         lines,
     })
 }
 
 fn vim(subject: Subject) -> Option<Section> {
+    let ends = Keys("G G | / Shift+G", "Go to the start or the end");
     let lines = match subject {
         Subject::Text | Subject::Hexdump | Subject::Source(_) => vec![
-            Keys("J K", "Scroll a line down or up"),
-            Keys("H L", "Scroll left or right"),
+            Keys("K / J", "Scroll a line up or down"),
+            Keys("H / L", "Scroll left or right"),
             Keys("0", "Go back to the left edge"),
             HALF_SCREEN[0],
             HALF_SCREEN[1],
-            Keys("G G / Shift+G", "Go to the start or the end"),
+            ends,
             Keys("2 0 Shift+G", "Go to line 20"),
         ],
         Subject::Rendered(_) => vec![
-            Keys("J K", "Scroll a line down or up"),
+            Keys("K / J", "Scroll a line up or down"),
             HALF_SCREEN[0],
             HALF_SCREEN[1],
-            Keys("G G / Shift+G", "Go to the start or the end"),
+            ends,
         ],
         Subject::Document => vec![
-            Keys("J K", "Scroll a line down or up"),
+            Keys("K / J", "Scroll a line up or down"),
             HALF_SCREEN[0],
             HALF_SCREEN[1],
-            Keys("G G / Shift+G", "Go to the start or the end"),
+            ends,
             Keys("2 0 Shift+G", "Go to paragraph 20"),
         ],
         Subject::Pdf => vec![
-            Keys("J K", "Go to the next or previous page"),
+            Keys("K / J", "Go to the previous or next page"),
             HALF_SCREEN[0],
             HALF_SCREEN[1],
-            Keys("G G / Shift+G", "Go to the first or the last page"),
+            Keys("G G | / Shift+G", "Go to the first or the last page"),
             Keys("2 0 Shift+G", "Go to page 20"),
         ],
         Subject::Slides => vec![
-            Keys("J K", "Go to the next or previous slide"),
+            Keys("K / J", "Go to the previous or next slide"),
             HALF_SCREEN[0],
             HALF_SCREEN[1],
-            Keys("G G / Shift+G", "Go to the first or the last slide"),
+            Keys("G G | / Shift+G", "Go to the first or the last slide"),
             Keys("2 0 Shift+G", "Go to slide 20"),
         ],
         _ => return None,
     };
     Some(Section {
         title: "Vim keys",
-        lines,
-    })
-}
-
-fn copying(subject: Subject) -> Option<Section> {
-    let lines = match subject {
-        Subject::Text | Subject::Hexdump | Subject::Source(_) | Subject::Rendered(_) => vec![
-            Keys("drag", "Select text"),
-            Keys("Ctrl+A", "Select all"),
-            Keys("Ctrl+C", "Copy the selected text"),
-        ],
-        Subject::Pdf => vec![
-            Keys("drag", "Select text"),
-            Keys("Ctrl+C", "Copy the selected text"),
-        ],
-        _ => return None,
-    };
-    Some(Section {
-        title: "Copying",
         lines,
     })
 }
@@ -331,7 +357,7 @@ fn general(shown: Shown) -> Section {
         lines.push(Keys("Space", "Go back to the archive"));
         lines.push(Keys("Esc", "Close everything"));
     } else {
-        lines.push(Keys("Space Esc", "Close"));
+        lines.push(Keys("Space / Esc", "Close"));
         // Nautilus opens a folder itself; elsewhere a folder stays put.
         if !shown.nautilus && shown.subject != Subject::Folder {
             lines.push(Keys("Enter", "Open in its app"));
@@ -369,69 +395,83 @@ enum Token {
     Plus,
     /// Between two ways of doing the same.
     Or,
-    /// What the mouse does: `click`, `wheel`.
+    /// What the mouse does: `Click`, `Scroll`, `Drag`.
     Mouse(&'static str),
+    /// The keys go on below.
+    Break,
 }
 
-/// `Shift+← →` as tokens: keys separated by spaces are pressed one after
-/// the other or are alternatives, as the words say; `+` joins keys held
-/// together; `/` stands between two ways; lowercase words are the mouse's.
+/// `Shift+← →` as tokens: keys side by side are pressed one after the
+/// other (`G G`), or are arrows; `+` joins keys held together; `/` stands
+/// between two ways; `@` marks what the mouse does; `|` breaks the line.
 fn tokens(keys: &'static str) -> Vec<Token> {
     let mut out = Vec::new();
     for word in keys.split(' ') {
-        if word == "/" {
-            out.push(Token::Or);
-            continue;
-        }
-        for (i, part) in word.split('+').enumerate() {
-            if i > 0 {
-                out.push(Token::Plus);
+        match word {
+            "/" => out.push(Token::Or),
+            "|" => out.push(Token::Break),
+            word => {
+                for (i, part) in word.split('+').enumerate() {
+                    if i > 0 {
+                        out.push(Token::Plus);
+                    }
+                    out.push(match part.strip_prefix('@') {
+                        Some(mouse) => Token::Mouse(mouse),
+                        None => Token::Cap(part),
+                    });
+                }
             }
-            let mouse = part.len() > 1 && part.chars().all(|c| c.is_ascii_lowercase() || c == '-');
-            out.push(if mouse {
-                Token::Mouse(part)
-            } else {
-                Token::Cap(part)
-            });
         }
     }
     out
 }
 
 const FACE: &str = "Noto Sans";
-const TITLE: f32 = 15.;
-const HEADER: f32 = 13.;
+const TITLE: f32 = 17.;
+const TITLE_LINE: f32 = 22.;
+const HEADER: f32 = 12.;
+const HEADER_LINE: f32 = 18.;
 const TEXT: f32 = 13.;
-const NOTE: f32 = 12.;
+const SMALL: f32 = 12.;
+const SMALL_LINE: f32 = 18.;
 /// A row: its keycaps, and beside them the words, in lines as tall as a cap.
 const ROW: f32 = 26.;
 const CAP: f32 = 20.;
+/// A cap of one character, letter or arrow, all as wide.
+const CAP_ONE: f32 = 22.;
 const CAP_TEXT: f32 = 11.5;
 const CAP_PAD: f32 = 5.;
 const ARROW: f32 = 12.;
+const MOUSE: f32 = 13.;
 const CAP_GAP: f32 = 3.;
-const PLUS_PAD: f32 = 3.;
-const OR_GAP: f32 = 12.;
+const JOIN_PAD: f32 = 3.;
+const KEY_LINES_GAP: f32 = 4.;
+/// The arrow between two modes, and the room either side of it.
+const MODE_ARROW: f32 = 9.;
+const MODE_ARROW_PAD: f32 = 2.;
+/// The share of the room beside a dock the card may take.
+const SHARE: f32 = 0.96;
 /// Between the keys and what they do, and between two columns.
-const GAP: f32 = 16.;
-const GUTTER: f32 = 40.;
+const GAP: f32 = 12.;
+const GUTTER: f32 = 28.;
+/// The card's margins: the title's and the last row's own room above and
+/// below them make the four edges look alike.
 const PAD_X: f32 = 24.;
-const PAD_Y: f32 = 18.;
-const UNDER_TITLE: f32 = 10.;
-/// A header's line, the room below it, and the room either side of the
-/// rule between two sections.
-const HEADER_LINE: f32 = 20.;
+const PAD_TOP: f32 = 19.;
+const PAD_BOTTOM: f32 = 21.;
+const UNDER_TITLE: f32 = 12.;
 const UNDER_HEADER: f32 = 4.;
 const SECTION_GAP: f32 = 10.;
-const NOTE_LINE: f32 = 18.;
 const NOTE_ABOVE: f32 = 4.;
+/// Measured widths and the laid-out text differ by a fraction of a pixel.
+const SLACK: f32 = 4.;
 /// Rows a card has at least before it goes in two columns, and the words
 /// a narrow column leaves room for, wrapping longer ones.
 const TWO_COLUMNS_FROM: usize = 12;
 const NARROW_WORDS: f32 = 180.;
 
 /// How wide `text` is drawn.
-fn width(window: &Window, text: &'static str, size: f32, weight: FontWeight) -> f32 {
+fn width(window: &Window, text: &str, size: f32, weight: FontWeight) -> f32 {
     let run = TextRun {
         len: text.len(),
         font: Font {
@@ -445,7 +485,7 @@ fn width(window: &Window, text: &'static str, size: f32, weight: FontWeight) -> 
     };
     let line = window
         .text_system()
-        .shape_line(SharedString::from(text), px(size), &[run], None);
+        .shape_line(SharedString::from(text.to_owned()), px(size), &[run], None);
     f32::from(line.width())
 }
 
@@ -461,63 +501,106 @@ fn arrow(label: &str) -> Option<IconName> {
     })
 }
 
-fn cap_width(window: &Window, label: &'static str) -> f32 {
-    if arrow(label).is_some() {
-        return CAP;
+fn mouse_icon(word: &str) -> IconName {
+    match word {
+        "Click" => IconName::MousePointerClick,
+        "Drag" => IconName::MousePointer,
+        _ => IconName::Mouse,
     }
-    (width(window, label, CAP_TEXT, FontWeight::MEDIUM) + 2. * CAP_PAD + 2.).max(CAP)
 }
 
-/// How wide a row's keys are drawn.
+fn cap_width(window: &Window, label: &'static str) -> f32 {
+    if label.chars().count() == 1 {
+        return CAP_ONE;
+    }
+    (width(window, label, CAP_TEXT, FontWeight::MEDIUM) + 2. * CAP_PAD + 2.).max(CAP_ONE)
+}
+
+/// How wide each line of a row's keys is drawn.
 fn keys_width(window: &Window, keys: &[Token]) -> f32 {
-    let mut total = 0.;
+    let join = width(window, "+", CAP_TEXT, FontWeight::NORMAL) + 2. * JOIN_PAD;
+    let mut widest: f32 = 0.;
+    let mut line = 0.;
     for (i, token) in keys.iter().enumerate() {
-        let after_cap = i > 0 && matches!(keys[i - 1], Token::Cap(_) | Token::Mouse(_));
-        total += match *token {
-            Token::Cap(label) => cap_width(window, label) + if after_cap { CAP_GAP } else { 0. },
-            Token::Plus => width(window, "+", CAP_TEXT, FontWeight::NORMAL) + 2. * PLUS_PAD,
-            Token::Or => OR_GAP,
-            Token::Mouse(word) => {
-                width(window, word, TEXT, FontWeight::NORMAL) + if after_cap { CAP_GAP } else { 0. }
+        let side_by_side = i > 0 && matches!(keys[i - 1], Token::Cap(_) | Token::Mouse(_));
+        let gap = if side_by_side { CAP_GAP } else { 0. };
+        line += match *token {
+            Token::Cap(label) => cap_width(window, label) + gap,
+            Token::Plus | Token::Or => join,
+            Token::Mouse(word) => MOUSE + 3. + width(window, word, TEXT, FontWeight::NORMAL) + gap,
+            Token::Break => {
+                widest = widest.max(line);
+                line = 0.;
+                continue;
             }
         };
     }
-    total
+    widest.max(line)
 }
 
 fn keys_element(keys: &[Token], theme: Theme) -> Div {
-    let mut row = div().flex_none().flex().flex_row().items_center();
+    let line = || div().flex_none().flex().flex_row().items_center();
+    let joiner = |sign: &'static str| {
+        div()
+            .flex_none()
+            .px(px(JOIN_PAD))
+            .text_size(px(CAP_TEXT))
+            .text_color(theme.caption)
+            .child(sign)
+    };
+    let mut lines = Vec::new();
+    let mut row = line();
     for (i, token) in keys.iter().enumerate() {
-        let after_cap = i > 0 && matches!(keys[i - 1], Token::Cap(_) | Token::Mouse(_));
-        if after_cap && matches!(token, Token::Cap(_) | Token::Mouse(_)) {
+        let side_by_side = i > 0 && matches!(keys[i - 1], Token::Cap(_) | Token::Mouse(_));
+        if side_by_side && matches!(token, Token::Cap(_) | Token::Mouse(_)) {
             row = row.child(div().flex_none().w(px(CAP_GAP)));
         }
-        row = row.child(match *token {
-            Token::Cap(label) => keycap(label, theme),
-            Token::Plus => div()
-                .flex_none()
-                .px(px(PLUS_PAD))
-                .text_size(px(CAP_TEXT))
-                .text_color(theme.muted)
-                .child("+"),
-            Token::Or => div().flex_none().w(px(OR_GAP)),
-            Token::Mouse(word) => div()
-                .flex_none()
-                .text_size(px(TEXT))
-                .text_color(theme.muted)
-                .child(word),
-        });
+        row = match *token {
+            Token::Cap(label) => row.child(keycap(label, theme)),
+            Token::Plus => row.child(joiner("+")),
+            Token::Or => row.child(joiner("/")),
+            Token::Mouse(word) => row.child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(3.))
+                    .text_size(px(TEXT))
+                    .text_color(theme.text)
+                    .child(
+                        svg()
+                            .path(mouse_icon(word).path())
+                            .size(px(MOUSE))
+                            .text_color(theme.caption),
+                    )
+                    .child(word),
+            ),
+            Token::Break => {
+                lines.push(std::mem::replace(&mut row, line()));
+                continue;
+            }
+        };
     }
-    row
+    lines.push(row);
+    div()
+        .flex_none()
+        .flex()
+        .flex_col()
+        .gap(px(KEY_LINES_GAP))
+        .children(lines)
 }
 
 /// A key as a keycap: a rounded box with a thin edge, a little thicker at
-/// the bottom, on a fill a shade lighter than the card.
+/// the bottom, on a fill a shade lighter than the card; one character to a
+/// cap of one width.
 fn keycap(label: &'static str, theme: Theme) -> Div {
+    let one = label.chars().count() == 1;
     let cap = div()
         .flex_none()
         .h(px(CAP))
-        .min_w(px(CAP))
+        .min_w(px(CAP_ONE))
+        .when(one, |cap| cap.w(px(CAP_ONE)))
         .flex()
         .items_center()
         .justify_center()
@@ -527,14 +610,14 @@ fn keycap(label: &'static str, theme: Theme) -> Div {
         .border_color(theme.key_edge)
         .bg(theme.key);
     match arrow(label) {
-        Some(icon) => cap.w(px(CAP)).child(
+        Some(icon) => cap.child(
             svg()
                 .path(icon.path())
                 .size(px(ARROW))
                 .text_color(theme.text),
         ),
         None => cap
-            .px(px(CAP_PAD))
+            .when(!one, |cap| cap.px(px(CAP_PAD)))
             .text_size(px(CAP_TEXT))
             .line_height(px(14.))
             .font_weight(FontWeight::MEDIUM)
@@ -543,9 +626,50 @@ fn keycap(label: &'static str, theme: Theme) -> Div {
     }
 }
 
-/// How tall each section is drawn with `words` wide for what keys do:
-/// for splitting the sections between two columns.
+/// The modes a key goes through, in their order, with an arrow before
+/// each but the first, which a narrow column wraps with it.
+fn modes_element(modes: &'static [&'static str], theme: Theme) -> Div {
+    let modes = modes.iter().enumerate().map(move |(i, mode)| {
+        div()
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .when(i > 0, |mode| {
+                mode.child(
+                    svg()
+                        .path(IconName::ArrowRight.path())
+                        .size(px(MODE_ARROW))
+                        .mx(px(MODE_ARROW_PAD))
+                        .text_color(theme.caption),
+                )
+            })
+            .child(*mode)
+    });
+    div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .items_center()
+        .text_size(px(SMALL))
+        .line_height(px(SMALL_LINE))
+        .text_color(theme.caption)
+        .children(modes)
+}
+
+/// How wide a mode line is drawn.
+fn modes_width(window: &Window, modes: &[&str]) -> f32 {
+    let words: f32 = modes
+        .iter()
+        .map(|mode| width(window, mode, SMALL, FontWeight::NORMAL))
+        .sum();
+    words + (modes.len().saturating_sub(1) as f32) * (MODE_ARROW + 2. * MODE_ARROW_PAD)
+}
+
+/// How tall each section is drawn with `words` wide for what keys do: for
+/// splitting the sections between two columns.
 fn heights(sections: &[Section], words: f32, window: &Window) -> Vec<f32> {
+    let lines_of = |wide: f32| (wide / words).ceil().max(1.);
     sections
         .iter()
         .enumerate()
@@ -554,12 +678,22 @@ fn heights(sections: &[Section], words: f32, window: &Window) -> Vec<f32> {
                 .lines
                 .iter()
                 .map(|line| match *line {
-                    Keys(_, what) => {
+                    Keys(keys, what) => {
+                        let key_lines = tokens(keys)
+                            .iter()
+                            .filter(|t| **t == Token::Break)
+                            .count() as f32
+                            + 1.;
                         let wide = width(window, what, TEXT, FontWeight::NORMAL);
-                        ROW + CAP * ((wide / words).ceil() - 1.).max(0.)
+                        let keys_tall = key_lines * CAP + (key_lines - 1.) * KEY_LINES_GAP;
+                        ROW - CAP + keys_tall.max(lines_of(wide) * CAP)
                     }
-                    Modes(..) => ROW + NOTE_LINE,
-                    Note(_) => NOTE_ABOVE + NOTE_LINE,
+                    Modes(_, what, modes) => {
+                        let wide = width(window, what, TEXT, FontWeight::NORMAL);
+                        ROW + CAP * (lines_of(wide) - 1.)
+                            + SMALL_LINE * lines_of(modes_width(window, modes))
+                    }
+                    Note(_) => NOTE_ABOVE + SMALL_LINE,
                 })
                 .sum();
             let rule = if i == 0 { 0. } else { 2. * SECTION_GAP + 1. };
@@ -590,9 +724,9 @@ fn section_element(section: &Section, first: bool, key_width: f32, theme: Theme)
         .text_size(px(HEADER))
         .line_height(px(HEADER_LINE))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(theme.text)
+        .text_color(theme.caption)
         .child(section.title);
-    let row = move |keys: &'static str, what: &'static str, modes: Option<&'static str>| {
+    let row = move |keys: &'static str, what: &'static str, modes: Option<&'static [&str]>| {
         div()
             .flex()
             .flex_row()
@@ -613,13 +747,7 @@ fn section_element(section: &Section, first: bool, key_width: f32, theme: Theme)
                     .line_height(px(CAP))
                     .text_color(theme.text)
                     .child(what)
-                    .children(modes.map(|modes| {
-                        div()
-                            .text_size(px(NOTE))
-                            .line_height(px(NOTE_LINE))
-                            .text_color(theme.muted)
-                            .child(modes)
-                    })),
+                    .children(modes.map(|modes| modes_element(modes, theme))),
             )
     };
     let lines = section.lines.iter().map(move |line| match *line {
@@ -627,9 +755,9 @@ fn section_element(section: &Section, first: bool, key_width: f32, theme: Theme)
         Modes(keys, what, modes) => row(keys, what, Some(modes)),
         Note(words) => div()
             .pt(px(NOTE_ABOVE))
-            .text_size(px(NOTE))
-            .line_height(px(NOTE_LINE))
-            .text_color(theme.muted)
+            .text_size(px(SMALL))
+            .line_height(px(SMALL_LINE))
+            .text_color(theme.caption)
             .child(words),
     });
     div()
@@ -647,49 +775,62 @@ fn section_element(section: &Section, first: bool, key_width: f32, theme: Theme)
 }
 
 /// The card for `shown`, in one column, or in two when there are many rows
-/// and the window is wide enough for them, the words wrapping in a narrow
-/// window rather than the card scrolling.
-pub fn card(shown: Shown, theme: Theme, window: &Window) -> Stateful<Div> {
+/// and the room beside the dock is wide enough for them, each as wide as it
+/// needs, or both as wide, the words wrapping, in a narrow window rather
+/// than the card scrolling.
+pub fn card(shown: Shown, theme: Theme, room: Size<Pixels>, window: &Window) -> Stateful<Div> {
     let sections = sections(shown);
-    let rows: Vec<Line> = sections
-        .iter()
-        .flat_map(|s| s.lines.iter().copied())
-        .collect();
-    let key_width = rows
-        .iter()
-        .filter_map(|line| match *line {
-            Keys(keys, _) | Modes(keys, ..) => Some(keys_width(window, &tokens(keys))),
-            Note(_) => None,
-        })
-        .fold(0., f32::max)
-        .ceil();
-    let words = rows
-        .iter()
-        .map(|line| match *line {
-            Keys(_, what) => width(window, what, TEXT, FontWeight::NORMAL),
-            Modes(_, what, modes) => width(window, what, TEXT, FontWeight::NORMAL)
-                .max(width(window, modes, NOTE, FontWeight::NORMAL)),
-            Note(words) => width(window, words, NOTE, FontWeight::NORMAL) - key_width - GAP,
-        })
-        .fold(0., f32::max)
-        .ceil();
-    let natural = key_width + GAP + words;
-    let room = f32::from(window.viewport_size().width) * 0.94 - 2. * PAD_X - 2.;
-    let narrow = ((room - GUTTER) / 2.).floor();
-    let two = if rows.len() < TWO_COLUMNS_FROM {
-        None
-    } else if 2. * natural + GUTTER <= room {
-        Some(natural)
-    } else {
-        (narrow - key_width - GAP >= NARROW_WORDS).then_some(narrow)
+    let rows: usize = sections.iter().map(|s| s.lines.len()).sum();
+    // The keys' column of each column of the card is as wide as its widest.
+    let key_width_of = |sections: &[Section]| {
+        sections
+            .iter()
+            .flat_map(|s| s.lines.iter())
+            .filter_map(|line| match *line {
+                Keys(keys, _) | Modes(keys, ..) => Some(keys_width(window, &tokens(keys))),
+                Note(_) => None,
+            })
+            .fold(0., f32::max)
+            .ceil()
     };
+    // The width a column of `sections` takes with no word wrapped.
+    let natural_of = |sections: &[Section]| {
+        let key_width = key_width_of(sections);
+        let words = sections
+            .iter()
+            .flat_map(|s| s.lines.iter())
+            .map(|line| match *line {
+                Keys(_, what) => width(window, what, TEXT, FontWeight::NORMAL),
+                Modes(_, what, modes) => {
+                    width(window, what, TEXT, FontWeight::NORMAL).max(modes_width(window, modes))
+                }
+                Note(words) => width(window, words, SMALL, FontWeight::NORMAL) - key_width - GAP,
+            })
+            .fold(0., f32::max);
+        (key_width + GAP + words + SLACK).ceil()
+    };
+    let key_width = key_width_of(&sections);
+    let natural = natural_of(&sections);
+    let room = f32::from(room.width) * SHARE - 2. * PAD_X - 2.;
+    let two = (rows >= TWO_COLUMNS_FROM).then(|| {
+        let at = split(&heights(&sections, f32::MAX, window));
+        let (left, right) = (natural_of(&sections[..at]), natural_of(&sections[at..]));
+        if left + right + GUTTER <= room {
+            return Some((at, left, right));
+        }
+        let narrow = ((room - GUTTER) / 2.).floor();
+        let at = split(&heights(&sections, narrow - key_width - GAP, window));
+        (narrow - key_width - GAP >= NARROW_WORDS).then_some((at, narrow, narrow))
+    });
     let title = div()
         .pb(px(UNDER_TITLE))
         .text_size(px(TITLE))
+        .line_height(px(TITLE_LINE))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme.text)
         .child(shown.subject.title());
     let column_of = |sections: &[Section], width: Option<f32>| {
+        let key_width = key_width_of(sections);
         div()
             .flex()
             .flex_col()
@@ -701,33 +842,32 @@ pub fn card(shown: Shown, theme: Theme, window: &Window) -> Stateful<Div> {
                     .map(|(i, s)| section_element(s, i == 0, key_width, theme)),
             )
     };
-    let (body, width) = match two {
-        Some(column) => {
-            let at = split(&heights(&sections, column - key_width - GAP, window));
+    let (body, width) = match two.flatten() {
+        Some((at, left, right)) => {
             let body = div()
                 .flex()
                 .flex_row()
                 .items_start()
                 .gap(px(GUTTER))
-                .child(column_of(&sections[..at], Some(column)))
-                .child(column_of(&sections[at..], Some(column)));
-            (body, 2. * column + GUTTER)
+                .child(column_of(&sections[..at], Some(left)))
+                .child(column_of(&sections[at..], Some(right)));
+            (body, left + right + GUTTER)
         }
         None => (column_of(&sections, None), natural),
     };
     div()
         .id("help-card")
         .w(px(width + 2. * PAD_X + 2.))
-        .max_w(relative(0.94))
-        .max_h(relative(0.94))
+        .max_w(relative(SHARE))
+        .max_h(relative(SHARE))
         .overflow_y_scroll()
         .px(px(PAD_X))
-        .pt(px(PAD_Y))
-        .pb(px(PAD_Y))
+        .pt(px(PAD_TOP))
+        .pb(px(PAD_BOTTOM))
         .rounded(px(10.))
         .bg(theme.surface)
         .border_1()
-        .border_color(theme.rule)
+        .border_color(theme.key_edge)
         .font_family(FACE)
         .child(title)
         .child(body)
@@ -738,7 +878,10 @@ mod tests {
     // Not `super::*`: gpui's `test` attribute would come with it.
     use silent::markup::Markup;
 
-    use super::{Keys, Modes, Note, Shown, Subject, Token, sections, split, tokens};
+    use super::{
+        INFO_LINE, Keys, MINIMAP, Modes, Note, Shown, Subject, Token, sections, split, tokens,
+    };
+    use crate::{overview, strip};
 
     fn every_subject() -> Vec<Subject> {
         vec![
@@ -771,6 +914,16 @@ mod tests {
             .collect()
     }
 
+    fn words_of(shown: Shown) -> Vec<&'static str> {
+        sections(shown)
+            .into_iter()
+            .flat_map(|s| s.lines)
+            .map(|line| match line {
+                Keys(_, words) | Modes(_, words, _) | Note(words) => words,
+            })
+            .collect()
+    }
+
     fn shown(subject: Subject) -> Shown {
         Shown {
             subject,
@@ -780,7 +933,7 @@ mod tests {
     }
 
     #[test]
-    fn tokens_are_caps_joined_by_plus_and_mouse_words() {
+    fn tokens_are_caps_joined_by_plus_or_slash_and_mouse_words() {
         let (cap, plus) = (Token::Cap, Token::Plus);
         assert_eq!(
             tokens("Shift+← →"),
@@ -790,18 +943,50 @@ mod tests {
             tokens("G G / Shift+G"),
             [cap("G"), cap("G"), Token::Or, cap("Shift"), plus, cap("G")]
         );
+        assert_eq!(tokens("Ctrl+U / D"), [cap("Ctrl"), plus, cap("U"), Token::Or, cap("D")]);
         assert_eq!(
-            tokens("Ctrl+wheel"),
-            [cap("Ctrl"), plus, Token::Mouse("wheel")]
+            tokens("Ctrl+@Scroll"),
+            [cap("Ctrl"), plus, Token::Mouse("Scroll")]
         );
-        assert_eq!(tokens("double-click"), [Token::Mouse("double-click")]);
-        assert_eq!(tokens("Ctrl+−"), [cap("Ctrl"), plus, cap("−")]);
+        assert_eq!(
+            tokens("Ctrl+Shift+= | / Ctrl+−"),
+            [
+                cap("Ctrl"),
+                plus,
+                cap("Shift"),
+                plus,
+                cap("="),
+                Token::Break,
+                Token::Or,
+                cap("Ctrl"),
+                plus,
+                cap("−")
+            ]
+        );
+    }
+
+    #[test]
+    fn alternatives_have_a_slash_and_side_by_side_is_a_sequence_or_arrows() {
+        for subject in every_subject() {
+            for keys in keys_of(shown(subject)) {
+                let tokens = tokens(keys);
+                for pair in tokens.windows(2) {
+                    if let [Token::Cap(a), Token::Cap(b)] = pair {
+                        let arrows = [*a, *b].iter().all(|k| "←→↑↓".contains(*k));
+                        // G G, and a count typed before a key: 2 0 Shift+G.
+                        let sequence = a == b || a.parse::<u8>().is_ok();
+                        assert!(arrows || sequence, "{a} {b} in {keys}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
     fn letters_are_capitals_and_named_keys_are_spelled_one_way() {
         let named = [
-            "Shift", "Ctrl", "Esc", "Space", "Enter", "Delete", "F2", "Home", "End",
+            "Shift", "Ctrl", "Esc", "Space", "Enter", "Delete", "F2", "Home", "End", "PgUp",
+            "PgDn",
         ];
         for subject in every_subject() {
             for keys in keys_of(shown(subject)) {
@@ -820,29 +1005,35 @@ mod tests {
     }
 
     #[test]
-    fn descriptions_are_sentences_in_the_users_words() {
+    fn descriptions_are_sentences_in_the_users_words_and_one_order() {
         for subject in every_subject() {
-            for section in sections(shown(subject)) {
-                for line in section.lines {
-                    let (Keys(_, words) | Modes(_, words, _) | Note(words)) = line;
-                    let first = words.chars().next().unwrap();
-                    assert!(first.is_uppercase(), "{words}");
-                    assert!(!words.ends_with('.'), "{words}");
-                    let lower = words.to_lowercase();
-                    for internal in ["strip", "rail", "engage", "overview"] {
-                        assert!(!lower.contains(internal), "{words}");
-                    }
-                    // Every three-way mode is named alike.
-                    if let Modes(_, _, modes) = line {
-                        let mut names: Vec<&str> = modes
-                            .split([',', ' '])
-                            .filter(|w| !w.is_empty() && *w != "or")
-                            .collect();
-                        names.sort();
-                        assert_eq!(names, ["always", "moving", "never", "while"], "{modes}");
-                    }
+            for words in words_of(shown(subject)) {
+                let first = words.chars().next().unwrap();
+                assert!(first.is_uppercase(), "{words}");
+                assert!(!words.ends_with('.'), "{words}");
+                let lower = words.to_lowercase();
+                for unwanted in [
+                    "strip", "rail", "engage", "overview", "down or up", "next or previous",
+                    "inside",
+                ] {
+                    assert!(!lower.contains(unwanted), "{words}");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn modes_are_named_and_ordered_as_the_keys_go_through_them() {
+        let family = overview::Family::Minimap;
+        let mut mode = overview::Mode::Auto;
+        for name in MINIMAP {
+            assert_eq!(mode.name(), name);
+            mode = mode.next(family);
+        }
+        let mut mode = strip::Mode::Auto;
+        for name in INFO_LINE {
+            assert_eq!(mode.name(), name);
+            mode = mode.next();
         }
     }
 
@@ -857,14 +1048,19 @@ mod tests {
         // The source of Markdown, not of plain text.
         assert!(has(Subject::Rendered(Markup::Markdown), "S") && !has(Subject::Text, "S"));
         // Sideways only where lines can be wider than the window.
-        assert!(has(Subject::Text, "H L") && !has(Subject::Rendered(Markup::Html), "H L"));
+        assert!(has(Subject::Text, "H / L") && !has(Subject::Rendered(Markup::Html), "H / L"));
         // The text size where there is text to size.
         assert!(has(Subject::Document, "Ctrl+0") && !has(Subject::Pdf, "Ctrl+0"));
         // A workbook of one sheet has no sheets to go to.
         assert!(has(Subject::Sheet { tabs: true }, "Shift+← →"));
         assert!(!has(Subject::Sheet { tabs: false }, "Shift+← →"));
+        // Page keys wherever they scroll.
+        for subject in [Subject::Text, Subject::Pdf, Subject::Sheet { tabs: false }] {
+            assert!(has(subject, "PgUp / PgDn"), "{subject:?}");
+        }
+        assert!(!has(Subject::Picture, "PgUp / PgDn") && !has(Subject::Video, "PgUp / PgDn"));
         // Vim's keys where they move.
-        assert!(!has(Subject::Archive, "J K") && !has(Subject::Sheet { tabs: true }, "J K"));
+        assert!(!has(Subject::Archive, "K / J") && !has(Subject::Sheet { tabs: true }, "K / J"));
     }
 
     #[test]
@@ -874,13 +1070,13 @@ mod tests {
         };
         assert_eq!(
             titles(Subject::Text),
-            ["View", "Moving", "Vim keys", "Copying", "General", "Nautilus"]
+            ["View", "Navigation", "Selection", "Vim keys", "General", "Nautilus"]
         );
         assert_eq!(titles(Subject::Video), ["Playback", "View", "General", "Nautilus"]);
-        assert_eq!(titles(Subject::Archive), ["Entries", "View", "General", "Nautilus"]);
+        assert_eq!(titles(Subject::Archive), ["Contents", "View", "General", "Nautilus"]);
         assert_eq!(
             titles(Subject::Pdf),
-            ["Pages", "View", "Vim keys", "Copying", "General", "Nautilus"]
+            ["Pages", "View", "Selection", "Vim keys", "General", "Nautilus"]
         );
         assert_eq!(titles(Subject::Picture), ["View", "General", "Nautilus"]);
     }

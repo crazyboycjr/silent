@@ -83,14 +83,18 @@ impl Mode {
         memory::set_setting(family.key(), name);
     }
 
-    /// `Minimap: while moving`, for the info line, in the words of the card
-    /// of keys.
-    pub fn describe(self, what: &str) -> String {
+    /// What the info line and the card of keys call the mode.
+    pub const fn name(self) -> &'static str {
         match self {
-            Mode::Auto => format!("{what}: while moving"),
-            Mode::On => format!("{what}: always"),
-            Mode::Off => format!("{what}: never"),
+            Mode::Auto => "while scrolling",
+            Mode::On => "always",
+            Mode::Off => "never",
         }
+    }
+
+    /// `Minimap: while scrolling`, for the info line.
+    pub fn describe(self, what: &str) -> String {
+        format!("{what}: {}", self.name())
     }
 }
 

@@ -869,7 +869,7 @@ impl Preview {
         self.hide = None;
         self.strip.shown = mode == StripMode::Auto;
         self.strip.epoch += 1;
-        self.note(Some(mode.describe().into()), window, cx);
+        self.note(Some(mode.describe()), window, cx);
     }
 
     /// w: text wraps at the window's width, which stays as it is, or
@@ -1831,10 +1831,13 @@ impl Render for Preview {
             .child(wheel)
             .children(strip)
             .children(self.opening(theme))
-            .children(
-                self.help
-                    .then(|| help_overlay(self.help_shown(cx), theme, radius, window, cx)),
-            )
+            .children(self.help.then(|| {
+                let dock = match self.pane.docking(cx) {
+                    Some(docking) if docking.docked => px(docking.width),
+                    _ => px(0.),
+                };
+                help_overlay(self.help_shown(cx), theme, radius, dock, window, cx)
+            }))
             .children(ring)
     }
 }
@@ -1918,22 +1921,26 @@ fn folder_glyph() -> Div {
 }
 
 /// The card of keys over the content, on a veil that keeps the content
-/// back; a click, Esc or ? takes it away.
+/// back, and clear of a dock `dock` wide; a click, Esc or ? takes it away.
 fn help_overlay(
     shown: help::Shown,
     theme: Theme,
     radius: Pixels,
+    dock: Pixels,
     window: &Window,
     cx: &mut Context<Preview>,
 ) -> Stateful<Div> {
+    let viewport = window.viewport_size();
+    let room = size((viewport.width - dock).max(px(1.)), viewport.height);
     div()
         .id("help")
         .absolute()
         .top_0()
         .left_0()
         .size_full()
+        .pr(dock)
         .rounded(radius)
-        .bg(theme.backdrop.opacity(0.6))
+        .bg(theme.backdrop.opacity(0.85))
         .occlude()
         .flex()
         .items_center()
@@ -1946,5 +1953,5 @@ fn help_overlay(
                 cx.notify();
             }),
         )
-        .child(help::card(shown, theme, window))
+        .child(help::card(shown, theme, room, window))
 }

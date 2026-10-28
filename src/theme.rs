@@ -18,6 +18,8 @@ pub struct Theme {
     /// A keycap's face and its edge.
     pub key: Hsla,
     pub key_edge: Hsla,
+    /// Small quiet words that must stay readable, 4.5:1 on the surface.
+    pub caption: Hsla,
 }
 
 impl Theme {
@@ -32,6 +34,7 @@ impl Theme {
                 rule: rgba(0xa5998b40).into(),
                 key: rgb(0x342d27).into(),
                 key_edge: rgba(0xa5998b66).into(),
+                caption: rgb(0xa5998b).into(),
             },
             _ => Self {
                 surface: rgb(0xf6f1e9).into(),
@@ -42,6 +45,7 @@ impl Theme {
                 rule: rgba(0x85786b40).into(),
                 key: rgb(0xfffcf7).into(),
                 key_edge: rgba(0x85786b73).into(),
+                caption: rgb(0x71665b).into(),
             },
         }
     }
