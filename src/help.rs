@@ -1,7 +1,7 @@
 //! The card of keys that ? shows over the content: the keys of the file in
 //! view first, then silent's general keys, then Nautilus's, in sections.
-//! Keys are drawn as keycaps, letters as capitals as a keyboard prints
-//! them, and a key that needs Shift with a Shift cap of its own.
+//! Keys are drawn as keycaps, letters as vim writes them, as typed: j is
+//! the key, J is Shift with it, with no Shift cap of its own.
 
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -106,7 +106,7 @@ struct Section {
     lines: Vec<Line>,
 }
 
-/// The modes M and I go through, in their order, as the info line names
+/// The modes m and i go through, in their order, as the info line names
 /// them when the keys are pressed.
 const MINIMAP: [&str; 3] = [
     overview::Mode::Auto.name(),
@@ -122,8 +122,8 @@ const INFO_LINE: [&str; 3] = [
 const SCREEN: Line = Keys("Shift+↑ ↓", "Scroll a screen up or down");
 const PAGE_KEYS: Line = Keys("PgUp / PgDn", "Scroll a screen up or down");
 const HALF_SCREEN: [Line; 2] = [
-    Keys("Ctrl+U / D", "Scroll half a screen up or down"),
-    Keys("Ctrl+B / F", "Scroll a screen up or down"),
+    Keys("Ctrl+u / d", "Scroll half a screen up or down"),
+    Keys("Ctrl+b / f", "Scroll a screen up or down"),
 ];
 
 fn sections(shown: Shown) -> Vec<Section> {
@@ -152,10 +152,10 @@ fn playback(subject: Subject) -> Section {
     Section {
         title: "Playback",
         lines: vec![
-            Keys("K", "Pause or play"),
-            Keys("J / L", "Skip back or forward 10 seconds"),
+            Keys("k", "Pause or play"),
+            Keys("j / l", "Skip back or forward 10 seconds"),
             Keys("Shift+← →", "Skip back or forward 30 seconds"),
-            Keys("M", "Mute or unmute"),
+            Keys("m", "Mute or unmute"),
             subject.after_a_click(),
             Keys("← →", "Skip back or forward 5 seconds"),
             Keys("↑ ↓", "Turn the volume up or down"),
@@ -227,23 +227,23 @@ fn view(subject: Subject) -> Section {
     let mut lines = Vec::new();
     match subject {
         Subject::Text | Subject::Hexdump | Subject::Source(_) => {
-            lines.push(Modes("M", "Show the minimap", &MINIMAP))
+            lines.push(Modes("m", "Show the minimap", &MINIMAP))
         }
-        Subject::Document => lines.push(Keys("M", "Show or hide the minimap")),
-        Subject::Pdf | Subject::Slides => lines.push(Keys("M", "Show or hide the thumbnails")),
+        Subject::Document => lines.push(Keys("m", "Show or hide the minimap")),
+        Subject::Pdf | Subject::Slides => lines.push(Keys("m", "Show or hide the thumbnails")),
         _ => {}
     }
-    lines.push(Modes("I", "Show the info line", &INFO_LINE));
+    lines.push(Modes("i", "Show the info line", &INFO_LINE));
     if matches!(subject, Subject::Text | Subject::Source(_)) {
-        lines.push(Keys("W", "Wrap or unwrap long lines"));
+        lines.push(Keys("w", "Wrap or unwrap long lines"));
     }
     match subject {
-        Subject::Source(_) => lines.push(Keys("S", "Show the rendered page")),
-        Subject::Rendered(_) => lines.push(Keys("S", "Show the source")),
+        Subject::Source(_) => lines.push(Keys("s", "Show the rendered page")),
+        Subject::Rendered(_) => lines.push(Keys("s", "Show the source")),
         _ => {}
     }
     if matches!(subject, Subject::Picture | Subject::Pdf | Subject::Video) {
-        lines.push(Keys("R / Shift+R", "Rotate clockwise or counterclockwise"));
+        lines.push(Keys("r / R", "Rotate clockwise or counterclockwise"));
     }
     if subject.zooms() {
         lines.extend([
@@ -287,12 +287,12 @@ fn selection(subject: Subject) -> Option<Section> {
     let lines = match subject {
         Subject::Text | Subject::Hexdump | Subject::Source(_) | Subject::Rendered(_) => vec![
             Keys("@Drag", "Select text"),
-            Keys("Ctrl+A", "Select all"),
-            Keys("Ctrl+C", "Copy the selected text"),
+            Keys("Ctrl+a", "Select all"),
+            Keys("Ctrl+c", "Copy the selected text"),
         ],
         Subject::Pdf => vec![
             Keys("@Drag", "Select text"),
-            Keys("Ctrl+C", "Copy the selected text"),
+            Keys("Ctrl+c", "Copy the selected text"),
         ],
         _ => return None,
     };
@@ -304,40 +304,40 @@ fn selection(subject: Subject) -> Option<Section> {
 
 fn vim(subject: Subject) -> Option<Section> {
     let ends = [
-        Keys("G G", "Go to the start"),
-        Keys("Shift+G", "Go to the end"),
+        Keys("g g", "Go to the start"),
+        Keys("G", "Go to the end"),
     ];
     let mut lines = match subject {
         Subject::Text | Subject::Hexdump | Subject::Source(_) => vec![
-            Keys("K / J", "Scroll a line up or down"),
-            Keys("H / L", "Scroll left or right"),
+            Keys("k / j", "Scroll a line up or down"),
+            Keys("h / l", "Scroll left or right"),
             Keys("0", "Go back to the left edge"),
         ],
         Subject::Rendered(_) | Subject::Document => {
-            vec![Keys("K / J", "Scroll a line up or down")]
+            vec![Keys("k / j", "Scroll a line up or down")]
         }
-        Subject::Pdf => vec![Keys("K / J", "Go to the previous or next page")],
-        Subject::Slides => vec![Keys("K / J", "Go to the previous or next slide")],
+        Subject::Pdf => vec![Keys("k / j", "Go to the previous or next page")],
+        Subject::Slides => vec![Keys("k / j", "Go to the previous or next slide")],
         _ => return None,
     };
     lines.extend(HALF_SCREEN);
     lines.extend(match subject {
         Subject::Pdf => [
-            Keys("G G", "Go to the first page"),
-            Keys("Shift+G", "Go to the last page"),
+            Keys("g g", "Go to the first page"),
+            Keys("G", "Go to the last page"),
         ],
         Subject::Slides => [
-            Keys("G G", "Go to the first slide"),
-            Keys("Shift+G", "Go to the last slide"),
+            Keys("g g", "Go to the first slide"),
+            Keys("G", "Go to the last slide"),
         ],
         _ => ends,
     });
     lines.extend(match subject {
         Subject::Rendered(_) => None,
-        Subject::Document => Some(Keys("2 0 Shift+G", "Go to paragraph 20")),
-        Subject::Pdf => Some(Keys("2 0 Shift+G", "Go to page 20")),
-        Subject::Slides => Some(Keys("2 0 Shift+G", "Go to slide 20")),
-        _ => Some(Keys("2 0 Shift+G", "Go to line 20")),
+        Subject::Document => Some(Keys("2 0 G", "Go to paragraph 20")),
+        Subject::Pdf => Some(Keys("2 0 G", "Go to page 20")),
+        Subject::Slides => Some(Keys("2 0 G", "Go to slide 20")),
+        _ => Some(Keys("2 0 G", "Go to line 20")),
     });
     Some(Section {
         title: "Vim keys",
@@ -347,7 +347,7 @@ fn vim(subject: Subject) -> Option<Section> {
 
 fn general(shown: Shown) -> Section {
     let mut lines = vec![
-        Keys("F", "Enter or leave fullscreen"),
+        Keys("f", "Enter or leave fullscreen"),
         Keys("?", "Show or hide this help"),
     ];
     if shown.inside {
@@ -397,7 +397,7 @@ enum Token {
 }
 
 /// `Shift+← →` as tokens: keys side by side are pressed one after the
-/// other (`G G`), or are arrows; `+` joins keys held together; `/` stands
+/// other (`g g`), or are arrows; `+` joins keys held together; `/` stands
 /// between two ways; `@` marks what the mouse does.
 fn tokens(keys: &'static str) -> Vec<Token> {
     let mut out = Vec::new();
@@ -420,6 +420,8 @@ fn tokens(keys: &'static str) -> Vec<Token> {
 }
 
 const FACE: &str = "Noto Sans";
+/// The face of a cap of one character, where l, I and 1 look apart.
+const CAP_FACE: &str = "JetBrains Mono";
 const TITLE: f32 = 17.;
 const TITLE_LINE: f32 = 22.;
 const HEADER: f32 = 12.;
@@ -547,7 +549,7 @@ fn keys_element(keys: &[Token], theme: Theme) -> Div {
 
 /// A key as a keycap: a rounded box with a thin edge, a little thicker at
 /// the bottom, on a fill a shade lighter than the card; one character to a
-/// cap of one width.
+/// cap of one width, in a face that tells l, I and 1 apart.
 fn keycap(label: &'static str, theme: Theme) -> Div {
     let one = label.chars().count() == 1;
     let cap = div()
@@ -572,6 +574,7 @@ fn keycap(label: &'static str, theme: Theme) -> Div {
         ),
         None => cap
             .when(!one, |cap| cap.px(px(CAP_PAD)))
+            .when(one, |cap| cap.font_family(CAP_FACE))
             .text_size(px(CAP_TEXT))
             .line_height(px(14.))
             .font_weight(FontWeight::MEDIUM)
@@ -888,17 +891,17 @@ mod tests {
             [cap("Shift"), plus, cap("←"), cap("→")]
         );
         assert_eq!(
-            tokens("G G / Shift+G"),
-            [cap("G"), cap("G"), Token::Or, cap("Shift"), plus, cap("G")]
+            tokens("g g / G"),
+            [cap("g"), cap("g"), Token::Or, cap("G")]
         );
-        assert_eq!(tokens("Ctrl+U / D"), [cap("Ctrl"), plus, cap("U"), Token::Or, cap("D")]);
+        assert_eq!(tokens("Ctrl+u / d"), [cap("Ctrl"), plus, cap("u"), Token::Or, cap("d")]);
         assert_eq!(
             tokens("Ctrl+@Scroll"),
             [cap("Ctrl"), plus, Token::Mouse("Scroll")]
         );
         assert_eq!(
-            tokens("2 0 Shift+G"),
-            [cap("2"), cap("0"), cap("Shift"), plus, cap("G")]
+            tokens("2 0 G"),
+            [cap("2"), cap("0"), cap("G")]
         );
     }
 
@@ -910,7 +913,7 @@ mod tests {
                 for pair in tokens.windows(2) {
                     if let [Token::Cap(a), Token::Cap(b)] = pair {
                         let arrows = [*a, *b].iter().all(|k| "←→↑↓".contains(*k));
-                        // G G, and a count typed before a key: 2 0 Shift+G.
+                        // g g, and a count typed before a key: 2 0 G.
                         let sequence = a == b || a.parse::<u8>().is_ok();
                         assert!(arrows || sequence, "{a} {b} in {keys}");
                     }
@@ -920,22 +923,35 @@ mod tests {
     }
 
     #[test]
-    fn letters_are_capitals_and_named_keys_are_spelled_one_way() {
+    fn letters_are_as_typed_and_named_keys_are_spelled_one_way() {
         let named = [
             "Shift", "Ctrl", "Esc", "Space", "Enter", "Delete", "F2", "Home", "End", "PgUp",
             "PgDn",
         ];
+        // The keys that take Shift with a letter, written as the capital.
+        let shifted = ["R", "G"];
         for subject in every_subject() {
             for keys in keys_of(shown(subject)) {
-                for token in tokens(keys) {
-                    let Token::Cap(cap) = token else { continue };
-                    let letters = cap.chars().filter(char::is_ascii_alphabetic).count();
+                let tokens = tokens(keys);
+                for token in &tokens {
+                    let Token::Cap(cap) = *token else { continue };
+                    let letter = cap.len() == 1 && cap.chars().all(|c| c.is_ascii_alphabetic());
                     assert!(
-                        letters == 0
-                            || (letters == 1 && cap.chars().all(|c| !c.is_ascii_lowercase()))
-                            || named.contains(&cap),
+                        !cap.chars().any(|c| c.is_ascii_alphabetic())
+                            || named.contains(&cap)
+                            || (letter && (cap.chars().all(|c| c.is_ascii_lowercase())
+                                || shifted.contains(&cap))),
                         "{cap} in {keys}"
                     );
+                }
+                // No Shift cap before a letter: J is the key, not Shift+J.
+                for three in tokens.windows(3) {
+                    if let [Token::Cap("Shift"), Token::Plus, Token::Cap(key)] = three {
+                        assert!(
+                            !key.chars().any(|c| c.is_ascii_alphabetic()),
+                            "Shift+{key} in {keys}"
+                        );
+                    }
                 }
             }
         }
@@ -978,14 +994,14 @@ mod tests {
     fn keys_that_do_nothing_for_the_file_are_left_out() {
         let has = |subject, keys: &str| keys_of(shown(subject)).contains(&keys);
         // Only text wraps; only pictures, PDFs and video turn.
-        assert!(has(Subject::Text, "W") && !has(Subject::Hexdump, "W"));
-        assert!(has(Subject::Picture, "R / Shift+R") && !has(Subject::Card, "R / Shift+R"));
-        assert!(has(Subject::Video, "R / Shift+R") && !has(Subject::Audio, "R / Shift+R"));
-        assert!(!has(Subject::Slides, "R / Shift+R"));
+        assert!(has(Subject::Text, "w") && !has(Subject::Hexdump, "w"));
+        assert!(has(Subject::Picture, "r / R") && !has(Subject::Card, "r / R"));
+        assert!(has(Subject::Video, "r / R") && !has(Subject::Audio, "r / R"));
+        assert!(!has(Subject::Slides, "r / R"));
         // The source of Markdown, not of plain text.
-        assert!(has(Subject::Rendered(Markup::Markdown), "S") && !has(Subject::Text, "S"));
+        assert!(has(Subject::Rendered(Markup::Markdown), "s") && !has(Subject::Text, "s"));
         // Sideways only where lines can be wider than the window.
-        assert!(has(Subject::Text, "H / L") && !has(Subject::Rendered(Markup::Html), "H / L"));
+        assert!(has(Subject::Text, "h / l") && !has(Subject::Rendered(Markup::Html), "h / l"));
         // The text size where there is text to size.
         assert!(has(Subject::Document, "Ctrl+0") && !has(Subject::Pdf, "Ctrl+0"));
         // A workbook of one sheet has no sheets to go to.
@@ -997,7 +1013,7 @@ mod tests {
         }
         assert!(!has(Subject::Picture, "PgUp / PgDn") && !has(Subject::Video, "PgUp / PgDn"));
         // Vim's keys where they move.
-        assert!(!has(Subject::Archive, "K / J") && !has(Subject::Sheet { tabs: true }, "K / J"));
+        assert!(!has(Subject::Archive, "k / j") && !has(Subject::Sheet { tabs: true }, "k / j"));
     }
 
     #[test]

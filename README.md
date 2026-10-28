@@ -34,8 +34,8 @@ screen, at a size you can see. It takes the place of GNOME's sushi.
 | Video | Plays at its own aspect, with sound; hardware decoding when GStreamer has it; a playbar over the bottom of the picture, with the seek track, the times and the volume, while the pointer moves and after each seek |
 | Audio | A card with the cover art, title, artist and album, playing, with the same playbar |
 | PDF | The pages in a scroll, shaped by the first page, rendered as they come into view; page thumbnails docked at the right; text can be selected and copied |
-| Markdown and HTML | Rendered: headings, lists, tables, code highlighted, pictures beside the file; S shows the source and back. A picture from the web shows its words: silent fetches nothing. Files over 256 KB open as their source |
-| Text and code | Highlighted, with line numbers; a minimap over the right edge while it scrolls, or docked beside the text; long lines scroll sideways, or wrap at the window's width with W; the text bigger or smaller with Ctrl and the wheel; select with the mouse and copy; UTF-8, UTF-16 and GB18030 (GBK) text; minified JSON laid out; the first 2 MB of large files |
+| Markdown and HTML | Rendered: headings, lists, tables, code highlighted, pictures beside the file; `s` shows the source and back. A picture from the web shows its words: silent fetches nothing. Files over 256 KB open as their source |
+| Text and code | Highlighted, with line numbers; a minimap over the right edge while it scrolls, or docked beside the text; long lines scroll sideways, or wrap at the window's width with `w`; the text bigger or smaller with Ctrl and the wheel; select with the mouse and copy; UTF-8, UTF-16 and GB18030 (GBK) text; minified JSON laid out; the first 2 MB of large files |
 | Binary files | As `hexdump -C` prints them, read from a memory map, so a dump of gigabytes opens at once, minimap and all; select and copy as text |
 | Compressed files | gzip, xz, zstd, bzip2, lz4 and lzma files show what is inside: text and code as above, a tar as its listing, anything else as a hexdump; the info line gives both sizes when the format records them |
 | Word documents | docx, odt and the older doc of Word 97 to 2003 (and WPS Writer's wps) as a column on a page: headings, paragraphs with their bold, italic, underline and colour, bulleted and numbered lists, tables, and the pictures of docx and odt; a minimap of the whole column docked at the right |
@@ -58,7 +58,7 @@ picture, at the price of the sandbox for these two formats. A JPEG twice
 the size of the screen or more is decoded at a half, a quarter or an
 eighth of its size.
 
-The info line lies over the bottom of the content, and I says when: when
+The info line lies over the bottom of the content, and `i` says when: when
 the mouse moves (it fades 1.5 s after the pointer rests, a playbar 1 s
 after), never, or always. Its colours are worked out, not chosen: silent
 looks at what is under it, the picture's own pixels, a video's
@@ -70,24 +70,24 @@ under them. Over a dark or a pale picture that is no veil at all.
 
 An overview that is always shown never covers the content: it is docked
 beside it, and the window is wider by the overview, at its right, so that
-pressing M to dock or undock it leaves the content where it was on the
+pressing `m` to dock or undock it leaves the content where it was on the
 screen, as large as it was; near the screen's right edge the window moves
 left just enough. Text shows its minimap over its right edge only while
-scrolling, unless M docks it (always). PDFs and slides open with their
+scrolling, unless `m` docks it (always). PDFs and slides open with their
 thumbnails docked, and documents with their minimap, within 85% of the
-screen with the page; M takes them away (never), and the window narrows
+screen with the page; `m` takes them away (never), and the window narrows
 by as much. Without an overview, a slim scrollbar shows while the view
 scrolls.
 
-Long lines of text and code scroll sideways, and W wraps them at the
+Long lines of text and code scroll sideways, and `w` wraps them at the
 window's width instead, at the start of a word unless the word is wider
 than the window, and between Chinese characters but not before their
 commas; the window keeps its size and the line at the top stays there.
 Wrapped, a line's number stands at its first row, the keys that move by a
-line move by a row, 20G still goes to line 20, the minimap and the
+line move by a row, `20G` still goes to line 20, the minimap and the
 scrollbar show the rows, and copying gives the lines without the breaks.
 Text wraps again when the window changes size, and the next text file
-wraps too, until W again, in a window as tall as its rows. Hexdumps keep
+wraps too, until `w` again, in a window as tall as its rows. Hexdumps keep
 their width.
 
 Ctrl+Shift+= makes the text of text and code, hexdumps, Markdown and HTML
@@ -104,7 +104,7 @@ there (unless they were nearly over), PDFs and slides open at the page,
 text at the line, documents at the paragraph, spreadsheets on the sheet and
 the cell, archives with the same folders open and the same entry selected,
 Markdown and HTML rendered or as source, pictures, PDFs and videos turned.
-That, the modes M, I and W last chose, for the minimap of text, for the
+That, the modes `m`, `i` and `w` last chose, for the minimap of text, for the
 thumbnails of pages and the minimap of documents, for the info line of
 each family of files (pictures, video and sound, text, pages, sheets,
 archives, cards), and for wrapping text, and the text size, is all silent
@@ -133,7 +133,8 @@ cleared at the next start.
 ? shows the keys on a card over the content, those of the file shown
 first, then the general ones and Nautilus's; Esc, ? or a click takes it
 away (F1 shows it too, where the window manager leaves F1 alone). Letters
-are written as a keyboard prints them; a key that needs Shift says so.
+are written as vim writes them, as typed: `j` is the key and `J` is Shift
+with it.
 
 | Key | Action |
 | --- | --- |
@@ -143,21 +144,21 @@ are written as a keyboard prints them; a key that needs Shift says so.
 | Enter | Open with the default application; for a folder, go into it |
 | F2 | Rename in Nautilus |
 | Delete | Move to the trash |
-| F | Fullscreen |
-| M | The minimap of text: while scrolling (over the right edge), always (docked beside the text), or never (a slim scrollbar instead); the thumbnails of a PDF or slides and the minimap of a document: always or never; mute video and audio |
-| I | The info line: when the mouse moves, never, or always; while it is never shown, a key that changes something (M, I, W, the volume, a seek, a pause) still answers with a word at the bottom right for a second |
-| W | Wrap the long lines of text and code at the window's width, or scroll them sideways again |
-| S | Markdown and HTML rendered, or their source |
+| f | Fullscreen |
+| m | The minimap of text: while scrolling (over the right edge), always (docked beside the text), or never (a slim scrollbar instead); the thumbnails of a PDF or slides and the minimap of a document: always or never; mute video and audio |
+| i | The info line: when the mouse moves, never, or always; while it is never shown, a key that changes something (m, i, w, the volume, a seek, a pause) still answers with a word at the bottom right for a second |
+| w | Wrap the long lines of text and code at the window's width, or scroll them sideways again |
+| s | Markdown and HTML rendered, or their source |
 | Ctrl+Shift+=, Ctrl+-, Ctrl+0 | The text of text and code, Markdown and HTML and documents bigger, smaller, or at 100%; Ctrl with the wheel too |
-| R, Shift+R | Turn a picture, every page of a PDF, or a video a quarter clockwise, or back; the window takes the turned shape |
-| K or a click | Pause or play video and audio |
-| J, L | Back or forward ten seconds |
+| r, R | Turn a picture, every page of a PDF, or a video a quarter clockwise, or back; the window takes the turned shape |
+| k or a click | Pause or play video and audio |
+| j, l | Back or forward ten seconds |
 | Shift+← , Shift+→ | Half a screen sideways in text that does not wrap; back or forward thirty seconds in video and audio; the previous or next sheet of a spreadsheet |
 | Shift+↑ , Shift+↓ | A screen up or down; the previous or next page of a PDF, or slide |
 | Page Up, Page Down | A screen up or down |
 | Home, End | The start or the end |
 | Drag, double-click, triple-click | Select text, a word, a line; the selection is also the primary selection |
-| Ctrl+A, Ctrl+C | Select all, copy |
+| Ctrl+a, Ctrl+c | Select all, copy |
 
 Text, code, hexdumps, Word documents, PDFs and slides also move with vim's
 keys. What has been typed of a command shows at the right of the info
@@ -165,14 +166,14 @@ line, as vim's `showcmd` does:
 
 | Key | Action |
 | --- | --- |
-| J, K | A line down or up, a row in wrapped text; in a PDF or slides, the next or previous page |
-| H, L, 0 | Sideways, and back to the left edge, in text that does not wrap |
-| Ctrl+E, Ctrl+Y | A line down or up, a row in wrapped text |
-| Ctrl+D, Ctrl+U | Half a screen down or up |
-| Ctrl+F, Ctrl+B | A screen down or up |
-| G G, Shift+G | The start, the end |
-| 2 0 Shift+G | Line 20, in the middle of the view and lit for a moment; page 20 of a PDF or slides; the twentieth paragraph or table of a document |
-| A number first | Does it that many times: 5 J |
+| j, k | A line down or up, a row in wrapped text; in a PDF or slides, the next or previous page |
+| h, l, 0 | Sideways, and back to the left edge, in text that does not wrap |
+| Ctrl+e, Ctrl+y | A line down or up, a row in wrapped text |
+| Ctrl+d, Ctrl+u | Half a screen down or up |
+| Ctrl+f, Ctrl+b | A screen down or up |
+| g g, G | The start, the end |
+| 2 0 G | Line 20, in the middle of the view and lit for a moment; page 20 of a PDF or slides; the twentieth paragraph or table of a document |
+| A number first | Does it that many times: 5 j |
 
 After a click inside the content, a thin warm ring shows that the arrow
 keys act on the content instead of browsing files, until the window loses
