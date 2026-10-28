@@ -527,6 +527,10 @@ impl LinesPane {
         }
     }
 
+    pub fn is_hex(&self) -> bool {
+        matches!(self.doc.as_ref(), Doc::Hex(_))
+    }
+
     /// What the strip says about the content.
     pub fn summary(&self) -> Vec<String> {
         match self.doc.as_ref() {

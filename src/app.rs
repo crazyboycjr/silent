@@ -477,6 +477,7 @@ impl Controller {
         };
         shown.folder = loaded.facts.kind == Kind::Folder;
         let (focus, token) = (shown.focus, shown.activation_token.clone());
+        let nautilus = shown.owner == Owner::Nautilus;
         trace::mark("loaded");
         let size = loaded.size;
         let Some(mapped) = self.window.as_ref().map(|w| w.shown) else {
@@ -507,9 +508,10 @@ impl Controller {
                 }
                 open.input = focus;
             }
-            let _ = open
-                .handle
-                .update(cx, |view, window, cx| view.show(loaded, window, cx));
+            let _ = open.handle.update(cx, |view, window, cx| {
+                view.set_nautilus(nautilus);
+                view.show(loaded, window, cx)
+            });
             return;
         }
         // The window waiting for this file: its content first, then on the
@@ -517,6 +519,7 @@ impl Controller {
         // focus, unless the preview leaves the keyboard where it was.
         let screen = self.screen;
         let _ = open.handle.update(cx, |view, window, cx| {
+            view.set_nautilus(nautilus);
             view.reopen(loaded, screen, window, cx)
         });
         open.shown = true;
@@ -620,10 +623,18 @@ impl Controller {
             ..Default::default()
         };
         let (screen, rounded, input) = (self.screen, self.rounded, self.input.clone());
+        let nautilus = self
+            .shown
+            .as_ref()
+            .is_some_and(|shown| shown.owner == Owner::Nautilus);
         trace::mark("window opens");
         let opened = cx.update(|cx| {
             cx.open_window(options, |window, cx| {
-                cx.new(|cx| Preview::new(loaded, screen, rounded, input, window, cx))
+                cx.new(|cx| {
+                    let mut preview = Preview::new(loaded, screen, rounded, input, window, cx);
+                    preview.set_nautilus(nautilus);
+                    preview
+                })
             })
         });
         let handle = match opened {

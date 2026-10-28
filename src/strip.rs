@@ -112,9 +112,9 @@ impl Mode {
 
     pub fn describe(self) -> &'static str {
         match self {
-            Mode::Auto => "Strip while moving",
-            Mode::Off => "Strip off",
-            Mode::On => "Strip on",
+            Mode::Auto => "Info line: while moving",
+            Mode::Off => "Info line: never",
+            Mode::On => "Info line: always",
         }
     }
 }

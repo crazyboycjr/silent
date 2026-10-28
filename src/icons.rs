@@ -25,6 +25,10 @@ gpui_kit_assets::icon_assets!(pub Icons, [
     Volume1,
     Volume2,
     VolumeX,
+    ArrowLeft,
+    ArrowRight,
+    ArrowUp,
+    ArrowDown,
 ]);
 
 /// The icon and its colour for an entry called `name`.

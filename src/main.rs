@@ -3,6 +3,7 @@ mod archive;
 mod content;
 mod docview;
 mod grid;
+mod help;
 mod icons;
 mod keys;
 mod lines;

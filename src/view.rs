@@ -18,6 +18,7 @@ use silent::detect::Kind;
 use silent::extract::{self, Extracted, Places, Refusal};
 use silent::format;
 use silent::geometry::Screen;
+use silent::markup::Markup;
 use silent::memory::{self, Key, View};
 use silent::scrim::Scrim;
 use silent::vim::{Keys, Motion};
@@ -27,6 +28,7 @@ use crate::archive::{self, ArchivePane};
 use crate::content::{self, Body, Loaded, Totals};
 use crate::docview::{self, DocPane};
 use crate::grid::{self, SheetPane};
+use crate::help;
 use crate::keys::{self, Act, Mods};
 use crate::lines::{Doc, LinesPane};
 use crate::media::{self, AudioPane, Loudness, Player, VideoPane};
@@ -99,6 +101,8 @@ pub struct Preview {
     switching: Option<Task<()>>,
     /// The card of keys over the content.
     help: bool,
+    /// Nautilus's own preview, whose arrows, F2 and Delete act on its files.
+    nautilus: bool,
     _archive: Option<Subscription>,
     _appearance: Subscription,
     _activation: Subscription,
@@ -287,6 +291,7 @@ impl Preview {
             opening: None,
             switching: None,
             help: false,
+            nautilus: false,
             _archive: None,
             _appearance: appearance,
             _activation: activation,
@@ -322,6 +327,10 @@ impl Preview {
         self.was_fullscreen = false;
         self.help = false;
         self.show(loaded, window, cx);
+    }
+
+    pub fn set_nautilus(&mut self, nautilus: bool) {
+        self.nautilus = nautilus;
     }
 
     /// Lets the file go, remembering where it was left, before the window
@@ -532,6 +541,37 @@ impl Preview {
         }
     }
 
+    /// What the card of keys is for.
+    fn help_shown(&self, cx: &App) -> help::Shown {
+        use help::Subject;
+        let subject = match &self.pane {
+            Pane::Lines(t) if t.read(cx).is_hex() => Subject::Hexdump,
+            Pane::Lines(_) => self.loaded.markup.map_or(Subject::Text, Subject::Source),
+            Pane::Rendered(_) => {
+                Subject::Rendered(self.loaded.markup.unwrap_or(Markup::Markdown))
+            }
+            Pane::Pdf(_) => Subject::Pdf,
+            Pane::Slides(_) => Subject::Slides,
+            Pane::Doc(_) => Subject::Document,
+            Pane::Sheet(s) => Subject::Sheet {
+                tabs: s.read(cx).has_tabs(),
+            },
+            Pane::Archive(_) => Subject::Archive,
+            Pane::Video(_) => Subject::Video,
+            Pane::Audio(_) => Subject::Audio,
+            Pane::None => match self.loaded.body {
+                Body::Image(_) => Subject::Picture,
+                Body::Folder(_) => Subject::Folder,
+                _ => Subject::Card,
+            },
+        };
+        help::Shown {
+            subject,
+            inside: !self.levels.is_empty(),
+            nautilus: self.nautilus,
+        }
+    }
+
     /// Whether a long Markdown or HTML text is still being parsed, in the
     /// background, before it can be drawn.
     pub fn parsing(&self, cx: &App) -> bool {
@@ -729,7 +769,7 @@ impl Preview {
         let (family, what) = match &self.pane {
             Pane::Lines(_) => (Family::Minimap, "Minimap"),
             Pane::Pdf(_) | Pane::Slides(_) => (Family::Rail, "Thumbnails"),
-            Pane::Doc(_) => (Family::Rail, "Overview"),
+            Pane::Doc(_) => (Family::Rail, "Minimap"),
             _ => return,
         };
         let mode = self.mode(family).next(family);
@@ -1710,7 +1750,10 @@ impl Render for Preview {
             .child(content)
             .children(strip)
             .children(self.opening(theme))
-            .children(self.help.then(|| help(theme, cx)))
+            .children(
+                self.help
+                    .then(|| help_overlay(self.help_shown(cx), theme, radius, window, cx)),
+            )
             .children(ring)
     }
 }
@@ -1793,63 +1836,24 @@ fn folder_glyph() -> Div {
         )
 }
 
-/// silent's own keys, a few words each.
-const KEYS: [(&str, &str); 16] = [
-    ("Space", "Close; in an archive, show the entry"),
-    ("Esc", "Close everything"),
-    ("← → ↑ ↓", "The next file; after a click, move inside"),
-    ("Shift + arrows", "A page, a sheet, or 30 seconds"),
-    ("Enter", "Open in its application"),
-    ("F2, Delete", "Rename or trash it in Nautilus"),
-    ("F", "Fullscreen"),
-    ("M", "Minimap or page rail; mute"),
-    ("i", "The strip: while moving, never, always"),
-    ("w", "Wrap long lines"),
-    ("s", "Markdown and HTML rendered, or the source"),
-    ("r, Shift + R", "Turn a quarter clockwise, or back"),
-    ("K or a click", "Pause or play"),
-    ("J, L", "Back or on ten seconds"),
-    ("Ctrl + C, Ctrl + A", "Copy, select all"),
-    ("?, F1", "This card"),
-];
-
-/// The card of keys over the content; a click, Esc or ? takes it away.
-fn help(theme: Theme, cx: &mut Context<Preview>) -> Stateful<Div> {
-    let row = |key: &str, what: &str| {
-        div()
-            .flex()
-            .flex_row()
-            .border_t_1()
-            .border_color(theme.rule)
-            .child(
-                div()
-                    .w(px(150.))
-                    .flex_none()
-                    .py(px(5.))
-                    .pr(px(12.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(key.to_owned()),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .py(px(5.))
-                    .pl(px(12.))
-                    .border_l_1()
-                    .border_color(theme.rule)
-                    .child(what.to_owned()),
-            )
-    };
-    let vim = "Text, documents, PDFs and slides also move with vim's keys: \
-               j k h l, gg and G, 20G for line or page 20, Ctrl+d and Ctrl+u, \
-               Ctrl+f and Ctrl+b, and a count first, as in 5j.";
+/// The card of keys over the content, on a veil that keeps the content
+/// back; a click, Esc or ? takes it away.
+fn help_overlay(
+    shown: help::Shown,
+    theme: Theme,
+    radius: Pixels,
+    window: &Window,
+    cx: &mut Context<Preview>,
+) -> Stateful<Div> {
     div()
         .id("help")
         .absolute()
         .top_0()
         .left_0()
         .size_full()
+        .rounded(radius)
+        .bg(theme.backdrop.opacity(0.6))
+        .occlude()
         .flex()
         .items_center()
         .justify_center()
@@ -1861,36 +1865,5 @@ fn help(theme: Theme, cx: &mut Context<Preview>) -> Stateful<Div> {
                 cx.notify();
             }),
         )
-        .child(
-            div()
-                .id("help-card")
-                .w(px(480.))
-                .max_w(relative(0.94))
-                .max_h(relative(0.94))
-                .overflow_y_scroll()
-                .px(px(22.))
-                .py(px(18.))
-                .rounded(px(10.))
-                .bg(theme.surface)
-                .border_1()
-                .border_color(theme.rule)
-                .text_size(px(13.))
-                .text_color(theme.text)
-                .child(
-                    div()
-                        .pb(px(10.))
-                        .text_size(px(15.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("Keys"),
-                )
-                .children(KEYS.iter().map(|(key, what)| row(key, what)))
-                .child(
-                    div()
-                        .border_t_1()
-                        .border_color(theme.rule)
-                        .pt(px(12.))
-                        .text_color(theme.muted)
-                        .child(vim),
-                ),
-        )
+        .child(help::card(shown, theme, window))
 }

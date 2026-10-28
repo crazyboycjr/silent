@@ -83,12 +83,13 @@ impl Mode {
         memory::set_setting(family.key(), name);
     }
 
-    /// `Minimap while scrolling`, for the strip.
+    /// `Minimap: while moving`, for the info line, in the words of the card
+    /// of keys.
     pub fn describe(self, what: &str) -> String {
         match self {
-            Mode::Auto => format!("{what} while scrolling"),
-            Mode::On => format!("{what} on"),
-            Mode::Off => format!("{what} off"),
+            Mode::Auto => format!("{what}: while moving"),
+            Mode::On => format!("{what}: always"),
+            Mode::Off => format!("{what}: never"),
         }
     }
 }

@@ -15,6 +15,9 @@ pub struct Theme {
     pub selection: Hsla,
     /// The hairline between text and the minimap docked beside it.
     pub rule: Hsla,
+    /// A keycap's face and its edge.
+    pub key: Hsla,
+    pub key_edge: Hsla,
 }
 
 impl Theme {
@@ -27,6 +30,8 @@ impl Theme {
                 muted: rgb(0xa5998b).into(),
                 selection: rgba(0x9a6a3f8c).into(),
                 rule: rgba(0xa5998b40).into(),
+                key: rgb(0x342d27).into(),
+                key_edge: rgba(0xa5998b66).into(),
             },
             _ => Self {
                 surface: rgb(0xf6f1e9).into(),
@@ -35,6 +40,8 @@ impl Theme {
                 muted: rgb(0x85786b).into(),
                 selection: rgba(0xe8b07a80).into(),
                 rule: rgba(0x85786b40).into(),
+                key: rgb(0xfffcf7).into(),
+                key_edge: rgba(0x85786b73).into(),
             },
         }
     }
