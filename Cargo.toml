@@ -75,8 +75,10 @@ lto = "thin"
 codegen-units = 4
 strip = true
 
-# gpui's X11 and wgpu backends, with silent's start-up marks and switches.
+# gpui's X11 and wgpu backends, with silent's start-up marks and switches,
+# and gpui-base, whose text view silent renders Markdown and HTML with.
 # vendor/README.md says what differs from the published crates.
 [patch.crates-io]
+gpui-base = { path = "vendor/gpui-base" }
 gpui-pre-linux = { path = "vendor/gpui-pre-linux" }
 gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
