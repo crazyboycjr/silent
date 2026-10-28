@@ -8,6 +8,8 @@ use std::time::Duration;
 use silent::dbus::Direction;
 use silent::vim::{Keys, Motion, Outcome};
 
+use crate::zoom::Zoom;
+
 /// The kinds of view, as far as keys care.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -47,6 +49,11 @@ impl Kind {
     /// too, as far as keys know; they stay as they are.
     fn turns(self) -> bool {
         matches!(self, Kind::Still | Kind::Pdf | Kind::Video)
+    }
+
+    /// Whether its text can be made bigger or smaller.
+    pub fn zooms(self) -> bool {
+        matches!(self, Kind::Lines | Kind::Rendered | Kind::Doc)
     }
 }
 
@@ -89,6 +96,8 @@ pub enum Act {
     /// r: a quarter turn of a picture, a PDF or a video, clockwise; with
     /// Shift, back.
     Turn(bool),
+    /// Ctrl with + or =, -, 0: the text bigger, smaller, or at 100%.
+    Zoom(Zoom),
     /// Enter or Space in an engaged archive: look inside the selected
     /// entry, which goes on top, or open or close the selected folder;
     /// with nothing selected, the key's usual act.
@@ -184,6 +193,11 @@ pub fn route(kind: Kind, engaged: bool, key: &str, mods: Mods, held: bool, vim: 
         return match (shift, key) {
             (false, "a") if matches!(kind, Kind::Lines | Kind::Rendered) => Act::SelectAll,
             (false, "c") if matches!(kind, Kind::Lines | Kind::Rendered | Kind::Pdf) => Act::Copy,
+            // The + key: Shift with =, or the keypad's, which gpui names by
+            // the keysym; = alone too.
+            (_, "=" | "+" | "add") if kind.zooms() => Act::Zoom(Zoom::In),
+            (false, "-" | "subtract") if kind.zooms() => Act::Zoom(Zoom::Out),
+            (false, "0") if kind.zooms() => Act::Zoom(Zoom::Reset),
             _ => Act::Pass,
         };
     }
@@ -629,6 +643,41 @@ mod tests {
         assert_eq!(
             route(Kind::Video, false, "c", ctrl, false, &mut vim),
             Act::Pass
+        );
+    }
+
+    #[test]
+    fn ctrl_with_plus_minus_and_zero_sizes_text_where_there_is_text() {
+        let ctrl = Mods {
+            ctrl: true,
+            shift: false,
+        };
+        let ctrl_shift = Mods {
+            ctrl: true,
+            shift: true,
+        };
+        let mut vim = Keys::default();
+        let mut press = |kind, key, mods| route(kind, false, key, mods, false, &mut vim);
+        for kind in [Kind::Lines, Kind::Rendered, Kind::Doc] {
+            // Shift with = is named either way, as X11 layouts differ.
+            assert_eq!(press(kind, "=", ctrl_shift), Act::Zoom(Zoom::In), "{kind:?}");
+            assert_eq!(press(kind, "+", ctrl_shift), Act::Zoom(Zoom::In));
+            assert_eq!(press(kind, "+", ctrl), Act::Zoom(Zoom::In));
+            assert_eq!(press(kind, "=", ctrl), Act::Zoom(Zoom::In));
+            assert_eq!(press(kind, "add", ctrl), Act::Zoom(Zoom::In));
+            assert_eq!(press(kind, "-", ctrl), Act::Zoom(Zoom::Out));
+            assert_eq!(press(kind, "subtract", ctrl), Act::Zoom(Zoom::Out));
+            assert_eq!(press(kind, "0", ctrl), Act::Zoom(Zoom::Reset));
+        }
+        for kind in [Kind::Pdf, Kind::Still, Kind::Video, Kind::Sheet] {
+            assert_eq!(press(kind, "=", ctrl_shift), Act::Pass, "{kind:?}");
+        }
+        // A count typed first does not hold it back, and 0 alone is vim's.
+        press(Kind::Lines, "5", Mods::default());
+        assert_eq!(press(Kind::Lines, "0", ctrl), Act::Zoom(Zoom::Reset));
+        assert_eq!(
+            press(Kind::Lines, "0", Mods::default()),
+            Act::Move(Motion::Home)
         );
     }
 }

@@ -39,6 +39,7 @@ use crate::slides::SlidesPane;
 use crate::strip::{self, Mode as StripMode};
 use crate::theme::{Theme, accent};
 use crate::trace;
+use crate::zoom::Zoom;
 
 /// Corner radius when a compositor draws the transparent corners.
 pub const RADIUS: f32 = 11.0;
@@ -103,6 +104,10 @@ pub struct Preview {
     help: bool,
     /// Nautilus's own preview, whose arrows, F2 and Delete act on its files.
     nautilus: bool,
+    /// The text size, 1 at 100%, and the wheel's turn with Ctrl held that
+    /// has not made a step yet.
+    zoom: f32,
+    wheel: f32,
     _archive: Option<Subscription>,
     _appearance: Subscription,
     _activation: Subscription,
@@ -292,6 +297,8 @@ impl Preview {
             switching: None,
             help: false,
             nautilus: false,
+            zoom: crate::zoom::level(),
+            wheel: 0.,
             _archive: None,
             _appearance: appearance,
             _activation: activation,
@@ -432,19 +439,21 @@ impl Preview {
                 Pane::Pdf(cx.new(|_| PdfPane::new(pdf, mode, docked, view, window)))
             }
             Body::Text(text) => {
-                let mode = self.mode(Family::Minimap);
-                Pane::Lines(cx.new(|_| LinesPane::new(Doc::Text(text), mode, docked, view)))
+                let (mode, zoom) = (self.mode(Family::Minimap), self.zoom);
+                let doc = Doc::Text(text);
+                Pane::Lines(cx.new(|_| LinesPane::new(doc, mode, docked, view, zoom)))
             }
             Body::Hex(hex) => {
-                let mode = self.mode(Family::Minimap);
-                Pane::Lines(cx.new(|_| LinesPane::new(Doc::Hex(hex), mode, docked, view)))
+                let (mode, zoom) = (self.mode(Family::Minimap), self.zoom);
+                let doc = Doc::Hex(hex);
+                Pane::Lines(cx.new(|_| LinesPane::new(doc, mode, docked, view, zoom)))
             }
             Body::Rendered(doc) => {
                 Pane::Rendered(cx.new(|cx| RenderedPane::new(*doc, view, window, cx)))
             }
             Body::Document(paper) => {
-                let mode = self.mode(Family::Rail);
-                Pane::Doc(cx.new(|_| DocPane::new(*paper, mode, docked, view, window)))
+                let (mode, zoom) = (self.mode(Family::Rail), self.zoom);
+                Pane::Doc(cx.new(|_| DocPane::new(*paper, mode, docked, view, zoom, window)))
             }
             Body::Sheet(sheet) => Pane::Sheet(cx.new(|_| SheetPane::new(*sheet, view))),
             Body::Deck(deck) => {
@@ -694,6 +703,7 @@ impl Preview {
             Act::Source => self.toggle_source(window, cx),
             Act::Help => self.help = !self.help,
             Act::Turn(clockwise) => self.turn(clockwise, window, cx),
+            Act::Zoom(zoom) => self.zoom_text(zoom, None, window, cx),
             Act::SelectAll => match &self.pane {
                 Pane::Lines(t) => t.update(cx, |t, cx| t.select_all(cx)),
                 Pane::Rendered(r) => r.update(cx, |r, cx| r.select_all(cx)),
@@ -960,6 +970,49 @@ impl Preview {
                 this.note(Some(word), window, cx);
             });
         }));
+    }
+
+    /// The text bigger, smaller or at 100%, for this file and the next;
+    /// what is under the pointer at `at`, or else at the top, stays put.
+    fn zoom_text(
+        &mut self,
+        zoom: Zoom,
+        at: Option<Point<Pixels>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.pane.kind().zooms() {
+            return;
+        }
+        let level = crate::zoom::change(self.zoom, zoom);
+        self.zoom = level;
+        match &self.pane {
+            Pane::Lines(t) => t.update(cx, |t, cx| t.set_zoom(level, at, window, cx)),
+            Pane::Rendered(r) => r.update(cx, |r, cx| r.set_zoom(at, cx)),
+            Pane::Doc(d) => d.update(cx, |d, cx| d.set_zoom(level, at, cx)),
+            _ => {}
+        }
+        self.note(Some(crate::zoom::describe(level)), window, cx);
+    }
+
+    /// Ctrl with the wheel: a step of the text size for every notch, about
+    /// the pointer.
+    fn wheel_zoom(
+        &mut self,
+        event: &ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // gpui counts a notch as three lines.
+        self.wheel += match event.delta {
+            ScrollDelta::Lines(delta) => delta.y / 3.,
+            ScrollDelta::Pixels(delta) => f32::from(delta.y) / 60.,
+        };
+        while self.wheel.abs() >= 1. {
+            let zoom = if self.wheel > 0. { Zoom::In } else { Zoom::Out };
+            self.wheel -= self.wheel.signum();
+            self.zoom_text(zoom, Some(event.position), window, cx);
+        }
     }
 
     /// Keeps the turns of the file shown for an hour, unless it was taken
@@ -1674,6 +1727,33 @@ impl Render for Preview {
         } else {
             px(0.)
         };
+        // Rendered text is sized in rems, as a page in a browser; silent's
+        // own words are in pixels.
+        let rem = match self.pane {
+            Pane::Rendered(_) => self.zoom,
+            _ => 1.,
+        };
+        window.set_rem_size(px(16. * rem));
+        // Ctrl with the wheel sizes the text before the content scrolls.
+        let view = cx.entity().downgrade();
+        let wheel = canvas(
+            |_, _, _| {},
+            move |_, _, window, _| {
+                window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Capture || !event.modifiers.control {
+                        return;
+                    }
+                    let _ = view.update(cx, |this, cx| {
+                        if this.pane.kind().zooms() {
+                            this.wheel_zoom(event, window, cx);
+                            cx.stop_propagation();
+                        }
+                    });
+                });
+            },
+        )
+        .absolute()
+        .size_full();
         if !self.traced && self.ready(cx) {
             self.traced = true;
             window.on_next_frame(|_, _| trace::mark("first frame"));
@@ -1748,6 +1828,7 @@ impl Render for Preview {
                 }
             }))
             .child(content)
+            .child(wheel)
             .children(strip)
             .children(self.opening(theme))
             .children(

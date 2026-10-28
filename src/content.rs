@@ -813,7 +813,8 @@ fn rendered_size(rendered: &Rendered, screen: Screen) -> (i32, i32) {
         .filter(|l| !l.trim().is_empty())
         .count();
     let rows = (rows + rendered.pictures.len() * 6).clamp(12, 44) as f64;
-    card(screen, (COLUMN, rows * 22.0 + 80.0))
+    let zoom = f64::from(crate::zoom::level());
+    card(screen, (COLUMN * zoom, (rows * 22.0 + 80.0) * zoom))
 }
 
 /// The first [`TEXT_LIMIT`] bytes, and whether there were more.
@@ -999,29 +1000,29 @@ pub fn columns(line: &str) -> usize {
 }
 
 /// Wrapped text is as tall as the rows its lines wrap into at the window's
-/// width.
+/// width. The window holds as many characters at any text size.
 fn text_size(text: &Text, screen: Screen) -> ((i32, i32), f64) {
-    let width = f64::from(screen.card(860.0, 0.0, 0.0).0) / screen.scale;
-    let rows = crate::lines::rows_for(text, width as f32);
-    lines_window(
-        rows,
-        (860.0, rows.clamp(8, 44) as f64 * 21.0 + 40.0),
-        screen,
-    )
+    let zoom = crate::zoom::level();
+    let width = f64::from(screen.card(860.0 * f64::from(zoom), 0.0, 0.0).0) / screen.scale;
+    let rows = crate::lines::rows_for(text, width as f32, zoom);
+    lines_window(rows, (860.0, rows.clamp(8, 44) as f64 * 21.0 + 40.0), screen)
 }
 
-/// The window for `lines` lines of text or a hexdump in `size` logical
-/// pixels, and the minimap docked beside them once M has pinned it and
-/// they need scrolling.
-fn lines_window(lines: usize, (width, height): (f64, f64), screen: Screen) -> ((i32, i32), f64) {
+/// The window for `lines` lines of text or a hexdump that take `size`
+/// logical pixels at 100%, and the minimap docked beside them once M has
+/// pinned it and they need scrolling.
+fn lines_window(lines: usize, size: (f64, f64), screen: Screen) -> ((i32, i32), f64) {
+    let zoom = crate::zoom::level();
+    let (width, height) = (size.0 * f64::from(zoom), size.1 * f64::from(zoom));
     let shown = screen.card(width, height, 0.0);
     let tall = f64::from(shown.1) / screen.scale;
-    let dock =
-        if Mode::load(Family::Minimap) == Mode::On && crate::lines::scrolls(lines, tall as f32) {
-            f64::from(crate::lines::minimap_width(screen.scale as f32))
-        } else {
-            return (shown, 0.0);
-        };
+    let dock = if Mode::load(Family::Minimap) == Mode::On
+        && crate::lines::scrolls(lines, tall as f32, zoom)
+    {
+        f64::from(crate::lines::minimap_width(screen.scale as f32))
+    } else {
+        return (shown, 0.0);
+    };
     (screen.window(screen.card(width, height, dock), dock), dock)
 }
 

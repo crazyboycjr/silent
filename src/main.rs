@@ -19,6 +19,7 @@ mod strip;
 mod theme;
 mod trace;
 mod view;
+mod zoom;
 
 use std::process::ExitCode;
 use std::time::Instant;

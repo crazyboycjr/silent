@@ -21,6 +21,7 @@ use crate::content::{Paper, decode_still};
 use crate::overview::{self, Docking, Geometry, Mode, Overview, Overviewed, Shown};
 use crate::paged::{RAIL, THUMB};
 use crate::theme::{Theme, accent, progress};
+use crate::zoom::{self, Held};
 
 /// The page, warm white as paper is.
 pub const PAPER: u32 = 0xfffdf8;
@@ -41,6 +42,10 @@ pub struct DocPane {
     /// lit for a moment.
     centre: Option<usize>,
     flash: Option<(usize, Instant)>,
+    /// The text size, 1 at 100%, and the place under the pointer as it
+    /// changed.
+    zoom: f32,
+    held: Option<Held>,
 }
 
 impl DocPane {
@@ -56,11 +61,12 @@ impl DocPane {
         mode: Mode,
         docked: bool,
         view: Option<View>,
+        zoom: f32,
         window: &Window,
     ) -> Self {
         let doc = paper.document;
         let width = overview::beside(window, if docked { RAIL } else { 0. }).width;
-        let scale = f32::from(width) / doc.page.0.max(1.);
+        let scale = f32::from(width) / doc.page.0.max(1.) * zoom;
         // Blocks not laid out yet count as two lines, so that the scrollbar
         // is about right from the start.
         let guess = px(doc.base_size * scale * 1.3 * 2.5);
@@ -82,7 +88,19 @@ impl DocPane {
             scale,
             centre: None,
             flash: None,
+            zoom,
+            held: None,
         }
+    }
+
+    /// The column's text at `level`, laid out again at the window's width,
+    /// with the place under the pointer at `at`, or else the block at the
+    /// top, kept where it is.
+    pub fn set_zoom(&mut self, level: f32, at: Option<Point<Pixels>>, cx: &mut Context<Self>) {
+        self.zoom = level;
+        self.held = at.and_then(|at| zoom::hold(&self.list, at.y));
+        self.list.remeasure();
+        cx.notify();
     }
 
     pub fn view(&self) -> Option<View> {
@@ -451,11 +469,18 @@ fn sketch(mini: Rc<Miniature>, page: f32, g: Geometry, theme: Theme) -> AnyEleme
 impl Render for DocPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.centre_block(window);
+        if let Some(held) = &mut self.held {
+            if zoom::keep(&self.list, held) {
+                self.held = None;
+            } else {
+                window.request_animation_frame();
+            }
+        }
         let theme = Theme::of(window.appearance());
         let width = f32::from(overview::beside(window, self.dock()).width);
         let doc = self.doc.clone();
-        // Pixels per point: the page's width fills the view's.
-        let scale = width / doc.page.0.max(1.);
+        // Pixels per point: the page's width fills the view's, at 100%.
+        let scale = width / doc.page.0.max(1.) * self.zoom;
         self.scale = scale;
         let margin = (doc.margins.0 * scale).clamp(16., width / 4.);
         let content = width - margin * 2.;

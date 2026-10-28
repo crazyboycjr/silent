@@ -388,12 +388,45 @@ pub fn minimap_width(scale: f32) -> f32 {
     Pitch::at(scale).width()
 }
 
+/// The sizes of the text at a zoom: the face's, a row's on whole device
+/// pixels, the margins and the line numbers'.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Metrics {
+    zoom: f32,
+    font: f32,
+    line: f32,
+    top: f32,
+    side: f32,
+}
+
+impl Metrics {
+    fn at(zoom: f32, scale: f32) -> Self {
+        Self {
+            zoom,
+            font: FONT_SIZE * zoom,
+            line: (LINE_HEIGHT * zoom * scale).round().max(1.) / scale,
+            top: PAD_TOP * zoom,
+            side: PAD_SIDE * zoom,
+        }
+    }
+
+    /// How many rows a view `height` tall holds, a part row as a part.
+    fn rows_in(self, height: Pixels) -> f64 {
+        f64::from(((height - px(self.top)) / px(self.line)).max(1.))
+    }
+
+    /// The line numbers' gutter for a text of `lines` lines.
+    fn gutter(self, lines: usize) -> f32 {
+        (lines.to_string().len() as f32 * 8.4 + 22.) * self.zoom
+    }
+}
+
 /// How wide the code's face draws a column, Chinese and emoji, which come
 /// from the faces it falls back to.
-fn measure(window: &Window) -> Measure {
+fn measure(window: &Window, size: f32) -> Measure {
     let system = window.text_system();
     let font = system.resolve_font(&LinesPane::font());
-    let width = |c| f32::from(system.layout_width(font, px(FONT_SIZE), c));
+    let width = |c| f32::from(system.layout_width(font, px(size), c));
     let column = width('0').max(1.);
     // Without a face that has it, a character is a box about two columns wide.
     let or_two = |w: f32| if w > 0. { w } else { 2. * column };
@@ -405,30 +438,28 @@ fn measure(window: &Window) -> Measure {
     }
 }
 
-/// How the code's face measures at its size, for sizing a window before
-/// there is a text system to ask.
-const NOMINAL: Measure = Measure {
-    column: 7.5,
-    wide: 12.5,
-    emoji: 15.,
-    tab: TAB,
-};
+/// How the code's face measures at a zoom, for sizing a window before there
+/// is a text system to ask.
+fn nominal(zoom: f32) -> Measure {
+    Measure {
+        column: 7.5 * zoom,
+        wide: 12.5 * zoom,
+        emoji: 15. * zoom,
+        tab: TAB,
+    }
+}
 
 /// Whether text wraps, as w last chose, until the next reboot.
 fn wraps() -> bool {
     memory::setting(WRAP).as_deref() == Some("on")
 }
 
-/// The line numbers' gutter for a text of `lines` lines.
-fn gutter_width(lines: usize) -> f32 {
-    lines.to_string().len() as f32 * 8.4 + 22.
-}
-
-/// The rows `text` takes in a view `width` logical pixels wide, to size its
-/// window: its lines, or the rows they wrap into while text wraps.
-pub fn rows_for(text: &Text, width: f32) -> usize {
+/// The rows `text` takes in a view `width` logical pixels wide at `zoom`,
+/// to size its window: its lines, or the rows they wrap into while text
+/// wraps.
+pub fn rows_for(text: &Text, width: f32, zoom: f32) -> usize {
     if wraps() {
-        wrapped_rows(text, width)
+        wrapped_rows(text, width, zoom)
     } else {
         text.lines.len()
     }
@@ -436,17 +467,19 @@ pub fn rows_for(text: &Text, width: f32) -> usize {
 
 /// The rows `text`'s lines wrap into, counted until the view would scroll
 /// anyway.
-fn wrapped_rows(text: &Text, width: f32) -> usize {
+fn wrapped_rows(text: &Text, width: f32, zoom: f32) -> usize {
     const ENOUGH: usize = 64;
     let lines = text.lines.len();
     if lines >= ENOUGH {
         return lines;
     }
-    let width = (width - gutter_width(lines) - PAD_SIDE).max(8. * NOMINAL.column);
+    let m = Metrics::at(zoom, 1.);
+    let measure = nominal(zoom);
+    let width = (width - m.gutter(lines) - m.side).max(8. * measure.column);
     let mut rows = 0;
     let mut starts = Vec::new();
     for line in &text.lines {
-        wrap::breaks(&text.text[line.clone()], width, &NOMINAL, &mut starts);
+        wrap::breaks(&text.text[line.clone()], width, &measure, &mut starts);
         rows += 1 + starts.len();
         starts.clear();
         if rows >= ENOUGH {
@@ -456,15 +489,10 @@ fn wrapped_rows(text: &Text, width: f32) -> usize {
     rows
 }
 
-/// How many lines a view `height` tall holds, a part line as a part.
-fn rows_in(height: Pixels) -> f64 {
-    f64::from(((height - px(PAD_TOP)) / px(LINE_HEIGHT)).max(1.))
-}
-
-/// Whether `lines` lines need scrolling in a view `height` logical pixels
-/// tall; the view scrolls one line past the last.
-pub fn scrolls(lines: usize, height: f32) -> bool {
-    lines as f64 + 1. - rows_in(px(height)) > 1e-6
+/// Whether `lines` lines at `zoom` need scrolling in a view `height`
+/// logical pixels tall; the view scrolls one line past the last.
+pub fn scrolls(lines: usize, height: f32, zoom: f32) -> bool {
+    lines as f64 + 1. - Metrics::at(zoom, 1.).rows_in(px(height)) > 1e-6
 }
 
 pub struct LinesPane {
@@ -495,12 +523,14 @@ pub struct LinesPane {
     pitch: Pitch,
     /// A line just jumped to, lit for a moment.
     flash: Option<(usize, Instant)>,
+    /// The text size, 1 at 100%.
+    zoom: f32,
 }
 
 impl LinesPane {
     /// Text wraps as w last chose for it; hexdumps never do.
-    pub fn new(doc: Doc, mode: Mode, docked: bool, view: Option<View>) -> Self {
-        let advance = px(7.5);
+    pub fn new(doc: Doc, mode: Mode, docked: bool, view: Option<View>, zoom: f32) -> Self {
+        let advance = px(7.5 * zoom);
         let (top, side) = match view {
             Some(View::Lines { top, side }) => (top, side),
             _ => (0., 0.),
@@ -524,7 +554,53 @@ impl LinesPane {
             mini: Rc::default(),
             pitch: Pitch::at(1.),
             flash: None,
+            zoom,
         }
+    }
+
+    fn metrics(&self) -> Metrics {
+        Metrics::at(self.zoom, self.pitch.scale)
+    }
+
+    /// Draws the text at `zoom`, keeping the row under the pointer at `at`
+    /// where it is, or with no pointer the row at the top, and the column
+    /// at the left edge.
+    pub fn set_zoom(
+        &mut self,
+        zoom: f32,
+        at: Option<Point<Pixels>>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        if (zoom - self.zoom).abs() < 1e-3 {
+            return;
+        }
+        let before = self.metrics();
+        // How far down the text area the row kept is.
+        let y = at.map(|at| at.y - self.area.get().top());
+        let row = match y {
+            Some(y) => self.top + f64::from((y - px(before.top)) / before.line),
+            None => self.top,
+        };
+        let anchor = Anchor::of(row, self.layout.as_deref(), self.doc.line_count());
+        let column = self.scroll_x / self.advance.get();
+        self.zoom = zoom;
+        self.measure = None;
+        self.layout = None;
+        self.epoch += 1;
+        let after = self.metrics();
+        // Measured again as the next frame is drawn.
+        let advance = self.advance.get() * (after.font / before.font);
+        self.advance.set(advance);
+        self.lay_out(window);
+        let row = anchor.top(self.layout.as_deref());
+        self.top = match y {
+            Some(y) => row - f64::from((y - px(after.top)) / after.line),
+            None => row,
+        };
+        self.scroll_x = advance * column;
+        self.clamp();
+        cx.notify();
     }
 
     pub fn is_hex(&self) -> bool {
@@ -607,7 +683,8 @@ impl LinesPane {
         if self.layout.as_ref().is_some_and(|l| l.width == width) {
             return;
         }
-        let measure = *self.measure.get_or_insert_with(|| measure(window));
+        let size = self.metrics().font;
+        let measure = *self.measure.get_or_insert_with(|| measure(window, size));
         let anchor = self.anchor();
         let layout = Layout::new(&text.text, &text.lines, width, &measure);
         self.top = match self.left_at.take() {
@@ -627,14 +704,16 @@ impl LinesPane {
         } else {
             0.
         };
-        let width = f32::from(window.viewport_size().width - self.gutter()) - dock - PAD_SIDE;
+        let side = self.metrics().side;
+        let width = f32::from(window.viewport_size().width - self.gutter()) - dock - side;
         width.max(8. * f32::from(self.advance.get()))
     }
 
     fn gutter(&self) -> Pixels {
+        let m = self.metrics();
         match self.doc.as_ref() {
-            Doc::Text(_) => px(gutter_width(self.doc.line_count())),
-            Doc::Hex(_) => px(PAD_SIDE),
+            Doc::Text(_) => px(m.gutter(self.doc.line_count())),
+            Doc::Hex(_) => px(m.side),
         }
     }
 
@@ -678,7 +757,7 @@ impl LinesPane {
 
     /// How many rows the view holds.
     fn in_view(&self) -> f64 {
-        rows_in(self.height)
+        self.metrics().rows_in(self.height)
     }
 
     fn count(&self) -> usize {
@@ -694,7 +773,7 @@ impl LinesPane {
             return px(0.);
         }
         let widest = self.advance.get() * (self.doc.widest() + 2) as f32;
-        (widest + px(PAD_SIDE) - self.area.get().size.width).max(px(0.))
+        (widest + px(self.metrics().side) - self.area.get().size.width).max(px(0.))
     }
 
     fn clamp(&mut self) {
@@ -750,9 +829,10 @@ impl LinesPane {
     }
 
     fn scroll(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
-        let delta = event.delta.pixel_delta(px(LINE_HEIGHT));
+        let line = px(self.metrics().line);
+        let delta = event.delta.pixel_delta(line);
         let before = self.top;
-        self.top -= f64::from(delta.y / LINE_HEIGHT);
+        self.top -= f64::from(delta.y / line);
         self.scroll_x -= delta.x;
         self.clamp();
         if self.top != before {
@@ -765,7 +845,8 @@ impl LinesPane {
     /// The place under `point`, from the row as it is drawn.
     fn hit(&self, point: Point<Pixels>, window: &mut Window) -> Pos {
         let area = self.area.get();
-        let row = self.top + f64::from((point.y - area.top() - px(PAD_TOP)) / LINE_HEIGHT);
+        let m = self.metrics();
+        let row = self.top + f64::from((point.y - area.top() - px(m.top)) / m.line);
         let span = self.rows().at(row.floor().max(0.) as usize);
         let source = self.doc.line(span.line);
         let shown = Shown::new(span.of(&source));
@@ -777,10 +858,9 @@ impl LinesPane {
             underline: None,
             strikethrough: None,
         };
-        let shaped =
-            window
-                .text_system()
-                .shape_line(shown.text.clone(), px(FONT_SIZE), &[run], None);
+        let shaped = window
+            .text_system()
+            .shape_line(shown.text.clone(), px(m.font), &[run], None);
         let x = point.x - area.left() + self.scroll_x;
         Pos {
             line: span.line,
@@ -860,7 +940,7 @@ impl LinesPane {
             px(0.)
         };
         if beyond != px(0.) {
-            self.top += f64::from(beyond / LINE_HEIGHT) * 0.5;
+            self.top += f64::from(beyond / self.metrics().line) * 0.5;
             self.clamp();
         }
         let range = self.unit_at(self.hit(point, window), unit);
@@ -1285,10 +1365,11 @@ impl Render for LinesPane {
         let gutter = self.gutter();
         let (area, advance) = (self.area.clone(), self.advance.clone());
         let view = cx.entity().downgrade();
+        let m = self.metrics();
         let mut base = window.text_style();
         base.font_family = "JetBrains Mono".into();
         base.font_features = FontFeatures::disable_ligatures();
-        base.font_size = px(FONT_SIZE).into();
+        base.font_size = px(m.font).into();
         base.color = theme.text;
         let muted = theme.muted;
 
@@ -1307,10 +1388,10 @@ impl Render for LinesPane {
                 );
                 area.set(text_area);
                 let system = window.text_system().clone();
-                let zero = system.shape_line("0".into(), px(FONT_SIZE), &[base.to_run(1)], None);
+                let zero = system.shape_line("0".into(), px(m.font), &[base.to_run(1)], None);
                 advance.set(zero.width());
                 let first = (top.floor().max(0.) as usize).min(count);
-                let shown_rows = (f32::from(bounds.size.height) / LINE_HEIGHT).ceil() as usize + 1;
+                let shown_rows = (f32::from(bounds.size.height) / m.line).ceil() as usize + 1;
                 let quiet = TextStyle {
                     color: muted.opacity(0.7),
                     ..base.clone()
@@ -1341,13 +1422,12 @@ impl Render for LinesPane {
                             },
                             Doc::Hex(_) => hex_runs(&shown.text, doc.digits(), &base, muted),
                         };
-                        let shaped =
-                            system.shape_line(shown.text.clone(), px(FONT_SIZE), &runs, None);
+                        let shaped = system.shape_line(shown.text.clone(), px(m.font), &runs, None);
                         // Rows a wrapped line goes on to carry no number.
                         let number = (matches!(doc, Doc::Text(_)) && span.start == 0).then(|| {
                             let number: SharedString = (span.line + 1).to_string().into();
                             let run = quiet.to_run(number.len());
-                            system.shape_line(number, px(FONT_SIZE), &[run], None)
+                            system.shape_line(number, px(m.font), &[run], None)
                         });
                         Drawn {
                             span,
@@ -1366,9 +1446,9 @@ impl Render for LinesPane {
                           window: &mut Window,
                           cx: &mut App| {
             let text_area = area.get();
-            let line_height = px(LINE_HEIGHT);
+            let line_height = px(m.line);
             let y_of =
-                |row: usize| bounds.top() + px(PAD_TOP) + line_height * ((row as f64 - top) as f32);
+                |row: usize| bounds.top() + px(m.top) + line_height * ((row as f64 - top) as f32);
             if let Some((row, at)) = flash {
                 // Fades out over the flash, eased so it lingers first.
                 let left = 1. - at.elapsed().as_secs_f32() / FLASH.as_secs_f32();
@@ -1411,7 +1491,7 @@ impl Render for LinesPane {
             });
             for (i, row) in drawn.iter().enumerate() {
                 if let Some(number) = &row.number {
-                    let x = bounds.left() + gutter - px(14.) - number.width();
+                    let x = bounds.left() + gutter - px(14. * m.zoom) - number.width();
                     let origin = point(x, y_of(first + i));
                     let _ = number.paint(origin, line_height, TextAlign::Left, None, window, cx);
                 }
@@ -1513,12 +1593,27 @@ mod tests {
     #[test]
     fn lines_scroll_once_they_outgrow_the_view() {
         // 964 px hold 47.5 lines, and the view scrolls a line past the last.
-        assert!(!scrolls(46, 964.));
-        assert!(scrolls(47, 964.));
-        // Files short enough get a window that holds them, and no minimap.
-        for lines in 1..=44 {
-            let height = lines.max(8) as f32 * 21. + 40.;
-            assert!(!scrolls(lines, height), "{lines}");
+        assert!(!scrolls(46, 964., 1.));
+        assert!(scrolls(47, 964., 1.));
+        // Files short enough get a window that holds them, and no minimap,
+        // at any text size.
+        for zoom in [0.5, 1., 1.5, 3.] {
+            for lines in 1..=44 {
+                let height = (lines.max(8) as f32 * 21. + 40.) * zoom;
+                assert!(!scrolls(lines, height, zoom), "{lines} at {zoom}");
+            }
+        }
+        // Twice the size holds half the lines.
+        assert!(scrolls(24, 964., 2.));
+    }
+
+    #[test]
+    fn rows_sit_on_whole_device_pixels_at_any_size() {
+        for scale in [1., 1.5, 1.7, 2.] {
+            for zoom in [0.5, 0.67, 1., 1.1, 1.33, 2.4, 3.] {
+                let device = super::Metrics::at(zoom, scale).line * scale;
+                assert!((device - device.round()).abs() < 1e-3, "{zoom} at {scale}");
+            }
         }
     }
 
@@ -1708,16 +1803,20 @@ mod tests {
         };
         // 300 px less the line numbers and the margin hold 33 columns: six
         // words a row.
-        assert_eq!(wrapped_rows(&t, 300.), 1 + 4 + 1);
+        assert_eq!(wrapped_rows(&t, 300., 1.), 1 + 4 + 1);
+        // Twice the size in twice the width wraps alike; in the same width,
+        // two words a row.
+        assert_eq!(wrapped_rows(&t, 600., 2.), 1 + 4 + 1);
+        assert_eq!(wrapped_rows(&t, 300., 2.), 1 + 10 + 1);
         // Counting stops once the view would scroll anyway.
         let Doc::Text(long) = text(&"x".repeat(3000)) else {
             unreachable!()
         };
-        assert!(wrapped_rows(&long, 300.) > 64);
+        assert!(wrapped_rows(&long, 300., 1.) > 64);
         let Doc::Text(many) = text(&"line\n".repeat(99)) else {
             unreachable!()
         };
-        assert_eq!(wrapped_rows(&many, 300.), 100);
+        assert_eq!(wrapped_rows(&many, 300., 1.), 100);
     }
 
     #[test]

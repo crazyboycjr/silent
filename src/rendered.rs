@@ -15,6 +15,7 @@ use silent::vim::Motion;
 
 use crate::content::{Drawn, Rendered};
 use crate::theme::Theme;
+use crate::zoom::{self, Held};
 
 /// What a line of the keys scrolls.
 const LINE: f32 = 40.;
@@ -31,6 +32,8 @@ pub struct RenderedPane {
     /// Where the file was left, gone to once the blocks are laid out.
     restore: Option<(usize, f32)>,
     parsed: bool,
+    /// The place under the pointer as the text size changed.
+    held: Option<Held>,
 }
 
 impl RenderedPane {
@@ -63,7 +66,18 @@ impl RenderedPane {
                 _ => None,
             },
             parsed: doc.text.len() <= PARSED_AT_ONCE,
+            held: None,
         }
+    }
+
+    /// The text at another size, which the window's rem size sets: the
+    /// blocks are measured again, with the place under the pointer at
+    /// `at`, or else the block at the top, kept where it is.
+    pub fn set_zoom(&mut self, at: Option<Point<Pixels>>, cx: &mut Context<Self>) {
+        let list = self.list(cx);
+        self.held = at.and_then(|at| zoom::hold(&list, at.y));
+        list.remeasure();
+        cx.notify();
     }
 
     /// Lets the window's atlas and gpui's cache go of the pictures drawn.
@@ -178,6 +192,14 @@ fn open(url: &SharedString, dir: &std::path::Path, cx: &mut App) {
 
 impl Render for RenderedPane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let list = self.list(cx);
+        if let Some(held) = &mut self.held {
+            if zoom::keep(&list, held) {
+                self.held = None;
+            } else {
+                window.request_animation_frame();
+            }
+        }
         if let Some((block, offset)) = self.restore {
             let list = self.list(cx);
             // The blocks of a long text are parsed in the background.
