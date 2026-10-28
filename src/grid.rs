@@ -1,5 +1,7 @@
 //! Spreadsheets as a grid: column letters across the top, row numbers down
-//! the side, only the cells in view drawn, and a tab for each sheet.
+//! the side, only the cells in view drawn, and a tab for each sheet. The
+//! grid's text takes the text size Ctrl with + and - set, as documents do;
+//! the tabs keep theirs.
 
 use std::cell::Cell as Slot;
 use std::path::PathBuf;
@@ -37,10 +39,12 @@ pub struct SheetPane {
     /// The cells' area as last drawn, and a digit's width.
     area: Rc<Slot<Bounds<Pixels>>>,
     advance: Rc<Slot<Pixels>>,
+    /// The text size, 1 at 100%.
+    zoom: f32,
 }
 
 impl SheetPane {
-    pub fn new(sheet: Sheet, view: Option<View>) -> Self {
+    pub fn new(sheet: Sheet, view: Option<View>, zoom: f32) -> Self {
         let (cursor, top, side) = match view {
             Some(View::Sheet {
                 cell, top, side, ..
@@ -57,8 +61,51 @@ impl SheetPane {
             scroll_x: side,
             cursor,
             area: Rc::default(),
-            advance: Rc::new(Slot::new(px(7.4))),
+            advance: Rc::new(Slot::new(px(7.4 * zoom))),
+            zoom,
         }
+    }
+
+    /// A row's height, the text's size and a cell's padding at the zoom.
+    fn row(&self) -> f32 {
+        ROW * self.zoom
+    }
+
+    fn pad(&self) -> f32 {
+        PAD * self.zoom
+    }
+
+    /// The row numbers' column.
+    fn gutter(&self) -> Pixels {
+        let last_row = self.grid.origin.0 as usize + self.grid.cells.len();
+        let digits = format::grouped(last_row as u64).len().max(2) as f32;
+        px((digits * 8. + PAD * 2.) * self.zoom)
+    }
+
+    /// The grid's text at `zoom`, the place under the pointer at `at`, or
+    /// else the row at the top and the column at the left, kept where it is.
+    pub fn set_zoom(&mut self, zoom: f32, at: Option<Point<Pixels>>, cx: &mut Context<Self>) {
+        let area = self.area.get();
+        let ratio = zoom / self.zoom;
+        // The column letters and the row numbers grow from the corner.
+        let corner = point(area.left() - self.gutter(), area.top() - px(self.row()));
+        let held = at.filter(|at| area.contains(at)).map(|at| {
+            let down = self.top + f64::from((at.y - area.top()) / px(self.row()));
+            (at, down, self.scroll_x + (at.x - area.left()))
+        });
+        self.zoom = zoom;
+        // A digit is measured again as the grid is drawn.
+        self.advance.set(self.advance.get() * ratio);
+        match held {
+            Some((at, down, across)) => {
+                let (top, left) = (corner.y + px(self.row()), corner.x + self.gutter());
+                self.top = down - f64::from((at.y - top) / px(self.row()));
+                self.scroll_x = across * ratio - (at.x - left);
+            }
+            None => self.scroll_x *= ratio,
+        }
+        self.clamp();
+        cx.notify();
     }
 
     pub fn has_tabs(&self) -> bool {
@@ -132,19 +179,19 @@ impl SheetPane {
         self.grid
             .widths
             .iter()
-            .map(|w| digit * (*w).clamp(4, 40) as f32 + px(PAD * 2.))
+            .map(|w| digit * (*w).clamp(4, 40) as f32 + px(self.pad() * 2.))
             .collect()
     }
 
     fn rows(&self) -> f64 {
-        f64::from((self.area.get().size.height / px(ROW)).max(1.))
+        f64::from((self.area.get().size.height / px(self.row())).max(1.))
     }
 
     fn clamp(&mut self) {
         let max_top = (self.grid.cells.len() as f64 - self.rows() + 1.).max(0.);
         self.top = self.top.clamp(0., max_top);
         let total: Pixels = self.widths().into_iter().sum();
-        let max_x = (total - self.area.get().size.width + px(PAD)).max(px(0.));
+        let max_x = (total - self.area.get().size.width + px(self.pad())).max(px(0.));
         self.scroll_x = self.scroll_x.clamp(px(0.), max_x);
     }
 
@@ -210,7 +257,7 @@ impl SheetPane {
         if left < self.scroll_x {
             self.scroll_x = left;
         } else if right > self.scroll_x + shown {
-            self.scroll_x = right - shown + px(PAD);
+            self.scroll_x = right - shown + px(self.pad());
         }
         self.clamp();
     }
@@ -221,7 +268,7 @@ impl SheetPane {
         if !area.contains(&position) {
             return None;
         }
-        let row = (self.top + f64::from((position.y - area.top()) / ROW)).floor() as usize;
+        let row = (self.top + f64::from((position.y - area.top()) / self.row())).floor() as usize;
         let mut x = area.left() - self.scroll_x;
         let column = self.widths().into_iter().position(|w| {
             x += w;
@@ -272,8 +319,9 @@ impl SheetPane {
     }
 
     fn scroll(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
-        let delta = event.delta.pixel_delta(px(ROW));
-        self.top -= f64::from(delta.y / ROW);
+        let row = self.row();
+        let delta = event.delta.pixel_delta(px(row));
+        self.top -= f64::from(delta.y / row);
         self.scroll_x -= delta.x;
         self.clamp();
         cx.stop_propagation();
@@ -288,11 +336,11 @@ impl Render for SheetPane {
         let widths = self.widths();
         let (top, scroll_x, cursor) = (self.top, self.scroll_x, self.cursor);
         let (area, advance) = (self.area.clone(), self.advance.clone());
-        let last_row = grid.origin.0 as usize + grid.cells.len();
-        let gutter = px(format::grouped(last_row as u64).len().max(2) as f32 * 8. + PAD * 2.);
+        let gutter = self.gutter();
+        let (row, pad, font) = (self.row(), self.pad(), FONT * self.zoom);
         let mut style = window.text_style();
         style.font_family = "Noto Sans".into();
-        style.font_size = px(FONT).into();
+        style.font_size = px(font).into();
         style.color = theme.text;
         let quiet = TextStyle {
             color: theme.muted,
@@ -303,21 +351,22 @@ impl Render for SheetPane {
 
         let paint = move |bounds: Bounds<Pixels>, _: (), window: &mut Window, cx: &mut App| {
             let system = window.text_system().clone();
-            let digit = system.shape_line("0".into(), px(FONT), &[style.to_run(1)], None);
+            let digit = system.shape_line("0".into(), px(font), &[style.to_run(1)], None);
             advance.set(digit.width());
             let cells = Bounds::from_corners(
-                point(bounds.left() + gutter, bounds.top() + px(ROW)),
+                point(bounds.left() + gutter, bounds.top() + px(row)),
                 bounds.bottom_right(),
             );
             area.set(cells);
-            let row_height = px(ROW);
+            let row_height = px(row);
+            let line_height = px(font * 1.35);
             let first = top.floor() as usize;
-            let rows = (f32::from(cells.size.height) / ROW).ceil() as usize + 1;
+            let rows = (f32::from(cells.size.height) / row).ceil() as usize + 1;
             let y_of = |r: usize| cells.top() + row_height * ((r as f64 - top) as f32);
             let shape = |text: &str, style: &TextStyle| {
                 let line = text.lines().next().unwrap_or_default().to_owned();
                 let len = line.len();
-                system.shape_line(line.into(), px(FONT), &[style.to_run(len)], None)
+                system.shape_line(line.into(), px(font), &[style.to_run(len)], None)
             };
             // Columns in view, with their left edges.
             let mut columns = Vec::new();
@@ -359,9 +408,9 @@ impl Render for SheetPane {
                         let shaped = shape(&cell.text, &style);
                         let cell_bounds = Bounds::new(point(x, y), size(w, row_height));
                         let tx = if cell.number {
-                            x + w - px(PAD) - shaped.width()
+                            x + w - px(pad) - shaped.width()
                         } else {
-                            x + px(PAD)
+                            x + px(pad)
                         };
                         window.with_content_mask(
                             Some(ContentMask {
@@ -369,8 +418,8 @@ impl Render for SheetPane {
                             }),
                             |window| {
                                 let _ = shaped.paint(
-                                    point(tx, y + (row_height - px(FONT * 1.35)) / 2.),
-                                    px(FONT * 1.35),
+                                    point(tx, y + (row_height - line_height) / 2.),
+                                    line_height,
                                     TextAlign::Left,
                                     None,
                                     window,
@@ -421,10 +470,9 @@ impl Render for SheetPane {
                     let shaped = shape(&name, &quiet);
                     let origin = point(
                         x + (w - shaped.width()) / 2.,
-                        bounds.top() + (row_height - px(FONT * 1.35)) / 2.,
+                        bounds.top() + (row_height - line_height) / 2.,
                     );
-                    let _ =
-                        shaped.paint(origin, px(FONT * 1.35), TextAlign::Left, None, window, cx);
+                    let _ = shaped.paint(origin, line_height, TextAlign::Left, None, window, cx);
                 }
             });
             let numbers = Bounds::from_corners(
@@ -443,11 +491,10 @@ impl Render for SheetPane {
                     let label = (grid.origin.0 as usize + r + 1).to_string();
                     let shaped = shape(&label, &quiet);
                     let origin = point(
-                        cells.left() - px(PAD) - shaped.width(),
-                        y_of(r) + (row_height - px(FONT * 1.35)) / 2.,
+                        cells.left() - px(pad) - shaped.width(),
+                        y_of(r) + (row_height - line_height) / 2.,
                     );
-                    let _ =
-                        shaped.paint(origin, px(FONT * 1.35), TextAlign::Left, None, window, cx);
+                    let _ = shaped.paint(origin, line_height, TextAlign::Left, None, window, cx);
                 }
             });
         };

@@ -5,23 +5,32 @@ use std::sync::Arc;
 use fast_image_resize::images::{Image, ImageRef};
 use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
 use gpui_kit::RenderImage;
-use silent::decode::{self, Decoder, Frame, MemoryFormat, MemoryFormatSelection, Orientation};
-use silent::geometry::{Filter, Screen};
+use silent::decode::{
+    self, Decoder, Frame, MemoryFormat, MemoryFormatSelection, Orientation, Wanted,
+};
+use silent::geometry::Filter;
 use smallvec::SmallVec;
 
 /// A frame ready for the screen.
 pub struct Prepared {
     pub image: Arc<RenderImage>,
+    /// One of an animation's frames, which come on.
+    pub animated: bool,
 }
 
-/// Decodes `uri` for `screen`, turned `turns` quarters clockwise by r.
-pub fn decode(uri: &str, screen: Screen, turns: u8) -> Decoder<Prepared> {
+/// Pictures up to this many pixels on their long side are icons or pixel
+/// art, enlarged pixel for pixel, as the window's geometry has it.
+const PIXEL_ART: u32 = 64;
+
+/// Decodes `uri` as large as `wanted`, turned `turns` quarters clockwise
+/// by r.
+pub fn decode(uri: &str, wanted: Wanted, turns: u8) -> Decoder<Prepared> {
     let accepted = MemoryFormatSelection::R8g8b8
         | MemoryFormatSelection::B8g8r8
         | MemoryFormatSelection::R8g8b8a8
         | MemoryFormatSelection::B8g8r8a8;
-    decode::start(uri.to_owned(), Some(screen), accepted, move |frame| {
-        prepare(frame, &screen, turns)
+    decode::start(uri.to_owned(), Some(wanted), accepted, move |frame| {
+        prepare(frame, &wanted, turns)
     })
 }
 
@@ -64,22 +73,35 @@ pub fn turn(image: Arc<RenderImage>, turns: u8) -> Arc<RenderImage> {
 }
 
 /// Runs on the decoder's thread. GPUI samples images bilinearly without
-/// mipmaps, so anything larger than the monitor is shrunk here with a filter
-/// as wide as the reduction, and tiny images are enlarged pixel for pixel.
-/// Resizing happens in the decoder's own layout; what the frame still
-/// needs, its colours taken to sRGB and the picture turned upright, follows
-/// on the smaller image, and the swizzle to GPUI's straight BGRA comes last.
-fn prepare(frame: Frame, screen: &Screen, turned_by_r: u8) -> Prepared {
+/// mipmaps, so anything larger than it is wanted, the monitor or a zoom's
+/// size, is shrunk here with a filter as wide as the reduction, and tiny
+/// images are enlarged pixel for pixel. Resizing happens in the decoder's
+/// own layout; what the frame still needs, its colours taken to sRGB and
+/// the picture turned upright, follows on the smaller image, and the
+/// swizzle to GPUI's straight BGRA comes last.
+fn prepare(frame: Frame, wanted: &Wanted, turned_by_r: u8) -> Prepared {
     crate::trace::mark("frame decoded");
+    let animated = frame.delay.is_some();
     let turns = silent::native::turns(frame.orientation);
     let stored = (frame.width, frame.height);
     let (width, height) = if turns { (stored.1, stored.0) } else { stored };
     // As shown: upright, and then as r turned it.
     let shown = turned((width, height), turned_by_r);
-    let monitor = screen.monitor;
-    let shrink =
-        (monitor.width as f64 / shown.0 as f64).min(monitor.height as f64 / shown.1 as f64);
-    let fit = screen.fit_media(shown);
+    let (bound, drawn) = wanted.bound(shown);
+    let shrink = (f64::from(bound.0) / f64::from(shown.0.max(1)))
+        .min(f64::from(bound.1) / f64::from(shown.1.max(1)));
+    // Enlarged a whole number of times, as the screen's fit has it or to
+    // fill a zoom.
+    let nearest = match wanted {
+        Wanted::Screen(screen) => {
+            let fit = screen.fit_media(shown);
+            (fit.filter == Filter::Nearest).then(|| (fit.width as u32 / shown.0).max(1))
+        }
+        Wanted::Within(..) => {
+            let times = drawn.0 / shown.0.max(1);
+            (shown.0.max(shown.1) <= PIXEL_ART && times >= 2).then_some(times)
+        }
+    };
     let (pixels, size) = if shrink < 1.0 {
         let upright = (
             ((width as f64 * shrink).round() as u32).max(1),
@@ -94,8 +116,7 @@ fn prepare(frame: Frame, screen: &Screen, turned_by_r: u8) -> Prepared {
             resize(&frame, to, ResizeAlg::Convolution(FilterType::Bilinear)),
             to,
         )
-    } else if fit.filter == Filter::Nearest {
-        let factor = (fit.width as u32 / shown.0).max(1);
+    } else if let Some(factor) = nearest {
         let to = (stored.0 * factor, stored.1 * factor);
         (resize(&frame, to, ResizeAlg::Nearest), to)
     } else {
@@ -113,6 +134,7 @@ fn prepare(frame: Frame, screen: &Screen, turned_by_r: u8) -> Prepared {
             image::Frame::new(buffer),
             1,
         ))),
+        animated,
     }
 }
 

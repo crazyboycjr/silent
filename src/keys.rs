@@ -13,8 +13,11 @@ use crate::zoom::Zoom;
 /// The kinds of view, as far as keys care.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// Pictures, folders and cards: nothing to act on.
+    /// Folders and cards: nothing to act on.
     Still,
+    /// A picture, or the one an iWork file carries: it zooms and turns, and
+    /// its arrows still browse.
+    Picture,
     Video,
     Audio,
     Pdf,
@@ -31,7 +34,7 @@ pub enum Kind {
 impl Kind {
     /// Whether a click makes the arrows act on the content.
     pub fn engages(self) -> bool {
-        self != Kind::Still
+        !matches!(self, Kind::Still | Kind::Picture)
     }
 
     fn vim(self) -> bool {
@@ -45,15 +48,22 @@ impl Kind {
         matches!(self, Kind::Video | Kind::Audio)
     }
 
-    /// Whether r turns it: pictures, PDFs and video. Cards are pictures
-    /// too, as far as keys know; they stay as they are.
+    /// Whether r turns it: pictures, PDFs and video. An iWork file's
+    /// picture is a picture too, as far as keys know; it stays as it is.
     fn turns(self) -> bool {
-        matches!(self, Kind::Still | Kind::Pdf | Kind::Video)
+        matches!(self, Kind::Picture | Kind::Pdf | Kind::Video)
     }
 
-    /// Whether its text can be made bigger or smaller.
+    /// Whether its text can be made bigger or smaller, for this file and
+    /// the next.
+    pub fn sizes_text(self) -> bool {
+        matches!(self, Kind::Lines | Kind::Rendered | Kind::Doc | Kind::Sheet)
+    }
+
+    /// Whether Ctrl with + and - size it: its text, or the file itself,
+    /// pages and pictures, each at a zoom of its own.
     pub fn zooms(self) -> bool {
-        matches!(self, Kind::Lines | Kind::Rendered | Kind::Doc)
+        self.sizes_text() || matches!(self, Kind::Pdf | Kind::Slides | Kind::Picture)
     }
 }
 
@@ -78,6 +88,9 @@ pub enum Act {
     Move(Motion),
     /// Half the view sideways.
     Sideways(bool),
+    /// ← or → on engaged pages, this many times: sideways while they are
+    /// zoomed wider than the window, then to the previous or next page.
+    Across(bool, usize),
     /// What has been typed of a vim command, for the strip.
     Pending(String),
     /// Esc dropped a pending vim command.
@@ -99,7 +112,8 @@ pub enum Act {
     /// r: a quarter turn of a picture, a PDF or a video, clockwise; with
     /// Shift, back.
     Turn(bool),
-    /// Ctrl with + or =, -, 0: the text bigger, smaller, or at 100%.
+    /// Ctrl with + or =, -, 0: the text bigger, smaller, or at 100%; pages
+    /// and pictures zoomed in, out, or to fit the window.
     Zoom(Zoom),
     /// Enter or Space in an engaged archive: look inside the selected
     /// entry, which goes on top, or open or close the selected folder;
@@ -288,12 +302,11 @@ fn engaged_arrow(kind: Kind, direction: Direction, count: usize) -> Act {
             Direction::Left => Motion::Left(count),
         }),
         // Pages sideways, the view up and down.
-        Kind::Pdf | Kind::Slides => Act::Move(match direction {
-            Direction::Right => Motion::Down(count),
-            Direction::Left => Motion::Up(count),
-            Direction::Down => Motion::ScrollDown(count),
-            Direction::Up => Motion::ScrollUp(count),
-        }),
+        Kind::Pdf | Kind::Slides => match direction {
+            Direction::Right | Direction::Left => Act::Across(forward, count),
+            Direction::Down => Act::Move(Motion::ScrollDown(count)),
+            Direction::Up => Act::Move(Motion::ScrollUp(count)),
+        },
         Kind::Sheet => {
             let n = count.min(i32::MAX as usize) as i32;
             let n = if forward { n } else { -n };
@@ -311,7 +324,7 @@ fn engaged_arrow(kind: Kind, direction: Direction, count: usize) -> Act {
         },
         // The archive's tree takes its arrows before they get here.
         Kind::Archive => Act::Nothing,
-        Kind::Still => Act::Select(direction),
+        Kind::Still | Kind::Picture => Act::Select(direction),
     }
 }
 
@@ -342,6 +355,7 @@ mod tests {
     fn arrows_browse_until_the_content_is_engaged() {
         for kind in [
             Kind::Still,
+            Kind::Picture,
             Kind::Video,
             Kind::Audio,
             Kind::Pdf,
@@ -357,11 +371,12 @@ mod tests {
             );
             assert_eq!(press(kind, false, "up"), Act::Select(Direction::Up));
         }
-        // A picture has nothing to engage: its arrows always browse.
-        assert_eq!(
-            press(Kind::Still, true, "left"),
-            Act::Select(Direction::Left)
-        );
+        // A picture has nothing to engage, zoomed or not: its arrows always
+        // browse.
+        for kind in [Kind::Still, Kind::Picture] {
+            assert!(!kind.engages());
+            assert_eq!(press(kind, true, "left"), Act::Select(Direction::Left));
+        }
     }
 
     #[test]
@@ -369,7 +384,16 @@ mod tests {
         assert_eq!(press(Kind::Lines, true, "down"), Act::Move(Motion::Down(1)));
         assert_eq!(press(Kind::Lines, true, "left"), Act::Move(Motion::Left(1)));
         assert_eq!(press(Kind::Doc, true, "up"), Act::Move(Motion::Up(1)));
-        assert_eq!(press(Kind::Pdf, true, "right"), Act::Move(Motion::Down(1)));
+        // Sideways on zoomed pages, else to the next page.
+        assert_eq!(press(Kind::Pdf, true, "right"), Act::Across(true, 1));
+        assert_eq!(press(Kind::Slides, true, "left"), Act::Across(false, 1));
+        let mut vim = Keys::default();
+        route(Kind::Pdf, true, "3", Mods::default(), false, &mut vim);
+        assert_eq!(
+            route(Kind::Pdf, true, "right", Mods::default(), false, &mut vim),
+            Act::Across(true, 3)
+        );
+        assert_eq!(press(Kind::Pdf, false, "l"), Act::Move(Motion::Right(1)));
         assert_eq!(
             press(Kind::Slides, true, "down"),
             Act::Move(Motion::ScrollDown(1))
@@ -543,12 +567,18 @@ mod tests {
 
     #[test]
     fn r_turns_pictures_pdfs_and_video_and_shift_turns_back() {
-        for kind in [Kind::Still, Kind::Pdf, Kind::Video] {
+        for kind in [Kind::Picture, Kind::Pdf, Kind::Video] {
             assert_eq!(press(kind, false, "r"), Act::Turn(true), "{kind:?}");
             assert_eq!(shifted(kind, "r"), Act::Turn(false), "{kind:?}");
             assert_eq!(shifted(kind, "R"), Act::Turn(false), "{kind:?}");
         }
-        for kind in [Kind::Lines, Kind::Slides, Kind::Sheet, Kind::Archive] {
+        for kind in [
+            Kind::Lines,
+            Kind::Slides,
+            Kind::Sheet,
+            Kind::Archive,
+            Kind::Still,
+        ] {
             assert_eq!(press(kind, false, "r"), Act::Pass, "{kind:?}");
         }
     }
@@ -659,7 +689,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_with_plus_minus_and_zero_sizes_text_where_there_is_text() {
+    fn ctrl_with_plus_minus_and_zero_sizes_text_pages_and_pictures() {
         let ctrl = Mods {
             ctrl: true,
             shift: false,
@@ -670,7 +700,15 @@ mod tests {
         };
         let mut vim = Keys::default();
         let mut press = |kind, key, mods| route(kind, false, key, mods, false, &mut vim);
-        for kind in [Kind::Lines, Kind::Rendered, Kind::Doc] {
+        for kind in [
+            Kind::Lines,
+            Kind::Rendered,
+            Kind::Doc,
+            Kind::Sheet,
+            Kind::Pdf,
+            Kind::Slides,
+            Kind::Picture,
+        ] {
             // Shift with = is named either way, as X11 layouts differ.
             assert_eq!(press(kind, "=", ctrl_shift), Act::Zoom(Zoom::In), "{kind:?}");
             assert_eq!(press(kind, "+", ctrl_shift), Act::Zoom(Zoom::In));
@@ -681,9 +719,13 @@ mod tests {
             assert_eq!(press(kind, "subtract", ctrl), Act::Zoom(Zoom::Out));
             assert_eq!(press(kind, "0", ctrl), Act::Zoom(Zoom::Reset));
         }
-        for kind in [Kind::Pdf, Kind::Still, Kind::Video, Kind::Sheet] {
+        // Not video, nor what has nothing to size.
+        for kind in [Kind::Video, Kind::Audio, Kind::Archive, Kind::Still] {
             assert_eq!(press(kind, "=", ctrl_shift), Act::Pass, "{kind:?}");
         }
+        // Text keeps one size for the next file; pages and pictures each
+        // their own zoom.
+        assert!(Kind::Sheet.sizes_text() && !Kind::Pdf.sizes_text() && !Kind::Picture.sizes_text());
         // A count typed first does not hold it back, and 0 alone is vim's.
         press(Kind::Lines, "5", Mods::default());
         assert_eq!(press(Kind::Lines, "0", ctrl), Act::Zoom(Zoom::Reset));

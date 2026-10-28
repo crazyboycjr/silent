@@ -1,13 +1,18 @@
-//! PowerPoint slides in a vertical scroll like PDF pages: each slide drawn
-//! from its shapes, pictures and tables, read in the background around what
-//! is in view, with a rail of the slides drawn small docked at the right.
+//! PowerPoint slides in a scroll like PDF pages: each slide drawn from its
+//! shapes, pictures and tables, read in the background around what is in
+//! view, with a rail of the slides drawn small docked at the right. Ctrl
+//! with + and - zooms them, each deck at a zoom of its own: the shapes and
+//! the text are drawn at the new size at once, and once the zoom rests the
+//! slides whose pictures are far from it are read again for it.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use silent::memory::View;
 use silent::office::pptx::{self, Anchor, Fill, Item, Kind, Text};
@@ -26,15 +31,22 @@ const MARGIN: usize = 1;
 /// Slides kept read for the rail on each side of those on it, and read at once.
 const THUMBS_KEPT: usize = 12;
 const THUMBS_AT_ONCE: usize = 3;
+/// How long the zoom rests before slides are read again for it.
+const REST: Duration = Duration::from_millis(100);
+/// The widths, against the width a slide was read for, its pictures look
+/// right at: they are decoded at twice their size.
+const SHARP: std::ops::RangeInclusive<f32> = 0.5..=1.6;
 
 pub struct SlidesPane {
     path: PathBuf,
     deck: Arc<pptx::Deck>,
     pages: Pages,
-    shown: HashMap<usize, Rc<Slide>>,
+    /// Slides read, each with the device width it was read for.
+    shown: HashMap<usize, (u32, Rc<Slide>)>,
     pending: HashSet<usize>,
-    /// The device width slides were last read for.
-    width: u32,
+    /// When the zoom last changed, and the wake-up once it has rested.
+    zoomed: Option<Instant>,
+    rest: Option<Task<()>>,
     /// The slides' area when last drawn: the window, less the rail's dock.
     viewport: Size<Pixels>,
     overview: Overview,
@@ -44,36 +56,92 @@ pub struct SlidesPane {
     restore: Option<View>,
 }
 
+/// Lets the window's atlas go of a slide's pictures and background.
+fn let_go(slide: &Slide, window: &mut Window, cx: &mut App) {
+    for image in slide.pictures.values().chain(&slide.background) {
+        cx.drop_image(image.clone(), Some(window));
+    }
+}
+
 impl SlidesPane {
     /// Lets the window's atlas go of the slides' pictures and backgrounds.
     pub fn drop_pictures(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        for (_, slide) in self.shown.drain().chain(self.thumbs.drain()) {
-            let pictures = slide.pictures.values().chain(&slide.background);
-            for image in pictures {
-                cx.drop_image(image.clone(), Some(window));
-            }
+        let slides = self.shown.drain().map(|(_, (_, slide))| slide);
+        for slide in slides.chain(self.thumbs.drain().map(|(_, slide)| slide)) {
+            let_go(&slide, window, cx);
         }
     }
 
-    pub fn new(deck: Deck, mode: Mode, docked: bool, view: Option<View>, window: &Window) -> Self {
+    pub fn new(
+        deck: Deck,
+        mode: Mode,
+        docked: bool,
+        view: Option<View>,
+        zoom: f32,
+        window: &Window,
+    ) -> Self {
+        let viewport = overview::beside(window, if docked { RAIL } else { 0. });
         let mut shown = HashMap::new();
         if let Some((index, first)) = deck.first {
-            shown.insert(index, Rc::new(first));
+            let read = (f32::from(viewport.width) * window.scale_factor()).round() as u32;
+            shown.insert(index, (read, Rc::new(first)));
         }
-        let viewport = overview::beside(window, if docked { RAIL } else { 0. });
         Self {
             path: deck.path,
-            pages: Pages::new(vec![deck.deck.size; deck.deck.slides.len()]),
+            pages: Pages::new(vec![deck.deck.size; deck.deck.slides.len()], zoom),
             deck: Arc::new(deck.deck),
             shown,
             pending: HashSet::new(),
-            width: (f32::from(viewport.width) * window.scale_factor()).round() as u32,
+            zoomed: None,
+            rest: None,
             viewport,
             overview: Overview::new(mode, docked),
             thumbs: HashMap::new(),
             thumbs_pending: HashSet::new(),
             restore: view,
         }
+    }
+
+    /// The zoom, 1 when a slide's width fills the view.
+    pub fn zoom(&self) -> f32 {
+        self.pages.zoom
+    }
+
+    /// The slides at `zoom`, the place under the pointer at `at`, or else
+    /// the middle of the view's top, kept where it is.
+    pub fn set_zoom(
+        &mut self,
+        zoom: f32,
+        at: Option<Point<Pixels>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let bounds = self.pages.scroll.bounds();
+        let view = size(
+            f32::from(self.viewport.width),
+            f32::from(self.viewport.height),
+        );
+        let at = match at {
+            Some(at) => point(
+                f32::from(at.x - bounds.left()).clamp(0., view.width),
+                f32::from(at.y - bounds.top()).clamp(0., view.height),
+            ),
+            None => point(view.width / 2., 0.),
+        };
+        self.pages.zoom_to(zoom, at, view);
+        self.zoomed = Some(Instant::now());
+        self.rest = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(REST).await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+        }));
+        cx.notify();
+    }
+
+    /// The engaged ← and →: sideways on slides zoomed wider than the
+    /// window, then to the previous or next slide.
+    pub fn across(&mut self, right: bool, n: usize, cx: &mut Context<Self>) {
+        self.pages.across(right, n);
+        overview::reveal(self, cx);
     }
 
     pub fn slide_count(&self) -> usize {
@@ -115,38 +183,52 @@ impl SlidesPane {
         if self.overview.docked { RAIL } else { 0. }
     }
 
+    /// Reads the slides around the view, and again those whose pictures
+    /// were decoded for a width far from the slides' now, as for another
+    /// zoom or fullscreen, once the zoom rests; a slide stays shown until
+    /// the one read again replaces it.
     fn read_around_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let viewport = self.viewport;
-        let width = f32::from(viewport.width);
-        let device = (width * window.scale_factor()).round() as u32;
-        if device.abs_diff(self.width) > 1 {
-            // Pictures were shrunk for the old width; read them again, sharp.
-            self.width = device;
-            self.shown.clear();
-        }
-        let Some(view) = self.pages.in_view(width, f32::from(viewport.height)) else {
+        let column = self.pages.column_in(f32::from(viewport.width));
+        let device = (column * window.scale_factor()).round().max(1.) as u32;
+        let Some(view) = self.pages.in_view(column, f32::from(viewport.height)) else {
             return;
         };
         let keep = view.start.saturating_sub(MARGIN)..(view.end + MARGIN).min(self.pages.count());
-        self.shown.retain(|i, _| keep.contains(i));
+        let far: Vec<usize> = (self.shown.keys().copied())
+            .filter(|i| !keep.contains(i))
+            .collect();
+        for i in far {
+            if let Some((_, slide)) = self.shown.remove(&i) {
+                let_go(&slide, window, cx);
+            }
+        }
+        let resting = self.zoomed.is_none_or(|at| at.elapsed() >= REST);
         for i in keep {
-            if self.shown.contains_key(&i) || !self.pending.insert(i) {
+            let stale = match self.shown.get(&i) {
+                Some((read, _)) => resting && !SHARP.contains(&(device as f32 / *read as f32)),
+                None => true,
+            };
+            if !stale || !self.pending.insert(i) {
                 continue;
             }
-            let (path, deck, wanted) = (self.path.clone(), self.deck.clone(), self.width);
+            let (path, deck) = (self.path.clone(), self.deck.clone());
             cx.spawn_in(window, async move |this, cx| {
                 let slide = cx
                     .background_executor()
-                    .spawn(async move { render_slide(&path, &deck, i, wanted) })
+                    .spawn(async move { render_slide(&path, &deck, i, device) })
                     .await;
-                let _ = this.update(cx, |this, cx| {
+                let _ = this.update_in(cx, |this, window, cx| {
                     this.pending.remove(&i);
-                    if let Some(slide) = slide
-                        && this.width == wanted
-                    {
-                        this.shown.insert(i, Rc::new(slide));
-                        cx.notify();
+                    // One that cannot be read is not asked for again at once.
+                    let Some(slide) = slide else {
+                        return;
+                    };
+                    crate::trace::mark(&format!("slide read for {device}"));
+                    if let Some((_, old)) = this.shown.insert(i, (device, Rc::new(slide))) {
+                        let_go(&old, window, cx);
                     }
+                    cx.notify();
                 });
             })
             .detach();
@@ -194,10 +276,10 @@ impl SlidesPane {
     }
 
     fn rail(&mut self, g: Geometry, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let width = f32::from(self.viewport.width);
+        let column = self.pages.column_in(f32::from(self.viewport.width));
         let (scale, shift) = (g.scale as f32, g.shift() as f32);
         let span = shift / scale..(shift + g.track as f32) / scale;
-        let Some(on_rail) = self.pages.within(width, span) else {
+        let Some(on_rail) = self.pages.within(column, span) else {
             return div().into_any_element();
         };
         self.thumbs_around(on_rail.clone(), window, cx);
@@ -206,13 +288,14 @@ impl SlidesPane {
         let points = THUMB / self.deck.size.0.max(1.);
         let thumbs: Vec<AnyElement> = self
             .pages
-            .layout_at(width)
+            .layout_at(column)
             .enumerate()
             .skip(on_rail.start)
             .take(on_rail.len())
             .map(|(i, (top, height))| {
                 let frame = thumb_frame(top * scale - shift, height * scale, theme);
-                match self.thumbs.get(&i).or_else(|| self.shown.get(&i)) {
+                let read = self.shown.get(&i).map(|(_, slide)| slide);
+                match self.thumbs.get(&i).or(read) {
                     Some(slide) => frame.child(slide_view(slide, points)).into_any_element(),
                     None => frame.into_any_element(),
                 }
@@ -373,12 +456,12 @@ impl Overviewed for SlidesPane {
     }
 
     fn geometry(&self, track: f64) -> Geometry {
-        let width = f32::from(self.viewport.width).max(1.);
+        let column = self.pages.column_in(f32::from(self.viewport.width)).max(1.);
         Geometry::new(
-            f64::from(self.pages.height_at(width)),
+            f64::from(self.pages.height_at(column)),
             f64::from(self.viewport.height),
             f64::from(self.pages.view_top()),
-            f64::from(THUMB / width),
+            f64::from(THUMB / column),
             track,
         )
     }
@@ -398,7 +481,8 @@ impl Render for SlidesPane {
         self.read_around_view(window, cx);
         let theme = Theme::of(window.appearance());
         let width = f32::from(self.viewport.width);
-        let scale = width / self.deck.size.0.max(1.);
+        let column = self.pages.column_in(width);
+        let scale = column / self.deck.size.0.max(1.);
         let slides: Vec<_> = self
             .pages
             .sizes
@@ -407,12 +491,12 @@ impl Render for SlidesPane {
             .map(|(i, &(w, h))| {
                 let page = div()
                     .relative()
-                    .w_full()
-                    .h(px(h * width / w))
+                    .w(px(column))
+                    .h(px(h * column / w.max(1.)))
                     .flex_none()
                     .bg(rgb(0xffffff));
                 match self.shown.get(&i) {
-                    Some(shown) => page.child(slide_view(shown, scale)),
+                    Some((_, shown)) => page.child(slide_view(shown, scale)),
                     None => page,
                 }
             })
@@ -455,12 +539,30 @@ impl Render for SlidesPane {
                         div()
                             .id("slides")
                             .size_full()
-                            .overflow_y_scroll()
+                            // Sideways only while the slides are wider than
+                            // the view.
+                            .map(|slides| {
+                                if column > width + 0.5 {
+                                    slides.overflow_scroll()
+                                } else {
+                                    slides.overflow_y_scroll()
+                                }
+                            })
                             .track_scroll(&self.pages.scroll)
                             .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {
                                 overview::reveal(this, cx);
                             }))
-                            .child(div().flex().flex_col().gap(px(GAP)).children(slides)),
+                            // As wide as the slides, or as the view, where
+                            // narrower slides stand in the middle.
+                            .child(
+                                div()
+                                    .w(px(column.max(width)))
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .gap(px(GAP))
+                                    .children(slides),
+                            ),
                     )
                     .children(bar),
             )

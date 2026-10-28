@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use silent::decode::Event;
+use silent::decode::{Event, Wanted};
 use silent::detect::Kind;
 use silent::extract::{self, Extracted, Places, Refusal};
 use silent::format;
@@ -27,6 +27,7 @@ use crate::app::{Input, Intent};
 use crate::archive::{self, ArchivePane};
 use crate::content::{self, Body, Loaded, Totals};
 use crate::docview::{self, DocPane};
+use crate::framing::Framing;
 use crate::grid::{self, SheetPane};
 use crate::help;
 use crate::keys::{self, Act, Mods};
@@ -55,6 +56,12 @@ const NOTICE: Duration = Duration::from_millis(1000);
 const DOCK_WAIT: Duration = Duration::from_millis(400);
 /// An entry taken out of an archive shows its progress after this long.
 const SLOW: Duration = Duration::from_millis(150);
+/// How long a picture's zoom rests before it is decoded again for it.
+const ZOOM_REST: Duration = Duration::from_millis(150);
+/// The most a picture is decoded to for a zoom: pixels in all, and on a
+/// side, which every GPU's textures hold.
+const MOST_PIXELS: f32 = 32e6;
+const MOST_SIDE: f32 = 8192.;
 
 pub struct Preview {
     loaded: Loaded,
@@ -111,6 +118,15 @@ pub struct Preview {
     /// has not made a step yet.
     zoom: f32,
     wheel: f32,
+    /// A picture's zoom and the part of it in view; the picture decoded
+    /// again for that zoom, and for what size; whether it is an animation,
+    /// which keeps its frames instead; and the wait for the zoom to rest.
+    framing: Framing,
+    sharp: Option<Arc<RenderImage>>,
+    sharp_for: Option<(u32, u32)>,
+    sharpening: Option<Task<()>>,
+    animated: bool,
+    zoom_rest: Option<Task<()>>,
     _archive: Option<Subscription>,
     _appearance: Subscription,
     _activation: Subscription,
@@ -242,9 +258,9 @@ struct Strip {
     note: Option<String>,
     /// The pointer is on the strip, which keeps it.
     hovered: bool,
-    /// The veil worked out for a picture, by the picture and the window's
-    /// size.
-    veil: Option<(ImageId, Size<Pixels>, Scrim)>,
+    /// The veil worked out for a picture, by the picture, the window's size
+    /// and where the picture is drawn in it.
+    veil: Option<(ImageId, Size<Pixels>, Bounds<Pixels>, Scrim)>,
     /// While the strip is off, a word from a key for a second; the last
     /// one stays to fade out.
     notice: Option<String>,
@@ -306,6 +322,12 @@ impl Preview {
             nautilus: false,
             zoom: crate::zoom::level(),
             wheel: 0.,
+            framing: Framing::new(1., (0.5, 0.5)),
+            sharp: None,
+            sharp_for: None,
+            sharpening: None,
+            animated: false,
+            zoom_rest: None,
             _archive: None,
             _appearance: appearance,
             _activation: activation,
@@ -364,7 +386,8 @@ impl Preview {
             None => (&self.loaded, &self.pane),
         };
         let facts = &loaded.facts;
-        if !matches!(pane, Pane::None)
+        let picture = self.levels.is_empty() && self.picture_shape().is_some();
+        if (picture || !matches!(pane, Pane::None))
             && let Some(key) = facts
                 .path
                 .as_deref()
@@ -374,7 +397,17 @@ impl Preview {
             let source = loaded.markup.is_some() && matches!(pane, Pane::Lines(_));
             let view =
                 view_of(pane, cx).or_else(|| source.then_some(View::Lines { top: 0., side: 0. }));
-            memory::remember(&key, view);
+            // PDFs, slides and pictures keep a zoom each.
+            let (view, zoom) = match pane {
+                Pane::Pdf(p) => (view, p.read(cx).zoom()),
+                Pane::Slides(s) => (view, s.read(cx).zoom()),
+                Pane::None if self.framing.level != 1. => {
+                    let (x, y) = self.framing.centre;
+                    (Some(View::Picture { x, y }), self.framing.level)
+                }
+                _ => (view, 1.),
+            };
+            memory::remember(&key, view, zoom);
         }
         self.switching = None;
         if let Some(opening) = self.opening.take() {
@@ -425,7 +458,7 @@ impl Preview {
         self.strip.note = None;
         self.strip.veil = None;
         self.redock = None;
-        if let Some(old) = self.image.take() {
+        for old in [self.image.take(), self.sharp.take()].into_iter().flatten() {
             cx.drop_image(old, Some(window));
         }
         let name: SharedString = self.loaded.facts.name.clone().into();
@@ -433,6 +466,15 @@ impl Preview {
         let loudness = self.loudness;
         let docked = self.loaded.dock > 0.;
         self.sized_docked = docked;
+        // A picture opens at fit, unless it was left zoomed within the hour.
+        let centre = match view {
+            Some(View::Picture { x, y }) => (x, y),
+            _ => (0.5, 0.5),
+        };
+        self.framing = Framing::new(self.loaded.zoom, centre);
+        (self.sharp_for, self.sharpening, self.zoom_rest) = (None, None, None);
+        self.animated = false;
+        let zoom = self.loaded.zoom;
         self.pane = match std::mem::replace(&mut self.loaded.body, Body::Info) {
             Body::Video(video) => {
                 let turns = self.loaded.turns;
@@ -443,7 +485,7 @@ impl Preview {
             }
             Body::Pdf(pdf) => {
                 let mode = self.mode(Family::Rail);
-                Pane::Pdf(cx.new(|_| PdfPane::new(pdf, mode, docked, view, window)))
+                Pane::Pdf(cx.new(|_| PdfPane::new(pdf, mode, docked, view, zoom, window)))
             }
             Body::Text(text) => {
                 let (mode, zoom) = (self.mode(Family::Minimap), self.zoom);
@@ -463,10 +505,13 @@ impl Preview {
                 let (mode, zoom) = (self.mode(Family::Rail), self.zoom);
                 Pane::Doc(cx.new(|_| DocPane::new(*paper, mode, docked, view, zoom, window)))
             }
-            Body::Sheet(sheet) => Pane::Sheet(cx.new(|_| SheetPane::new(*sheet, view))),
+            Body::Sheet(sheet) => {
+                let zoom = self.zoom;
+                Pane::Sheet(cx.new(|_| SheetPane::new(*sheet, view, zoom)))
+            }
             Body::Deck(deck) => {
                 let mode = self.mode(Family::Rail);
-                Pane::Slides(cx.new(|_| SlidesPane::new(*deck, mode, docked, view, window)))
+                Pane::Slides(cx.new(|_| SlidesPane::new(*deck, mode, docked, view, zoom, window)))
             }
             Body::Archive(archive) => {
                 Pane::Archive(cx.new(|cx| ArchivePane::new(archive, view, window, cx)))
@@ -498,12 +543,16 @@ impl Preview {
         let mut image = None;
         match &mut self.loaded.body {
             Body::Image(picture) => {
-                image = picture.first.take().map(|p| p.image);
+                let mut first = picture.first.take();
                 let events = picture.frames.events.clone();
-                if image.is_none()
+                if first.is_none()
                     && let Ok(Event::Frame(prepared)) = events.try_recv()
                 {
-                    image = Some(prepared.image);
+                    first = Some(prepared);
+                }
+                if let Some(first) = first {
+                    self.animated = first.animated;
+                    image = Some(first.image);
                 }
                 self.feed = Some(cx.spawn_in(window, async move |this, cx| {
                     while let Ok(event) = events.recv().await {
@@ -511,8 +560,14 @@ impl Preview {
                             continue;
                         };
                         let shown = this.update_in(cx, |this, window, cx| {
+                            this.animated |= prepared.animated;
+                            let first = this.image.is_none();
                             if let Some(old) = this.image.replace(prepared.image) {
                                 cx.drop_image(old, Some(window));
+                            }
+                            // Left zoomed, it is decoded again for the zoom.
+                            if first && this.framing.level != 1. {
+                                this.rest_then_sharpen(window, cx);
                             }
                             cx.notify();
                         });
@@ -540,6 +595,9 @@ impl Preview {
             _ => {}
         }
         self.image = image;
+        if self.image.is_some() && self.framing.level != 1. {
+            self.rest_then_sharpen(window, cx);
+        }
         if let Some(note) = self.loaded.note.take() {
             self.note(Some(note), window, cx);
         }
@@ -582,6 +640,7 @@ impl Preview {
             Pane::Audio(_) => Subject::Audio,
             Pane::None => match self.loaded.body {
                 Body::Image(_) => Subject::Picture,
+                Body::Still(_) => Subject::Still,
                 Body::Folder(_) => Subject::Folder,
                 _ => Subject::Card,
             },
@@ -611,6 +670,32 @@ impl Preview {
     /// Whether a click has given the content the keys.
     fn engaged(&self, window: &Window, cx: &App) -> bool {
         self.pane.kind().engages() && self.content.contains_focused(window, cx)
+    }
+
+    /// What keys take the view for: a picture shown, as far as they go, is
+    /// one that zooms.
+    fn kind(&self) -> keys::Kind {
+        match self.pane {
+            Pane::None if self.picture_shape().is_some() => keys::Kind::Picture,
+            _ => self.pane.kind(),
+        }
+    }
+
+    /// The width and height of the picture shown, upright and as r turned
+    /// it, once it has its first frame.
+    fn picture_shape(&self) -> Option<(f32, f32)> {
+        if !matches!(self.pane, Pane::None) {
+            return None;
+        }
+        let (width, height) = match &self.loaded.body {
+            Body::Image(picture) if self.image.is_some() => picture.natural,
+            Body::Still(still) => {
+                let size = still.image.size(0);
+                (size.width.0.max(1) as u32, size.height.0.max(1) as u32)
+            }
+            _ => return None,
+        };
+        Some((width as f32, height as f32))
     }
 
     /// The arrows browse files again.
@@ -653,7 +738,7 @@ impl Preview {
             shift: m.shift,
         };
         let act = keys::route(
-            self.pane.kind(),
+            self.kind(),
             engaged,
             &keystroke.key,
             mods,
@@ -709,6 +794,11 @@ impl Preview {
                     t.update(cx, |t, cx| t.sideways(right, cx));
                 }
             }
+            Act::Across(right, n) => match &self.pane {
+                Pane::Pdf(p) => p.update(cx, |p, cx| p.across(right, n, cx)),
+                Pane::Slides(s) => s.update(cx, |s, cx| s.across(right, n, cx)),
+                _ => {}
+            },
             Act::Overview => self.cycle_overview(window, cx),
             Act::Strip => self.cycle_strip(window, cx),
             Act::Wrap => self.toggle_wrap(window, cx),
@@ -716,7 +806,7 @@ impl Preview {
             Act::Engine => self.flip_engine(window, cx),
             Act::Help => self.help = !self.help,
             Act::Turn(clockwise) => self.turn(clockwise, window, cx),
-            Act::Zoom(zoom) => self.zoom_text(zoom, None, window, cx),
+            Act::Zoom(zoom) => self.step_zoom(zoom, None, window, cx),
             Act::SelectAll => match &self.pane {
                 Pane::Lines(t) => t.update(cx, |t, cx| t.select_all(cx)),
                 Pane::Rendered(r) => r.update(cx, |r, cx| r.select_all(cx)),
@@ -859,6 +949,11 @@ impl Preview {
         if self.redock.as_ref().is_some_and(|r| r.width != width) {
             self.settle(cx);
         }
+        // A picture fits the new size, at its zoom; decoded for it once the
+        // size rests, as for fullscreen.
+        if self.picture_shape().is_some() {
+            self.rest_then_sharpen(window, cx);
+        }
         // Back from fullscreen in a window sized before M changed the dock.
         let fullscreen = window.is_fullscreen();
         if self.was_fullscreen
@@ -990,10 +1085,15 @@ impl Preview {
             return;
         }
         // Read again, turned: pictures are turned as they are decoded, and
-        // a PDF's pages as they are drawn.
+        // a PDF's pages as they are drawn. A zoom stays, a picture's about
+        // its middle.
         let (uri, screen) = (self.loaded.facts.uri.clone(), self.screen);
         let name = self.loaded.facts.name.clone();
         let view = view_of(&self.pane, cx);
+        let zoom = match &self.pane {
+            Pane::Pdf(p) => p.read(cx).zoom(),
+            _ => self.framing.level,
+        };
         let job = cx
             .background_executor()
             .spawn(async move { content::load_as(&uri, screen, true, None, Some(turns)) });
@@ -1003,6 +1103,7 @@ impl Preview {
                 this.switching = None;
                 loaded.facts.name = name;
                 loaded.view = view;
+                loaded.zoom = zoom;
                 let size = loaded.size;
                 this.loaded = loaded;
                 this.remember_turns();
@@ -1015,8 +1116,25 @@ impl Preview {
         }));
     }
 
-    /// The text bigger, smaller or at 100%, for this file and the next;
-    /// what is under the pointer at `at`, or else at the top, stays put.
+    /// Ctrl with + and -, 0 or the wheel: the text bigger or smaller, or
+    /// pages and pictures zoomed; what is under the pointer at `at`, or
+    /// else at the top, or a picture's middle, stays put.
+    fn step_zoom(
+        &mut self,
+        zoom: Zoom,
+        at: Option<Point<Pixels>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let kind = self.kind();
+        if kind.sizes_text() {
+            self.zoom_text(zoom, at, window, cx);
+        } else if kind.zooms() {
+            self.zoom_view(zoom, at, window, cx);
+        }
+    }
+
+    /// The text bigger, smaller or at 100%, for this file and the next.
     fn zoom_text(
         &mut self,
         zoom: Zoom,
@@ -1024,9 +1142,6 @@ impl Preview {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.pane.kind().zooms() {
-            return;
-        }
         let level = crate::zoom::change(self.zoom, zoom);
         trace::mark(&format!("zoom to {}%", (level * 100.).round()));
         if level != self.zoom {
@@ -1036,14 +1151,167 @@ impl Preview {
                 Pane::Rendered(r) => r.update(cx, |r, cx| r.set_zoom(at, cx)),
                 Pane::Page(p) => p.update(cx, |p, cx| p.set_zoom(level, at, cx)),
                 Pane::Doc(d) => d.update(cx, |d, cx| d.set_zoom(level, at, cx)),
+                Pane::Sheet(s) => s.update(cx, |s, cx| s.set_zoom(level, at, cx)),
                 _ => {}
             }
         }
         self.note(Some(crate::zoom::describe(level)), window, cx);
     }
 
-    /// Ctrl with the wheel: a step of the text size for every notch, about
-    /// the pointer.
+    /// A PDF, slides or a picture zoomed in, out or to fit the window, at
+    /// a zoom of its own, which the next file does not take.
+    fn zoom_view(
+        &mut self,
+        zoom: Zoom,
+        at: Option<Point<Pixels>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let before = match &self.pane {
+            Pane::Pdf(p) => p.read(cx).zoom(),
+            Pane::Slides(s) => s.read(cx).zoom(),
+            _ => self.framing.level,
+        };
+        let level = crate::zoom::step(before, zoom);
+        trace::mark(&format!("zoom to {}%", (level * 100.).round()));
+        if level != before {
+            match &self.pane {
+                Pane::Pdf(p) => p.update(cx, |p, cx| p.set_zoom(level, at, window, cx)),
+                Pane::Slides(s) => s.update(cx, |s, cx| s.set_zoom(level, at, window, cx)),
+                _ => self.zoom_picture(level, at, window, cx),
+            }
+        }
+        self.note(Some(crate::zoom::describe_zoom(level)), window, cx);
+    }
+
+    /// The picture at `level`, the point under the pointer at `at`, or else
+    /// in the middle, kept where it is; decoded again for it once it rests.
+    fn zoom_picture(
+        &mut self,
+        level: f32,
+        at: Option<Point<Pixels>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(shape) = self.picture_shape() else {
+            return;
+        };
+        self.framing.zoom(level, at, shape, window.viewport_size());
+        self.rest_then_sharpen(window, cx);
+        cx.notify();
+    }
+
+    /// Decodes the picture again for the size it is drawn at, once the
+    /// zoom or the window's size has rested a moment.
+    fn rest_then_sharpen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.zoom_rest = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(ZOOM_REST).await;
+            let _ = this.update_in(cx, |this, window, cx| this.sharpen(window, cx));
+        }));
+    }
+
+    /// The decode of the picture to draw where it is drawn `wide` device
+    /// pixels: of the first decode and the one for the zoom, the smaller
+    /// that is as wide as that, or else the wider.
+    fn shown_picture(&self, wide: f32) -> Option<Arc<RenderImage>> {
+        let base = self.image.as_ref()?;
+        let Some(sharp) = &self.sharp else {
+            return Some(base.clone());
+        };
+        let width = |image: &Arc<RenderImage>| image.size(0).width.0 as f32;
+        let (b, s) = (width(base), width(sharp));
+        let enough = |w: f32| w >= wide * 0.97;
+        let sharp_one = match (enough(b), enough(s)) {
+            (true, true) => s <= b,
+            (false, false) => s >= b,
+            (base_enough, _) => !base_enough,
+        };
+        Some(if sharp_one {
+            sharp.clone()
+        } else {
+            base.clone()
+        })
+    }
+
+    /// Decodes the picture again for the size it is drawn at, unless what
+    /// is decoded already serves: sharper when zoomed past the size of its
+    /// first decode, as far as the picture's own pixels go, and smaller when
+    /// zoomed out, so that the GPU, which shrinks without mipmaps, need not
+    /// shrink it much. A huge JPEG is decoded at the fraction of its size
+    /// that covers the zoom; an animation keeps its frames as they come.
+    fn sharpen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Body::Image(picture) = &self.loaded.body else {
+            return;
+        };
+        let Some(shape) = self.picture_shape() else {
+            return;
+        };
+        if self.animated {
+            return;
+        }
+        let rect = self.framing.rect(shape, window.viewport_size());
+        let device = window.scale_factor();
+        let wide = f32::from(rect.size.width) * device;
+        let tall = f32::from(rect.size.height) * device;
+        // Pixel art grows a whole number of times; anything else no larger
+        // than its own pixels.
+        let pixel_art = picture.natural.0.max(picture.natural.1) <= 64;
+        let most = if pixel_art { f32::MAX } else { shape.0 };
+        let serves = |image: &Arc<RenderImage>| {
+            let w = image.size(0).width.0 as f32;
+            w >= wide.min(most) * 0.97 && w <= wide * 1.6
+        };
+        let (Some(shown), Some(base)) = (self.shown_picture(wide), self.image.clone()) else {
+            return;
+        };
+        if serves(&shown) {
+            return;
+        }
+        // Back near the fit, the first decode serves again.
+        if serves(&base) {
+            if let Some(sharp) = self.sharp.take() {
+                cx.drop_image(sharp, Some(window));
+            }
+            self.sharp_for = None;
+            cx.notify();
+            return;
+        }
+        let scale = [
+            most / wide,
+            (MOST_PIXELS / (wide * tall)).sqrt(),
+            MOST_SIDE / wide.max(tall),
+            1.,
+        ]
+        .into_iter()
+        .fold(f32::MAX, f32::min);
+        let target = ((wide * scale).round() as u32, (tall * scale).round() as u32);
+        if self.sharp_for == Some(target) {
+            return;
+        }
+        self.sharp_for = Some(target);
+        let (uri, turns) = (self.loaded.facts.uri.clone(), self.loaded.turns);
+        let wanted = Wanted::Within(target.0.max(1), target.1.max(1));
+        self.sharpening = Some(cx.spawn_in(window, async move |this, cx| {
+            let decoder = crate::picture::decode(&uri, wanted, turns);
+            let prepared = loop {
+                match decoder.events.recv().await {
+                    Ok(Event::Size { .. }) => continue,
+                    Ok(Event::Frame(prepared)) => break prepared,
+                    Ok(Event::Failed(_)) | Err(_) => return,
+                }
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                trace::mark("picture sharpened");
+                if let Some(old) = this.sharp.replace(prepared.image) {
+                    cx.drop_image(old, Some(window));
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Ctrl with the wheel: a step of the text size or the zoom for every
+    /// notch, about the pointer.
     fn wheel_zoom(
         &mut self,
         event: &ScrollWheelEvent,
@@ -1058,7 +1326,7 @@ impl Preview {
         while self.wheel.abs() >= 1. {
             let zoom = if self.wheel > 0. { Zoom::In } else { Zoom::Out };
             self.wheel -= self.wheel.signum();
-            self.zoom_text(zoom, Some(event.position), window, cx);
+            self.step_zoom(zoom, Some(event.position), window, cx);
         }
     }
 
@@ -1215,9 +1483,10 @@ impl Preview {
         self.feed = None;
         self.totals = None;
         self._pane_changes = None;
-        if let Some(old) = self.image.take() {
+        for old in [self.image.take(), self.sharp.take()].into_iter().flatten() {
             cx.drop_image(old, Some(window));
         }
+        (self.sharp_for, self.sharpening, self.zoom_rest) = (None, None, None);
         self.pane.drop_pictures(window, cx);
         self.pane = level.pane;
         self.loaded = level.loaded;
@@ -1514,18 +1783,27 @@ impl Preview {
             Pane::Pdf(_) | Pane::Slides(_) => {
                 vec![rgb(0xffffff).into(), rgb(0x000000).into(), theme.backdrop]
             }
-            Pane::None => match (&self.loaded.body, &self.image) {
-                (Body::Image(_) | Body::Still(_), Some(image)) => {
-                    if let Some((id, size, scrim)) = self.strip.veil
+            Pane::None => match (&self.loaded.body, self.picture_shape()) {
+                (Body::Image(_) | Body::Still(_), Some(shape)) => {
+                    let drawn = self.framing.rect(shape, area);
+                    let wide = f32::from(drawn.size.width) * window.scale_factor();
+                    let Some(image) = self.shown_picture(wide) else {
+                        return strip::over_colours(&[theme.backdrop]);
+                    };
+                    if let Some((id, size, at, scrim)) = self.strip.veil
                         && id == image.id
                         && size == area
+                        && at == drawn
                     {
                         return scrim;
                     }
                     let ground = strip::rgb_of(theme.backdrop);
-                    let under = strip::under_image(image, area, band, ground);
-                    let scrim = strip::follow(&under, None);
-                    self.strip.veil = Some((image.id, area, scrim));
+                    let under = strip::under_picture(&image, drawn, area, band, ground);
+                    // As a drag or a zoom moves the picture, the veil
+                    // changes gently, as over a video.
+                    let before = self.strip.veil.filter(|veil| veil.0 == image.id);
+                    let scrim = strip::follow(&under, before.map(|veil| veil.3));
+                    self.strip.veil = Some((image.id, area, drawn, scrim));
                     return scrim;
                 }
                 (Body::Image(_) | Body::Still(_), None) => vec![theme.backdrop],
@@ -1665,6 +1943,90 @@ impl Preview {
         )
     }
 
+    /// The picture where its zoom puts it: whole in the window at first,
+    /// and once it is larger than the window, a drag moves it.
+    fn picture(&self, radius: Pixels, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let area = window.viewport_size();
+        let Some(shape) = self.picture_shape() else {
+            return div().size_full().into_any_element();
+        };
+        let rect = self.framing.rect(shape, area);
+        let wide = f32::from(rect.size.width) * window.scale_factor();
+        let Some(image) = self.shown_picture(wide) else {
+            return div().size_full().into_any_element();
+        };
+        let (movable, held) = (self.framing.movable(shape, area), self.framing.held());
+        let view = cx.entity().downgrade();
+        // Listened to on every frame of a drag, which may leave the window.
+        let follow = (movable || held).then(|| {
+            canvas(
+                |_, _, _| {},
+                move |_, _, window, _| {
+                    let moved = view.clone();
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                        if phase == DispatchPhase::Bubble {
+                            let _ = moved.update(cx, |this, cx| {
+                                this.drag_picture(event.position, window, cx)
+                            });
+                        }
+                    });
+                    let released = view.clone();
+                    window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                        if phase == DispatchPhase::Bubble && event.button == MouseButton::Left {
+                            let _ = released.update(cx, |this, cx| {
+                                if this.framing.held() {
+                                    this.framing.release();
+                                    cx.notify();
+                                }
+                            });
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .size_full()
+        });
+        div()
+            .id("picture")
+            .size_full()
+            .relative()
+            .when(movable, |picture| {
+                let hand = if held {
+                    CursorStyle::ClosedHand
+                } else {
+                    CursorStyle::OpenHand
+                };
+                picture.cursor(hand).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                        this.framing.hold(event.position);
+                        cx.notify();
+                    }),
+                )
+            })
+            .child(
+                img(ImageSource::Render(image))
+                    .absolute()
+                    .left(rect.left())
+                    .top(rect.top())
+                    .w(rect.size.width)
+                    .h(rect.size.height)
+                    .rounded(radius),
+            )
+            .children(follow)
+            .into_any_element()
+    }
+
+    /// The pointer moves while a drag holds the picture.
+    fn drag_picture(&mut self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(shape) = self.picture_shape() else {
+            return;
+        };
+        if self.framing.drag(at, shape, window.viewport_size()) {
+            cx.notify();
+        }
+    }
+
     /// What the window shows behind the content.
     fn ground(&self, theme: Theme) -> Hsla {
         match (&self.pane, &self.loaded.body) {
@@ -1802,7 +2164,7 @@ impl Render for Preview {
                         return;
                     }
                     let _ = view.update(cx, |this, cx| {
-                        if this.pane.kind().zooms() {
+                        if this.kind().zooms() {
                             this.wheel_zoom(event, window, cx);
                             cx.stop_propagation();
                         }
@@ -1830,13 +2192,7 @@ impl Render for Preview {
         let engaged = self.engaged(window, cx);
         let body = match (&self.loaded.body, &self.image) {
             _ if let Some(pane) = self.pane.view() => pane.into_any_element(),
-            (Body::Image(_) | Body::Still(_), Some(image)) => {
-                img(ImageSource::Render(image.clone()))
-                    .size_full()
-                    .object_fit(ObjectFit::Contain)
-                    .rounded(radius)
-                    .into_any_element()
-            }
+            (Body::Image(_) | Body::Still(_), Some(_)) => self.picture(radius, window, cx),
             (Body::Image(_), None) => div().size_full().into_any_element(),
             _ => self.card(theme).rounded(radius).into_any_element(),
         };

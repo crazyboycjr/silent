@@ -30,19 +30,19 @@ screen, at a size you can see. It takes the place of GNOME's sushi.
 
 | Kind | Shown as |
 | --- | --- |
-| Images | The picture at its own aspect, as large as the screen allows; animations play |
+| Images | The picture at its own aspect, as large as the screen allows; animations play; zoomed with Ctrl and + or - or the wheel, and dragged once larger than the window |
 | Video | Plays at its own aspect, with sound; hardware decoding when GStreamer has it; a playbar over the bottom of the picture, with the seek track, the times and the volume, while the pointer moves and after each seek |
 | Audio | A card with the cover art, title, artist and album, playing, with the same playbar |
-| PDF | The pages in a scroll, shaped by the first page, rendered as they come into view; page thumbnails docked at the right; text can be selected and copied |
+| PDF | The pages in a scroll, shaped by the first page, rendered as they come into view; page thumbnails docked at the right; text can be selected and copied; zoomed with Ctrl and + or - or the wheel |
 | Markdown | Rendered: headings, lists, tables, code highlighted, pictures beside the file; `s` shows the source and back. A picture from the web shows its words: silent fetches nothing. Files over 256 KB open as their source |
 | HTML | Laid out by [Blitz](https://github.com/DioxusLabs/blitz) as a browser would, with the page's own CSS (silent's paper, ink and fonts only where it sets none), its pictures and stylesheets beside the file, and nothing fetched: a picture from the web shows its words. Links open with the desktop or scroll to their place in the page, folded sections open and close with a click, text selects and copies; `s` shows the source and back. A page over 1 MB, or one whose layout takes over 0.4 s, opens as its source |
 | Text and code | Highlighted, with line numbers; a minimap over the right edge while it scrolls, or docked beside the text; long lines scroll sideways, or wrap at the window's width with `w`; the text bigger or smaller with Ctrl and the wheel; select with the mouse and copy; UTF-8, UTF-16 and GB18030 (GBK) text; minified JSON laid out; the first 2 MB of large files |
 | Binary files | As `hexdump -C` prints them, read from a memory map, so a dump of gigabytes opens at once, minimap and all; select and copy as text |
 | Compressed files | gzip, xz, zstd, bzip2, lz4 and lzma files show what is inside: text and code as above, a tar as its listing, anything else as a hexdump; the info line gives both sizes when the format records them |
 | Word documents | docx, odt and the older doc of Word 97 to 2003 (and WPS Writer's wps) as a column on a page: headings, paragraphs with their bold, italic, underline and colour, bulleted and numbered lists, tables, and the pictures of docx and odt; a minimap of the whole column docked at the right |
-| Spreadsheets | xlsx, xls and ods as a grid with column letters and row numbers, numbers and dates formatted, a tab for each worksheet, opening on the one that was in front; a click puts a cell cursor down, and the info line shows its cell in full; chart and hidden sheets get no tab; old .xls written as a bare BIFF stream too; the first 5,000 rows |
-| Presentations | pptx as its slides in a scroll, with text, pictures, tables and shapes where the deck puts them and what they inherit from the layout and master, and thumbnails of the slides docked at the right; odp as its thumbnail and text; the older ppt as an outline of each slide's title and text |
-| Keynote, Pages, Numbers | The preview picture the file carries, as Quick Look shows it |
+| Spreadsheets | xlsx, xls and ods as a grid with column letters and row numbers, numbers and dates formatted, a tab for each worksheet, opening on the one that was in front; a click puts a cell cursor down, and the info line shows its cell in full; chart and hidden sheets get no tab; old .xls written as a bare BIFF stream too; the first 5,000 rows; the grid's text bigger or smaller with Ctrl, as a document's |
+| Presentations | pptx as its slides in a scroll, with text, pictures, tables and shapes where the deck puts them and what they inherit from the layout and master, thumbnails of the slides docked at the right, zoomed as PDFs are; odp as its thumbnail and text; the older ppt as an outline of each slide's title and text, sized as documents are |
+| Keynote, Pages, Numbers | The preview picture the file carries, as Quick Look shows it, zoomed as pictures are |
 | Archives | The entries as a tree with file-type icons and their sizes, and the total unpacked; zip, tar (gz, bz2, xz, zstd), 7z, rar, ISO and more; any file in them opens in the same window, archives in archives too |
 | Folders | A card with the item count and the total size, counted in the background |
 | Everything else | A card with the type, size and modification date |
@@ -91,20 +91,36 @@ Text wraps again when the window changes size, and the next text file
 wraps too, until `w` again, in a window as tall as its rows. Hexdumps keep
 their width.
 
-Ctrl+Shift+= makes the text of text and code, hexdumps, Markdown and HTML
-and documents bigger, Ctrl+- smaller and Ctrl+0 as it was, in steps of
-about a tenth from 50% to 300%, and so does Ctrl with the wheel, a step a
-notch. The window keeps its size, wrapped text flows again, and the row
-under the pointer, or with a key the row at the top, stays where it was.
-The info line says the size for a moment, and the next file opens at it,
-in a window sized for it.
+Ctrl+Shift+= makes the text of text and code, hexdumps, Markdown and HTML,
+documents and spreadsheets bigger, Ctrl+- smaller and Ctrl+0 as it was, in
+steps of about a tenth from 50% to 300%, and so does Ctrl with the wheel, a
+step a notch. The window keeps its size, wrapped text flows again, and the
+row under the pointer, or with a key the row at the top, stays where it
+was. The info line says the size for a moment, and the next file opens at
+it, in a window sized for it.
+
+The same keys zoom PDFs, slides and pictures, from 50% to 400% of the size
+they open at, each file at a zoom of its own: the next file opens to fit
+its window, and coming back to one within the hour finds it as it was
+left. The window keeps its size. With the wheel the place under the
+pointer stays where it is; with a key, the top of the pages, or a
+picture's middle. A step shows at once from what is drawn already, scaled,
+and once the zoom rests a moment the view is drawn again at its new size:
+the parts of the pages in view, so that a page zoomed fourfold costs no
+more than one at its fit, and a picture decoded again from the file,
+sharper as far as its own pixels go, smaller when zoomed out, a JPEG at the
+fraction of its size the zoom needs; an animation plays on as it is.
+Zoomed wider than the window, pages scroll sideways with Shift and the
+wheel, `h` and `l`, and after a click the arrows, which go on to the next
+page at the edge; a picture larger than the window moves with a drag.
 
 A file you leave, by moving to another or closing the preview, comes back
 as you left it if you return within the hour: video and sound play on from
 there (unless they were nearly over), PDFs and slides open at the page,
 text at the line, documents at the paragraph, spreadsheets on the sheet and
 the cell, archives with the same folders open and the same entry selected,
-Markdown and HTML rendered or as source, pictures, PDFs and videos turned.
+Markdown and HTML rendered or as source, pictures, PDFs and videos turned,
+PDFs, slides and pictures at their zoom.
 That, the modes `m`, `i` and `w` last chose, for the minimap of text, for the
 thumbnails of pages and the minimap of documents, for the info line of
 each family of files (pictures, video and sound, text, pages, sheets,
@@ -150,7 +166,7 @@ with it.
 | i | The info line: when the mouse moves, never, or always; while it is never shown, a key that changes something (m, i, w, the volume, a seek, a pause) still answers with a word at the bottom right for a second |
 | w | Wrap the long lines of text and code at the window's width, or scroll them sideways again |
 | s | Markdown and HTML rendered, or their source |
-| Ctrl+Shift+=, Ctrl+-, Ctrl+0 | The text of text and code, Markdown and HTML and documents bigger, smaller, or at 100%; Ctrl with the wheel too |
+| Ctrl+Shift+=, Ctrl+-, Ctrl+0 | The text of text and code, Markdown and HTML, documents and spreadsheets bigger, smaller, or at 100%; PDFs, slides and pictures zoomed in, out, or to fit the window; Ctrl with the wheel too |
 | r, R | Turn a picture, every page of a PDF, or a video a quarter clockwise, or back; the window takes the turned shape |
 | k or a click | Pause or play video and audio |
 | j, l | Back or forward ten seconds |
@@ -168,7 +184,7 @@ line, as vim's `showcmd` does:
 | Key | Action |
 | --- | --- |
 | j, k | A line down or up, a row in wrapped text; in a PDF or slides, the next or previous page |
-| h, l, 0 | Sideways, and back to the left edge, in text that does not wrap |
+| h, l, 0 | Sideways, and back to the left edge, in text that does not wrap; sideways on pages zoomed wider than the window |
 | Ctrl+e, Ctrl+y | A line down or up, a row in wrapped text |
 | Ctrl+d, Ctrl+u | Half a screen down or up |
 | Ctrl+f, Ctrl+b | A screen down or up |
@@ -184,7 +200,7 @@ a video only gives it the keys; the next one pauses.
 | Content | ← → | ↑ ↓ |
 | --- | --- | --- |
 | Text, code, hexdumps, documents | Sideways, unless text wraps | A line, a row in wrapped text |
-| PDF, slides | The previous or next page | Scroll |
+| PDF, slides | Sideways while zoomed wider than the window, then the previous or next page | Scroll |
 | Spreadsheets | The cell cursor | The cell cursor |
 | Archives | Close or open a folder | The previous or next entry; Enter or Space shows the file over the archive, or opens or closes the folder |
 | Video, audio | Back or forward five seconds | Louder or quieter; the playbar shows the volume, and the next sound or video keeps it, and the mute |

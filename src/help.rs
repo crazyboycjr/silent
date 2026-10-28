@@ -29,13 +29,15 @@ pub enum Subject {
     Video,
     Audio,
     Picture,
+    /// A picture that does not turn, such as an iWork file's preview.
+    Still,
     Folder,
-    /// A card, or a picture that does not turn, such as an iWork preview.
     Card,
 }
 
 impl Subject {
-    pub fn zooms(self) -> bool {
+    /// Whether Ctrl with + and - size its text.
+    pub fn sizes_text(self) -> bool {
         matches!(
             self,
             Subject::Text
@@ -43,7 +45,18 @@ impl Subject {
                 | Subject::Source(_)
                 | Subject::Rendered(_)
                 | Subject::Document
+                | Subject::Sheet { .. }
         )
+    }
+
+    /// What Ctrl with 0 fits to the window, where Ctrl with + and - zoom.
+    fn fits(self) -> Option<&'static str> {
+        Some(match self {
+            Subject::Pdf => "Fit the page to the window",
+            Subject::Slides => "Fit the slide to the window",
+            Subject::Picture | Subject::Still => "Fit the picture to the window",
+            _ => return None,
+        })
     }
 
     fn title(self) -> &'static str {
@@ -63,7 +76,7 @@ impl Subject {
             Subject::Audio => "Keys for audio",
             Subject::Picture => "Keys for pictures",
             Subject::Folder => "Keys for folders",
-            Subject::Card => "Keys",
+            Subject::Still | Subject::Card => "Keys",
         }
     }
 
@@ -177,11 +190,12 @@ fn contents() -> Section {
 }
 
 fn pages(slides: bool) -> Section {
-    let (title, step, ends, subject) = if slides {
+    let (title, step, ends, across, subject) = if slides {
         (
             "Slides",
             "Go to the previous or next slide",
             "Go to the first or the last slide",
+            "Scroll left or right, then go to the previous or next slide",
             Subject::Slides,
         )
     } else {
@@ -189,6 +203,7 @@ fn pages(slides: bool) -> Section {
             "Pages",
             "Go to the previous or next page",
             "Go to the first or the last page",
+            "Scroll left or right, then go to the previous or next page",
             Subject::Pdf,
         )
     };
@@ -198,8 +213,9 @@ fn pages(slides: bool) -> Section {
             PAGE_KEYS,
             Keys("Shift+↑ ↓", step),
             Keys("Home / End", ends),
+            Keys("Shift+@Scroll", "Scroll left or right"),
             subject.after_a_click(),
-            Keys("← →", step),
+            Keys("← →", across),
             Keys("↑ ↓", "Scroll up or down"),
         ],
     }
@@ -245,13 +261,24 @@ fn view(subject: Subject) -> Section {
     if matches!(subject, Subject::Picture | Subject::Pdf | Subject::Video) {
         lines.push(Keys("r / R", "Rotate clockwise or counterclockwise"));
     }
-    if subject.zooms() {
+    if subject.sizes_text() {
         lines.extend([
             Keys("Ctrl+Shift+=", "Make the text bigger"),
             Keys("Ctrl+−", "Make the text smaller"),
             Keys("Ctrl+0", "Reset the text size"),
             Keys("Ctrl+@Scroll", "Make the text bigger or smaller"),
         ]);
+    }
+    if let Some(fits) = subject.fits() {
+        lines.extend([
+            Keys("Ctrl+Shift+=", "Zoom in"),
+            Keys("Ctrl+−", "Zoom out"),
+            Keys("Ctrl+0", fits),
+            Keys("Ctrl+@Scroll", "Zoom in or out"),
+        ]);
+    }
+    if matches!(subject, Subject::Picture | Subject::Still) {
+        lines.push(Keys("@Drag", "Move the picture when zoomed in"));
     }
     Section {
         title: "View",
@@ -321,8 +348,14 @@ fn vim(subject: Subject) -> Option<Section> {
         Subject::Rendered(_) | Subject::Document => {
             vec![Keys("k / j", "Scroll a line up or down")]
         }
-        Subject::Pdf => vec![Keys("k / j", "Go to the previous or next page")],
-        Subject::Slides => vec![Keys("k / j", "Go to the previous or next slide")],
+        Subject::Pdf => vec![
+            Keys("k / j", "Go to the previous or next page"),
+            Keys("h / l", "Scroll left or right"),
+        ],
+        Subject::Slides => vec![
+            Keys("k / j", "Go to the previous or next slide"),
+            Keys("h / l", "Scroll left or right"),
+        ],
         _ => return None,
     };
     lines.extend(HALF_SCREEN);
@@ -855,6 +888,7 @@ mod tests {
             Subject::Video,
             Subject::Audio,
             Subject::Picture,
+            Subject::Still,
             Subject::Folder,
             Subject::Card,
         ]
@@ -976,8 +1010,16 @@ mod tests {
                 assert!(!words.ends_with('.'), "{words}");
                 let lower = words.to_lowercase();
                 for unwanted in [
-                    "strip", "rail", "engage", "overview", "down or up", "next or previous",
+                    "strip",
+                    "rail",
+                    "engage",
+                    "overview",
+                    "down or up",
+                    "next or previous",
                     "inside",
+                    "right or left",
+                    "out or in",
+                    "smaller or bigger",
                 ] {
                     assert!(!lower.contains(unwanted), "{words}");
                 }
@@ -1017,8 +1059,46 @@ mod tests {
         assert!(html.contains(&Keys("@Click", "Follow a link")));
         assert!(html.contains(&Keys("@Click", "Open or close a folded section")));
         assert!(!lines_of(shown(Subject::Source(Markup::Html))).contains(&Keys("@Click", "Follow a link")));
-        // The text size where there is text to size.
-        assert!(has(Subject::Document, "Ctrl+0") && !has(Subject::Pdf, "Ctrl+0"));
+        // The text size where there is text to size, a zoom for pages and
+        // pictures, and neither for video, sound, archives or cards.
+        let words = |subject| words_of(shown(subject));
+        for subject in [
+            Subject::Document,
+            Subject::Sheet { tabs: false },
+            Subject::Text,
+        ] {
+            assert!(has(subject, "Ctrl+0") && words(subject).contains(&"Reset the text size"));
+            assert!(!words(subject).contains(&"Zoom in"), "{subject:?}");
+        }
+        for subject in [
+            Subject::Pdf,
+            Subject::Slides,
+            Subject::Picture,
+            Subject::Still,
+        ] {
+            assert!(has(subject, "Ctrl+0") && words(subject).contains(&"Zoom in"));
+            assert!(
+                !words(subject).contains(&"Reset the text size"),
+                "{subject:?}"
+            );
+        }
+        assert!(words(Subject::Pdf).contains(&"Fit the page to the window"));
+        for subject in [
+            Subject::Video,
+            Subject::Audio,
+            Subject::Archive,
+            Subject::Folder,
+            Subject::Card,
+        ] {
+            assert!(
+                !has(subject, "Ctrl+0") && !has(subject, "Ctrl+@Scroll"),
+                "{subject:?}"
+            );
+        }
+        // A zoomed picture moves under a drag; pages scroll sideways.
+        assert!(has(Subject::Picture, "@Drag") && has(Subject::Still, "@Drag"));
+        assert!(!has(Subject::Still, "r / R"));
+        assert!(has(Subject::Pdf, "h / l") && has(Subject::Slides, "Shift+@Scroll"));
         // A workbook of one sheet has no sheets to go to.
         assert!(has(Subject::Sheet { tabs: true }, "Shift+← →"));
         assert!(!has(Subject::Sheet { tabs: false }, "Shift+← →"));

@@ -52,9 +52,17 @@ pub enum View {
     /// A page laid out by Blitz: how far down it the view starts, as a
     /// share of its height, which another text size or width keeps close.
     Page { within: f32 },
-    /// PDFs and slides: the page at the top, and how far down it the view
-    /// starts, from 0 to 1.
-    Pages { page: usize, within: f32 },
+    /// PDFs and slides: the page at the top, how far down it the view
+    /// starts, from 0 to 1, and where across the pages the view's middle
+    /// is, which counts once they are zoomed wider than the window.
+    Pages {
+        page: usize,
+        within: f32,
+        across: f32,
+    },
+    /// A zoomed picture: the point of it in the middle of the view, as
+    /// shares of its width and height.
+    Picture { x: f32, y: f32 },
     /// Word documents: the block at the top and the pixels scrolled into it.
     Blocks { block: usize, offset: f32 },
     /// Spreadsheets: the sheet, the cell the cursor is on, and the scroll.
@@ -80,7 +88,12 @@ impl View {
         match self {
             View::Media(position) => position.as_millis().to_string(),
             View::Lines { top, side } => format!("lines {top} {side}"),
-            View::Pages { page, within } => format!("pages {page} {within}"),
+            View::Pages {
+                page,
+                within,
+                across,
+            } => format!("pages {page} {within} {across}"),
+            View::Picture { x, y } => format!("picture {x} {y}"),
             View::Blocks { block, offset } => format!("blocks {block} {offset}"),
             View::Rendered { block, offset } => format!("rendered {block} {offset}"),
             View::Page { within } => format!("page {within}"),
@@ -126,9 +139,15 @@ impl View {
                     top: number(next()?)?,
                     side: number(next()?)? as f32,
                 },
+                // Written before pages zoomed without where across.
                 "pages" => View::Pages {
                     page: next()?.parse().map_err(drop)?,
                     within: number(next()?)? as f32,
+                    across: next().map_or(Ok(0.5), number)? as f32,
+                },
+                "picture" => View::Picture {
+                    x: number(next()?)? as f32,
+                    y: number(next()?)? as f32,
                 },
                 "blocks" => View::Blocks {
                     block: next()?.parse().map_err(drop)?,
@@ -210,29 +229,49 @@ struct Entry {
     view: Option<View>,
     /// Quarter turns clockwise r gave a picture, a PDF or a video.
     turns: u8,
+    /// The zoom of a PDF, slides or a picture, in percent of its fit.
+    zoom: u16,
 }
 
-/// The view field: `turned N` before the view when the file was turned.
-fn encode(view: &Option<View>, turns: u8) -> String {
-    match (view, turns) {
-        (Some(view), 0) => view.encode(),
-        (Some(view), turns) => format!("turned {turns} {}", view.encode()),
-        (None, turns) => format!("turned {turns}"),
+/// The view field: `zoomed N` and `turned N` before the view when the file
+/// was zoomed or turned.
+fn encode(view: &Option<View>, turns: u8, zoom: u16) -> String {
+    let mut words = Vec::new();
+    if zoom != 100 {
+        words.push(format!("zoomed {zoom}"));
     }
+    if turns != 0 {
+        words.push(format!("turned {turns}"));
+    }
+    words.extend(view.as_ref().map(View::encode));
+    words.join(" ")
 }
 
-fn decode(field: &str) -> Option<(Option<View>, u8)> {
-    let Some(rest) = field.strip_prefix("turned ") else {
-        return Some((Some(View::decode(field)?), 0));
+fn decode(field: &str) -> Option<(Option<View>, u8, u16)> {
+    let (zoom, field) = match field.strip_prefix("zoomed ") {
+        Some(rest) => {
+            let (zoom, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+            let zoom = zoom
+                .parse::<u16>()
+                .ok()
+                .filter(|z| (10..=1000).contains(z))?;
+            (zoom, rest)
+        }
+        None => (100, field),
     };
-    let (turns, view) = rest.split_once(' ').unwrap_or((rest, ""));
-    let turns = turns.parse::<u8>().ok().filter(|t| *t < 4)?;
-    let view = if view.is_empty() {
+    let (turns, field) = match field.strip_prefix("turned ") {
+        Some(rest) => {
+            let (turns, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+            (turns.parse::<u8>().ok().filter(|t| *t < 4)?, rest)
+        }
+        None => (0, field),
+    };
+    let view = if field.is_empty() {
         None
     } else {
-        Some(View::decode(view)?)
+        Some(View::decode(field)?)
     };
-    Some((view, turns))
+    (view.is_some() || turns != 0 || zoom != 100).then_some((view, turns, zoom))
 }
 
 fn dir() -> Option<PathBuf> {
@@ -259,10 +298,21 @@ pub fn turns(key: &Key) -> u8 {
         .unwrap_or(0)
 }
 
-/// Records how `key` was left, or forgets it: a view that is where a new
-/// preview starts anyway is not worth a line. Its turns stay.
-pub fn remember(key: &Key, view: Option<View>) {
-    store(key, |entry| entry.view = view);
+/// The zoom `key`, a PDF, slides or a picture, was left at within the last
+/// hour, 1 at its fit.
+pub fn zoom(key: &Key) -> f32 {
+    let text = dir().and_then(|dir| fs::read_to_string(dir.join("positions")).ok());
+    text.and_then(|text| find(&parse(&text), key, now()).map(|e| f32::from(e.zoom) / 100.))
+        .unwrap_or(1.)
+}
+
+/// Records how `key` was left, and at what zoom, or forgets it: a view that
+/// is where a new preview starts anyway is not worth a line. Its turns stay.
+pub fn remember(key: &Key, view: Option<View>, zoom: f32) {
+    store(key, |entry| {
+        entry.view = view;
+        entry.zoom = (zoom * 100.).round().clamp(10., 1000.) as u16;
+    });
 }
 
 /// Records the quarter turns `key` was given; its view stays.
@@ -281,10 +331,11 @@ fn store(key: &Key, change: impl FnOnce(&mut Entry)) {
         saved: 0,
         view: None,
         turns: 0,
+        zoom: 100,
     });
     change(&mut entry);
     entry.saved = now();
-    let entry = (entry.view.is_some() || entry.turns != 0).then_some(entry);
+    let entry = (entry.view.is_some() || entry.turns != 0 || entry.zoom != 100).then_some(entry);
     let updated = update(before.clone(), key, entry, now());
     if updated != before {
         write(&dir, "positions", &format(&updated));
@@ -375,7 +426,7 @@ fn parse(text: &str) -> Vec<Entry> {
             let saved = fields.next()?.parse().ok()?;
             let size = fields.next()?.parse().ok()?;
             let modified = fields.next()?.parse().ok()?;
-            let (view, turns) = decode(fields.next()?)?;
+            let (view, turns, zoom) = decode(fields.next()?)?;
             let path = PathBuf::from(fields.next()?);
             Some(Entry {
                 key: Key {
@@ -386,6 +437,7 @@ fn parse(text: &str) -> Vec<Entry> {
                 saved,
                 view,
                 turns,
+                zoom,
             })
         })
         .collect()
@@ -401,7 +453,7 @@ fn format(entries: &[Entry]) -> String {
                 e.saved,
                 e.key.size,
                 e.key.modified,
-                encode(&e.view, e.turns)
+                encode(&e.view, e.turns, e.zoom)
             ))
         })
         .collect()
@@ -425,6 +477,15 @@ mod tests {
             saved,
             view: Some(view),
             turns: 0,
+            zoom: 100,
+        }
+    }
+
+    fn pages(page: usize, within: f32) -> View {
+        View::Pages {
+            page,
+            within,
+            across: 0.5,
         }
     }
 
@@ -432,14 +493,7 @@ mod tests {
     fn turns_ride_along_with_the_view_or_alone() {
         let turned = Entry {
             turns: 3,
-            ..entry(
-                "/p/photo.jpg",
-                100,
-                View::Pages {
-                    page: 2,
-                    within: 0.5,
-                },
-            )
+            ..entry("/p/photo.jpg", 100, pages(2, 0.5))
         };
         let alone = Entry {
             view: None,
@@ -451,6 +505,41 @@ mod tests {
         assert!(format(&entries).contains("\tturned 1\t/p/clip.mp4"));
         // Only quarter turns.
         assert_eq!(parse("1\t2\t3\tturned 4\t/p/x.jpg\n"), vec![]);
+    }
+
+    #[test]
+    fn a_zoom_rides_along_with_the_turns_and_the_view_or_alone() {
+        let zoomed = Entry {
+            zoom: 150,
+            turns: 1,
+            ..entry(
+                "/p/scan.pdf",
+                100,
+                View::Pages {
+                    page: 3,
+                    within: 0.25,
+                    across: 0.75,
+                },
+            )
+        };
+        let picture = Entry {
+            zoom: 400,
+            ..entry("/p/photo.jpg", 200, View::Picture { x: 0.25, y: 0.5 })
+        };
+        let alone = Entry {
+            view: None,
+            zoom: 60,
+            ..entry("/p/deck.pptx", 300, media(1))
+        };
+        let entries = vec![zoomed, picture, alone];
+        let text = format(&entries);
+        assert_eq!(parse(&text), entries);
+        assert!(text.contains("\tzoomed 150 turned 1 pages 3 0.25 0.75\t/p/scan.pdf"));
+        assert!(text.contains("\tzoomed 60\t/p/deck.pptx"));
+        // Pages written before they zoomed are in the middle across.
+        let old = parse("1\t2\t3\tturned 2 pages 4 0.5\t/p/old.pdf\n");
+        assert_eq!(old[0].view, Some(pages(4, 0.5)));
+        assert_eq!((old[0].turns, old[0].zoom), (2, 100));
     }
 
     fn media(secs: u64) -> View {
@@ -470,14 +559,7 @@ mod tests {
                     side: 12.5,
                 },
             ),
-            entry(
-                "/d/paper.pdf",
-                400,
-                View::Pages {
-                    page: 11,
-                    within: 0.375,
-                },
-            ),
+            entry("/d/paper.pdf", 400, pages(11, 0.375)),
             entry(
                 "/e/report.docx",
                 500,

@@ -157,21 +157,44 @@ pub fn under_image(image: &RenderImage, area: Size<Pixels>, band: f32, ground: R
     let pixels = image.size(0);
     let (iw, ih) = (pixels.width.0.max(1) as f32, pixels.height.0.max(1) as f32);
     let (w, h) = (f32::from(area.width), f32::from(area.height));
+    let fit = (w / iw).min(h / ih).max(1e-6);
+    let drawn = Bounds::new(
+        point(px((w - iw * fit) / 2.), px((h - ih * fit) / 2.)),
+        size(px(iw * fit), px(ih * fit)),
+    );
+    under_picture(image, drawn, area, band, ground)
+}
+
+/// The same for `image` drawn at `drawn` in the view, as a zoom draws it,
+/// larger than the view or smaller.
+pub fn under_picture(
+    image: &RenderImage,
+    drawn: Bounds<Pixels>,
+    area: Size<Pixels>,
+    band: f32,
+    ground: Rgb,
+) -> Vec<Rgb> {
+    let pixels = image.size(0);
+    let (iw, ih) = (pixels.width.0.max(1) as f32, pixels.height.0.max(1) as f32);
+    let (w, h) = (f32::from(area.width), f32::from(area.height));
     let Some(bytes) = image.as_bytes(0) else {
         return vec![ground];
     };
-    let fit = (w / iw).min(h / ih).max(1e-6);
-    let top = (h - ih * fit) / 2.;
-    let rows = ((h - band - top) / fit).max(0.)..((h - top) / fit).min(ih);
-    let mut under = if rows.is_empty() {
+    let scale = (f32::from(drawn.size.width) / iw).max(1e-6);
+    let (left, top) = (f32::from(drawn.left()), f32::from(drawn.top()));
+    let rows = ((h - band - top) / scale).max(0.)..((h - top) / scale).min(ih);
+    let columns = (-left / scale).max(0.)..((w - left) / scale).min(iw);
+    let mut under = if rows.is_empty() || columns.is_empty() {
         Vec::new()
     } else {
-        let cell = (CELL / fit).round().max(1.) as usize;
+        let cell = (CELL / scale).round().max(1.) as usize;
         let rows = rows.start.floor() as usize..rows.end.ceil() as usize;
-        scrim::cells(bytes, iw as usize, rows, cell, ground)
+        let columns = columns.start.floor() as usize..columns.end.ceil() as usize;
+        scrim::cells(bytes, iw as usize, rows, columns, cell, ground)
     };
     // Bare ground beside or below the picture.
-    if ih * fit < h - 0.5 || iw * fit < w - 0.5 || under.is_empty() {
+    let (right, bottom) = (f32::from(drawn.right()), f32::from(drawn.bottom()));
+    if left > 0.5 || top > 0.5 || right < w - 0.5 || bottom < h - 0.5 || under.is_empty() {
         under.push(ground);
     }
     under

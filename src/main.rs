@@ -2,6 +2,7 @@ mod app;
 mod archive;
 mod content;
 mod docview;
+mod framing;
 mod grid;
 mod help;
 mod icons;
@@ -263,7 +264,8 @@ fn probe(paths: &[String]) -> ExitCode {
         if facts.kind != Kind::Image {
             continue;
         }
-        let decoder = decode::start(uri.into(), screen, MemoryFormatSelection::all(), |f| f);
+        let wanted = screen.map(decode::Wanted::Screen);
+        let decoder = decode::start(uri.into(), wanted, MemoryFormatSelection::all(), |f| f);
         while let Ok(event) = decoder.events.recv_blocking() {
             match event {
                 Event::Size { width, height } => {

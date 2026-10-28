@@ -150,23 +150,32 @@ pub fn is_dark(ground: Rgb) -> bool {
 static LINEAR: LazyLock<[f32; 256]> =
     LazyLock::new(|| std::array::from_fn(|i| linear(i as f32 / 255.)));
 
-/// The mean colour of each `cell` × `cell` block of rows `rows` of a BGRA
-/// image `width` pixels wide, a few dozen pixels of each sampled and
-/// averaged in linear light, as the eye averages fine detail. Transparent
-/// pixels show `ground`. Blocks cut short by the image's edges count too.
-pub fn cells(bgra: &[u8], width: usize, rows: Range<usize>, cell: usize, ground: Rgb) -> Vec<Rgb> {
+/// The mean colour of each `cell` × `cell` block of rows `rows` and
+/// columns `columns` of a BGRA image `width` pixels wide, a few dozen
+/// pixels of each sampled and averaged in linear light, as the eye averages
+/// fine detail. Transparent pixels show `ground`. Blocks cut short by the
+/// image's edges count too.
+pub fn cells(
+    bgra: &[u8],
+    width: usize,
+    rows: Range<usize>,
+    columns: Range<usize>,
+    cell: usize,
+    ground: Rgb,
+) -> Vec<Rgb> {
     let height = bgra.len() / (width * 4).max(1);
     let rows = rows.start.min(height)..rows.end.min(height);
+    let columns = columns.start.min(width)..columns.end.min(width);
     let cell = cell.max(1);
     let step = (cell / 6).max(1);
     let ground = [linear(ground.b), linear(ground.g), linear(ground.r)];
     let mut out = Vec::new();
     for top in rows.clone().step_by(cell) {
-        for left in (0..width).step_by(cell) {
+        for left in columns.clone().step_by(cell) {
             let mut sum = [0f32; 3];
             let mut count = 0;
             for y in (top..(top + cell).min(rows.end)).step_by(step) {
-                for x in (left..(left + cell).min(width)).step_by(step) {
+                for x in (left..(left + cell).min(columns.end)).step_by(step) {
                     let at = (y * width + x) * 4;
                     let alpha = f32::from(bgra[at + 3]) / 255.;
                     for c in 0..3 {
@@ -324,23 +333,27 @@ mod tests {
             image.extend(px(0, 0, 0));
             image.extend(px(0, 0, 0));
         }
-        let cells = cells(&image, 4, 1..3, 2, BLACK);
+        let cells = cells(&image, 4, 1..3, 0..4, 2, BLACK);
         assert_eq!(cells.len(), 2);
         assert!(close(cells[0].luminance(), 1., 1e-4));
         assert!(close(cells[1].luminance(), 0., 1e-4));
         // Half white and half black averages to a mid tone in light.
-        let mixed = super::cells(&image, 4, 1..3, 4, BLACK);
+        let mixed = super::cells(&image, 4, 1..3, 0..4, 4, BLACK);
         assert_eq!(mixed.len(), 1);
         assert!(close(mixed[0].luminance(), 0.5, 1e-3));
         // Rows past the image are not there to average.
-        assert_eq!(super::cells(&image, 4, 3..9, 2, BLACK).len(), 0);
+        assert_eq!(super::cells(&image, 4, 3..9, 0..4, 2, BLACK).len(), 0);
+        // Only the columns in view, as of a picture zoomed past the window.
+        let right = super::cells(&image, 4, 1..3, 2..4, 2, BLACK);
+        assert_eq!(right.len(), 1);
+        assert!(close(right[0].luminance(), 0., 1e-4));
     }
 
     #[test]
     fn transparent_pixels_show_the_ground() {
         let clear = [0u8, 0, 0, 0].repeat(4);
         let ground = Rgb::hex(0xebe4d8);
-        let cells = cells(&clear, 2, 0..2, 2, ground);
+        let cells = cells(&clear, 2, 0..2, 0..2, 2, ground);
         assert_eq!(cells.len(), 1);
         assert!(close(cells[0].r, ground.r, 1e-3) && close(cells[0].b, ground.b, 1e-3));
     }

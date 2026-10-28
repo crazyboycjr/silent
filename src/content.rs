@@ -71,6 +71,8 @@ pub struct Loaded {
     pub markup: Option<Markup>,
     /// Quarter turns clockwise r gave a picture, a PDF or a video.
     pub turns: u8,
+    /// The zoom a PDF, slides or a picture was left at, 1 at its fit.
+    pub zoom: f32,
     /// A word for the info line as the file shows, such as why a page
     /// shows as its source.
     pub note: Option<String>,
@@ -168,7 +170,7 @@ pub struct Pdf {
     /// Page sizes in points, as the pages are shown, turned.
     pub pages: Vec<(f32, f32)>,
     /// The page shown first, by its index, rendered at the pages' width.
-    pub first: Option<(usize, Arc<RenderImage>)>,
+    pub first: Option<(usize, crate::pdf::Raster)>,
     /// Quarter turns clockwise of every page.
     pub turns: u8,
 }
@@ -289,6 +291,7 @@ pub fn load_as(
         view,
         markup: None,
         turns,
+        zoom: key.as_ref().map_or(1., memory::zoom),
         note: None,
     };
     let resume = match loaded.view {
@@ -429,6 +432,7 @@ impl Loaded {
             view: None,
             markup: None,
             turns: 0,
+            zoom: 1.,
             note: None,
         }
     }
@@ -459,6 +463,7 @@ fn missing(uri: &str, error: &str, screen: Screen) -> Loaded {
         view: None,
         markup: None,
         turns: 0,
+        zoom: 1.,
         note: None,
     }
 }
@@ -491,7 +496,7 @@ fn image(
     wait_for_pixels: bool,
     turns: u8,
 ) -> Option<((i32, i32), Picture)> {
-    let frames = picture::decode(uri, screen, turns);
+    let frames = picture::decode(uri, silent::decode::Wanted::Screen(screen), turns);
     let natural = match frames.events.recv_blocking().ok()? {
         Event::Size { width, height } => picture::turned((width, height), turns),
         _ => return None,
@@ -639,7 +644,9 @@ fn document(
                 .map(|w| (*w).clamp(4, 40) as f64 * 7.4 + 18.)
                 .sum();
             let rows = grid.cells.len().clamp(8, 28) as f64;
-            let size = card(screen, ((width + 60.).clamp(560., 1400.), rows * 24. + 70.));
+            let zoom = f64::from(zoom::level());
+            let size = (width + 60.).clamp(560., 1400.) * zoom;
+            let size = card(screen, (size, (rows * 24. + 70.) * zoom));
             let sheet = Sheet {
                 path: path.to_owned(),
                 names,
@@ -746,9 +753,9 @@ fn pdf(path: &Path, screen: Screen, page: usize, turns: u8) -> Option<((i32, i32
     let dock = rail_dock(pages.len());
     let shown = screen.fit_page((width as f64, height as f64), dock);
     let page = page.min(pages.len() - 1);
-    let first = gpui_pdf::render_page(&document, page, shown.0 as f32 / pages[page].0)
-        .ok()
-        .map(|image| (page, picture::turn(image, turns)));
+    let scale = shown.0 as f32 / pages[page].0.max(1.);
+    let first =
+        crate::pdf::rasterize(&document, page, scale, [0., 0., 1., 1.], turns).map(|r| (page, r));
     Some((
         screen.window(shown, dock),
         dock,

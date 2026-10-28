@@ -31,6 +31,37 @@ pub struct Frame {
     pub icc: Option<Arc<[u8]>>,
 }
 
+/// How large a picture is wanted.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Wanted {
+    /// As a preview first shows it on this screen: no larger than the
+    /// monitor, a vector picture at the size of its window.
+    Screen(Screen),
+    /// To fill this many pixels, upright, as a zoom shows it: no larger, a
+    /// vector picture drawn to it.
+    Within(u32, u32),
+}
+
+impl Wanted {
+    /// The box a picture of `size` pixels, upright, is no larger than once
+    /// decoded, and the size a vector picture of that size is drawn at.
+    pub fn bound(&self, size: (u32, u32)) -> ((u32, u32), (u32, u32)) {
+        match *self {
+            Wanted::Screen(screen) => {
+                let fit = screen.fit_media(size);
+                let monitor = (screen.monitor.width as u32, screen.monitor.height as u32);
+                (monitor, (fit.width as u32, fit.height as u32))
+            }
+            Wanted::Within(width, height) => {
+                let (w, h) = (f64::from(size.0.max(1)), f64::from(size.1.max(1)));
+                let scale = (f64::from(width) / w).min(f64::from(height) / h);
+                let drawn = ((w * scale).round() as u32, (h * scale).round() as u32);
+                ((width, height), (drawn.0.max(1), drawn.1.max(1)))
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Event<T> {
     /// The upright size, known before any pixels.
@@ -56,12 +87,13 @@ impl<T> Drop for Decoder<T> {
 }
 
 /// Decodes the image at `uri`. Vector images are rendered at the size
-/// `screen` gives them; everything else arrives at its own resolution, in
+/// `wanted` gives them, and a JPEG larger than it may be decoded at a
+/// fraction of its size; everything else arrives at its own resolution, in
 /// one of the `accepted` formats. `prepare` turns each frame into what the
 /// UI shows, still on the decoder's thread.
 pub fn start<T, F>(
     uri: String,
-    screen: Option<Screen>,
+    wanted: Option<Wanted>,
     accepted: MemoryFormatSelection,
     prepare: F,
 ) -> Decoder<T>
@@ -78,13 +110,13 @@ where
             async_io::block_on(async {
                 let mut prepare = prepare;
                 let mut sized = false;
-                if here(&uri, screen, &thread_cancellable, &mut prepare, &sender, &mut sized).await
+                if here(&uri, wanted, &thread_cancellable, &mut prepare, &sender, &mut sized).await
                 {
                     return;
                 }
                 let decoded = run(
                     &uri,
-                    screen,
+                    wanted,
                     accepted,
                     thread_cancellable,
                     prepare,
@@ -108,7 +140,7 @@ where
 /// `sized` saying whether the size has gone out already.
 async fn here<T>(
     uri: &str,
-    screen: Option<Screen>,
+    wanted: Option<Wanted>,
     cancellable: &gio::Cancellable,
     prepare: &mut impl FnMut(Frame) -> T,
     sender: &async_channel::Sender<Event<T>>,
@@ -126,11 +158,12 @@ async fn here<T>(
         return true;
     }
     *sized = true;
-    // As stored, the size it is shrunk to for the monitor, if it is.
-    let at_least = screen.and_then(|screen| {
-        let monitor = screen.monitor;
-        let shrink = (f64::from(monitor.width) / f64::from(width))
-            .min(f64::from(monitor.height) / f64::from(height));
+    // As stored, the size it is shrunk to for the monitor or the zoom, if
+    // it is.
+    let at_least = wanted.and_then(|wanted| {
+        let (bound, _) = wanted.bound((width, height));
+        let shrink =
+            (f64::from(bound.0) / f64::from(width)).min(f64::from(bound.1) / f64::from(height));
         (shrink < 1.0).then(|| {
             let upright = (
                 (f64::from(width) * shrink).round() as u32,
@@ -171,7 +204,7 @@ async fn here<T>(
 
 async fn run<T>(
     uri: &str,
-    screen: Option<Screen>,
+    wanted: Option<Wanted>,
     accepted: MemoryFormatSelection,
     cancellable: gio::Cancellable,
     mut prepare: impl FnMut(Frame) -> T,
@@ -191,11 +224,11 @@ async fn run<T>(
     }
 
     let mut request = glycin::FrameRequest::new();
-    if let Some(screen) = screen
+    if let Some(wanted) = wanted
         && image.mime_type().as_str().starts_with("image/svg")
     {
-        let fit = screen.fit_media((width, height));
-        request = request.scale(fit.width as u32, fit.height as u32);
+        let (_, drawn) = wanted.bound((width, height));
+        request = request.scale(drawn.0, drawn.1);
     }
     let mut frame = image.specific_frame(request).await?;
     let mut due = Instant::now();
