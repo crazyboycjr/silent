@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 use silent::markup::Markup;
@@ -31,6 +32,9 @@ const MARGIN: u32 = 2;
 const AT_ONCE: usize = 3;
 /// How far the pointer moves before a press is a drag, in logical pixels.
 const SLOP: f32 = 3.;
+/// How soon after the page was laid out for a size it is laid out for another: a window
+/// being resized shows the last layout in between, cut off or with paper beside it.
+const RELAYOUT: Duration = Duration::from_millis(50);
 
 pub struct PagePane {
     doc: Doc,
@@ -47,6 +51,8 @@ pub struct PagePane {
     zoom: f32,
     dark: bool,
     fixed: bool,
+    /// When the layout was last made for a new size.
+    laid_out_at: Option<Instant>,
     strips: HashMap<u32, Arc<RenderImage>>,
     /// The window's picture, for a page with fixed boxes, and the device
     /// row of the page it starts at.
@@ -93,6 +99,7 @@ impl PagePane {
             zoom: page.zoom,
             dark: page.dark,
             fixed: page.fixed,
+            laid_out_at: None,
             strips: page.strips.into_iter().collect(),
             window: None,
             dropped: Vec::new(),
@@ -173,6 +180,12 @@ impl PagePane {
         if size == self.size && scale == self.scale && dark == self.dark {
             return;
         }
+        let soon = self.laid_out_at.is_some_and(|at| at.elapsed() < RELAYOUT);
+        if scale == self.scale && dark == self.dark && soon {
+            window.request_animation_frame();
+            return;
+        }
+        self.laid_out_at = Some(Instant::now());
         let relayout = size.0 != self.size.0 || scale != self.scale || dark != self.dark;
         if relayout && self.held.is_none() {
             self.held = self.place_at_y(0.);

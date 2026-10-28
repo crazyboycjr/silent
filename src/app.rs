@@ -52,6 +52,8 @@ pub enum Intent {
     /// The content parsed in the background is in: a window held back for
     /// it is mapped.
     Ready,
+    /// The window's background, 0xRRGGBB: the content's ground.
+    Ground(u32),
 }
 
 /// Whose preview the window shows.
@@ -727,6 +729,14 @@ impl Controller {
             Intent::Fit(size) => return self.fit(size),
             Intent::Focus => return self.take_focus(),
             Intent::Ready => return self.release(),
+            Intent::Ground(rgb) => {
+                if let (Some(x11), Some(xid)) =
+                    (&self.x11, self.window.as_ref().and_then(|w| w.xid))
+                {
+                    let _ = x11.set_background(xid, rgb);
+                }
+                return;
+            }
             _ => {}
         }
         let Some(shown) = &self.shown else {
@@ -774,6 +784,7 @@ impl Controller {
                 }
             }
             Intent::Redock(_) | Intent::Fit(_) | Intent::Focus | Intent::Ready => {}
+            Intent::Ground(_) => {}
         }
     }
 

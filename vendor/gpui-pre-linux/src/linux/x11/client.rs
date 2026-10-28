@@ -821,12 +821,20 @@ impl X11Client {
             }
 
             for x_window in windows_to_refresh {
-                let window = self
-                    .0
-                    .borrow()
-                    .windows
-                    .get(&x_window)
-                    .and_then(|window| window.is_mapped.then(|| window.window.clone()));
+                // silent: the child a window's frames go into is exposed for the window.
+                let window = {
+                    let state = self.0.borrow();
+                    state
+                        .windows
+                        .get(&x_window)
+                        .or_else(|| {
+                            state
+                                .windows
+                                .values()
+                                .find(|window| window.window.surface_child() == x_window)
+                        })
+                        .and_then(|window| window.is_mapped.then(|| window.window.clone()))
+                };
                 if let Some(window) = window {
                     window.refresh(RequestFrameOptions {
                         require_presentation: true,

@@ -283,6 +283,22 @@ pub struct X11WindowState {
     show: bool,
     /// silent: whether the next frame request is the first of a showing.
     first_request: bool,
+    /// silent: the child window the GPU presents into, and its size. NVIDIA's Vulkan swapchains
+    /// go out of date whenever their window's size changes, and one takes longer to make than
+    /// the pointer takes to move the size on, so a window presenting into itself gets almost no
+    /// frame to the screen while it is being resized. While the window's size keeps changing,
+    /// the child is as large as the screen, the window clips it, and its swapchain stays good;
+    /// once the size rests, the child is the window's size again.
+    surface_child: xproto::Window,
+    surface_child_size: (u16, u16),
+    window_size: (u16, u16),
+    resized_at: Option<std::time::Instant>,
+    /// Whether the window is being dragged to a new size: from a size that follows another
+    /// within a quarter of a second to the child's shrinking once the size rests.
+    dragging: bool,
+    /// Frames drawn in a row a tenth of a second or more after the last resize seen: the
+    /// first of them can come before the resizes queued behind a slow frame are read.
+    rested_frames: u8,
     bounds: Bounds<Pixels>,
     scale_factor: f32,
     /// Taken when the window is dropped. Its GPU objects use the X connection, so they mustn't
@@ -774,6 +790,34 @@ impl X11WindowState {
                 ),
             )?;
 
+            // silent: see `surface_child`. Of the child's events only its exposures are taken,
+            // for the window; the rest go to the window, as from the window itself.
+            let surface_child = xcb.generate_id()?;
+            check_reply(
+                || "X11 CreateWindow for the surface's child failed.",
+                xcb.create_window(
+                    visual.depth,
+                    surface_child,
+                    x_window,
+                    0,
+                    0,
+                    bounds.size.width.0 as u16,
+                    bounds.size.height.0 as u16,
+                    0,
+                    xproto::WindowClass::INPUT_OUTPUT,
+                    visual.id,
+                    &xproto::CreateWindowAux::new()
+                        .border_pixel(visual_set.black_pixel)
+                        .bit_gravity(xproto::Gravity::NORTH_WEST)
+                        .colormap(colormap)
+                        .event_mask(xproto::EventMask::EXPOSURE),
+                ),
+            )?;
+            check_reply(
+                || "X11 MapWindow for the surface's child failed.",
+                xcb.map_window(surface_child),
+            )?;
+
             xcb_flush(xcb);
             log::info!(target: "silent::trace", "x11 window set up");
 
@@ -783,13 +827,13 @@ impl X11WindowState {
                         xcb,
                     ) as *mut _,
                     screen_id: x_screen_index,
-                    window_id: x_window,
+                    window_id: surface_child,
                     visual_id: visual.id,
                 };
                 let config = WgpuSurfaceConfig {
                     // Note: this has to be done after the GPU init, or otherwise
                     // the sizes are immediately invalidated.
-                    size: query_render_extent(xcb, x_window)?,
+                    size: query_render_extent(xcb, surface_child)?,
                     // We set it to transparent by default, even if we have client-side
                     // decorations, since those seem to work on X11 even without `true` here.
                     // If the window appearance changes, then the renderer will get updated
@@ -809,12 +853,6 @@ impl X11WindowState {
             log::info!(target: "silent::trace", "renderer");
 
             renderer.set_subpixel_layout(is_bgr);
-            {
-                let xcb = xcb.clone();
-                renderer.set_size_source(Box::new(move || {
-                    query_render_extent(&xcb, x_window).ok()
-                }));
-            }
 
             // Set max window size hints based on the GPU's maximum texture dimension.
             // This prevents the window from being resized larger than what the GPU can render.
@@ -895,6 +933,12 @@ impl X11WindowState {
                 last_sync_counter: None,
                 show: params.show,
                 first_request: true,
+                surface_child,
+                surface_child_size: (bounds.size.width.0 as u16, bounds.size.height.0 as u16),
+                window_size: (bounds.size.width.0 as u16, bounds.size.height.0 as u16),
+                resized_at: None,
+                dragging: false,
+                rested_frames: 0,
             })
         });
 
@@ -1341,11 +1385,15 @@ impl X11WindowStatePtr {
         bounds.map(|b| b.scale(scale_factor))
     }
 
+    /// silent: the child window the GPU presents into, whose exposures are the window's.
+    pub(crate) fn surface_child(&self) -> xproto::Window {
+        self.state.borrow().surface_child
+    }
+
     pub fn set_bounds(&self, bounds: Bounds<i32>) -> anyhow::Result<()> {
         // silent: the layout and the swapchain both take the event's size, without a round trip
         // to ask the server for a newer one: a window resized under the pointer keeps the server
-        // busy, and each round trip waits behind its resizes. A swapchain the window has outgrown
-        // by the time its frame is acquired is made again then, for the size the window has.
+        // busy, and each round trip waits behind its resizes.
         let gpu_size = Size {
             width: DevicePixels(bounds.size.width),
             height: DevicePixels(bounds.size.height),
@@ -1367,6 +1415,56 @@ impl X11WindowStatePtr {
 
             if let Some(renderer) = &mut state.renderer {
                 renderer.update_drawable_size(gpu_size);
+            }
+            // silent: see `surface_child`. While the window is dragged, the child takes the
+            // screen's size, or more where the window outgrows that, and keeps it until `draw`
+            // shrinks it once the size rests.
+            if is_resize {
+                let size = (gpu_size.width.0 as u16, gpu_size.height.0 as u16);
+                let now = std::time::Instant::now();
+                state.dragging |= state
+                    .resized_at
+                    .is_some_and(|at| now - at < std::time::Duration::from_millis(250));
+                state.window_size = size;
+                state.resized_at = Some(now);
+                state.rested_frames = 0;
+                let screen = &self.xcb.setup().roots[state.x_screen_index];
+                let (width, height) = state.surface_child_size;
+                let room = |window: u16, screen: u16, child: u16| {
+                    if window <= child && child >= screen {
+                        child
+                    } else if window <= screen {
+                        screen
+                    } else {
+                        window.saturating_add(window / 2)
+                    }
+                };
+                let most = state.renderer.as_ref().map_or(u16::MAX, |renderer| {
+                    renderer.max_texture_size().min(u32::from(u16::MAX)) as u16
+                });
+                let wanted = if state.dragging {
+                    (
+                        room(size.0, screen.width_in_pixels, width).min(most),
+                        room(size.1, screen.height_in_pixels, height).min(most),
+                    )
+                } else {
+                    size
+                };
+                if state.surface_child_size != wanted {
+                    state.surface_child_size = wanted;
+                    let _ = self.xcb.configure_window(
+                        state.surface_child,
+                        &xproto::ConfigureWindowAux::new()
+                            .width(u32::from(wanted.0))
+                            .height(u32::from(wanted.1)),
+                    );
+                    if let Some(renderer) = &mut state.renderer {
+                        renderer.set_surface_size(Size {
+                            width: DevicePixels(wanted.0.into()),
+                            height: DevicePixels(wanted.1.into()),
+                        });
+                    }
+                }
             }
             let result = (is_resize, state.content_size(), state.scale_factor);
             if let Some(value) = state.last_sync_counter.take() {
@@ -1813,6 +1911,46 @@ impl PlatformWindow for X11Window {
     fn draw(&self, scene: &Scene) {
         let mut inner = self.0.state.borrow_mut();
         let inner = &mut *inner;
+        // silent: once the size has rested for a tenth of a second, over two frames, the
+        // surface's child is the window's size again.
+        let rested = inner
+            .resized_at
+            .is_none_or(|at| at.elapsed() >= std::time::Duration::from_millis(100));
+        inner.rested_frames = if rested {
+            inner.rested_frames.saturating_add(1)
+        } else {
+            0
+        };
+        // A slow frame can hide resizes still queued; the server knows the size the window has.
+        if inner.rested_frames >= 2
+            && inner.surface_child_size != inner.window_size
+            && let Ok(geometry) = get_reply(
+                || "X11 GetGeometry failed.",
+                self.0.xcb.get_geometry(self.0.x_window),
+            )
+            && (geometry.width, geometry.height) != inner.window_size
+        {
+            inner.rested_frames = 0;
+        }
+        if inner.rested_frames >= 2 {
+            inner.dragging = false;
+        }
+        if inner.surface_child_size != inner.window_size && inner.rested_frames >= 2 {
+            let (width, height) = inner.window_size;
+            inner.surface_child_size = (width, height);
+            let _ = self.0.xcb.configure_window(
+                inner.surface_child,
+                &xproto::ConfigureWindowAux::new()
+                    .width(u32::from(width))
+                    .height(u32::from(height)),
+            );
+            if let Some(renderer) = &mut inner.renderer {
+                renderer.set_surface_size(Size {
+                    width: DevicePixels(width.into()),
+                    height: DevicePixels(height.into()),
+                });
+            }
+        }
         let Some(renderer) = &mut inner.renderer else {
             return;
         };
@@ -1823,7 +1961,7 @@ impl PlatformWindow for X11Window {
                     &*self.0.xcb,
                 ) as *mut _,
                 screen_id: inner.x_screen_index,
-                window_id: self.0.x_window,
+                window_id: inner.surface_child,
                 visual_id: inner.visual_id,
             };
             match renderer.recover(&raw_window) {

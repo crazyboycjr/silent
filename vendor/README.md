@@ -34,15 +34,22 @@ benchmarks), so `git log -p -- vendor` shows every change; in the code,
   next showing's first frame is marked as a first one again.
 - **A window resized under the pointer follows it** (`x11/client.rs`,
   `x11/window.rs`, `wgpu_renderer.rs`): of the ConfigureNotify events read
-  in one go, each window's last is handled, and the layout and the
-  swapchain take its size without a round trip to the server; a frame
-  whose swapchain the window outgrew while it was being made is drawn into
-  one made again for the size the window has then, when the size changes
-  slower than a swapchain is made, and a swapchain is never made again for
-  a size the window has left. While the size keeps changing, frames are
-  presented at once rather than at the vertical blank, and the window keeps
-  its last frame at its top left (north-west bit gravity) until the next is
-  drawn.
+  in one go, each window's last is handled, and the layout takes its size
+  without a round trip to the server. The GPU presents into a child of the
+  window rather than the window itself: NVIDIA's X11 surfaces put a
+  swapchain out of date at any change of their window's size, and making
+  one takes longer than the pointer takes to change the size again, so a
+  window presenting into itself got one to five frames a second to the
+  screen while it was dragged. While the size keeps changing (from a size
+  within a quarter of a second of the last), the child is as large as the
+  screen, or half as large again as a window that outgrows the screen, and
+  the window clips it, so that its swapchain stays good; once the size has
+  rested for a tenth of a second over two frames and the server has the
+  size last seen, the child is the window's size again. The child's
+  exposures are the window's. While the size keeps
+  changing, frames are presented at once rather than at the vertical
+  blank, and the window keeps its last frame at its top left (north-west
+  bit gravity) until the next is drawn.
 
 - **Mailbox under a compositor** (`x11/window.rs`): a window's frames
   present with mailbox when a compositor owns the screen's

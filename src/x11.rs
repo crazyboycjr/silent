@@ -8,8 +8,8 @@ use x11rb::connection::Connection;
 use x11rb::properties::WmHints;
 use x11rb::protocol::randr::ConnectionExt as _;
 use x11rb::protocol::xproto::{
-    AtomEnum, ClientMessageEvent, ConfigureWindowAux, ConnectionExt as _, EventMask, InputFocus,
-    PropMode, UNMAP_NOTIFY_EVENT, UnmapNotifyEvent,
+    AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConfigureWindowAux,
+    ConnectionExt as _, EventMask, InputFocus, PropMode, UNMAP_NOTIFY_EVENT, UnmapNotifyEvent,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
@@ -269,6 +269,19 @@ impl X11 {
             EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
             event,
         )?;
+        self.conn.flush()?;
+        Ok(())
+    }
+
+    /// The colour the X server fills `window`'s newly exposed parts with
+    /// before its next frame, opaque on a window with alpha too; its
+    /// children's too, as a child the frames go into.
+    pub fn set_background(&self, window: u32, rgb: u32) -> Result<(), Box<dyn Error>> {
+        let aux = ChangeWindowAttributesAux::new().background_pixel(0xff00_0000 | rgb);
+        let tree = self.conn.query_tree(window)?.reply()?;
+        for w in std::iter::once(window).chain(tree.children) {
+            self.conn.change_window_attributes(w, &aux)?;
+        }
         self.conn.flush()?;
         Ok(())
     }

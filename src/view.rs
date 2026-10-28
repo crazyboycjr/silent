@@ -74,6 +74,8 @@ pub struct Preview {
     /// Whether the first frame of the content is marked, or has none to
     /// mark: the blank a withdrawn window holds is never on the screen.
     traced: bool,
+    /// The ground the window was given last, as 0xRRGGBB.
+    ground: Option<u32>,
     /// What has been typed of a vim command.
     keys: Keys,
     /// The minimap's and the rail's modes, read when first needed.
@@ -286,6 +288,7 @@ impl Preview {
             rounded,
             input,
             traced,
+            ground: None,
             keys: Keys::default(),
             minimap: None,
             rail: None,
@@ -1812,6 +1815,17 @@ impl Render for Preview {
         if !self.traced && self.ready(cx) {
             self.traced = true;
             window.on_next_frame(|_, _| trace::mark("first frame"));
+        }
+        // The X server fills the strip a growing window gains with the
+        // window's own background until silent's frame for the new size is
+        // on the screen: the content's ground, not black.
+        let ground = Rgba::from(self.ground(theme));
+        let ground = [ground.r, ground.g, ground.b]
+            .into_iter()
+            .fold(0, |rgb, c| rgb << 8 | (c * 255.).round() as u32);
+        if self.ground != Some(ground) {
+            self.ground = Some(ground);
+            self.intent(Intent::Ground(ground));
         }
         let engaged = self.engaged(window, cx);
         let body = match (&self.loaded.body, &self.image) {
