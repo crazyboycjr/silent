@@ -97,6 +97,9 @@ pub struct RenderSettings {
     /// The background color. Determines the color of the base
     /// rectangle during rendering to a pixmap.
     pub bg_color: AlphaColor<Srgb>,
+    /// silent: where the viewport's top left corner is on the scaled page,
+    /// in pixels, so that a part of a page drawn large can be drawn alone.
+    pub origin: (f32, f32),
 }
 
 impl Default for RenderSettings {
@@ -107,6 +110,7 @@ impl Default for RenderSettings {
             width: None,
             height: None,
             bg_color: TRANSPARENT,
+            origin: (0.0, 0.0),
         }
     }
 }
@@ -121,7 +125,10 @@ pub fn render<'a>(
     let (x_scale, y_scale) = (render_settings.x_scale, render_settings.y_scale);
     let (width, height) = page.render_dimensions();
     let (scaled_width, scaled_height) = ((width * x_scale) as f64, (height * y_scale) as f64);
-    let initial_transform = Affine::scale_non_uniform(x_scale as f64, y_scale as f64)
+    // silent: the viewport may start anywhere on the scaled page.
+    let (left, top) = render_settings.origin;
+    let initial_transform = Affine::translate((-left as f64, -top as f64))
+        * Affine::scale_non_uniform(x_scale as f64, y_scale as f64)
         * page.initial_transform(true).to_kurbo();
 
     let (pix_width, pix_height) = (

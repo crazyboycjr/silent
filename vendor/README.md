@@ -121,5 +121,13 @@ code, `silent:` comments mark them.
   element or the nearest one above, as the page or silent's sheet sets
   it, silent's amber by default, and the blue only failing that.
 
-To take a newer gpui or Blitz, copy its crates over these, drop their
-`Cargo.lock` and benchmarks, and carry the changes over.
+- **A part of a PDF page drawn alone** (`hayro`, `src/lib.rs`): hayro
+  draws a page into a pixmap from the page's top left corner, so the part
+  of a page in view, zoomed fourfold, could only be had by drawing the
+  whole page fourfold, 150 MB for a page of A4 on a 4K screen.
+  `RenderSettings` takes an `origin`, where the pixmap's top left corner
+  lies on the page as scaled; the page is moved by it before it is drawn.
+  gpui-pdf's renderer leaves it at zero.
+
+To take a newer gpui, Blitz or hayro, copy its crates over these, drop
+their `Cargo.lock` and benchmarks, and carry the changes over.
