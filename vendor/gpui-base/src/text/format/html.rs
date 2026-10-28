@@ -111,12 +111,32 @@ pub(crate) fn parse(source: &str, cx: &mut NodeContext) -> Result<ParsedDocument
     // NOTE: The outer paragraph is not used.
     let node: BlockNode =
         parse_node(&dom.document, &mut paragraph, cx).unwrap_or(BlockNode::Unknown);
-    let node = node.compact();
+    // silent: the page's blocks with the containers around them opened, as
+    // Markdown's are, so that the list lays out only those in view: as one
+    // block, the whole page was laid out in every frame, 150 ms for 250 KB.
+    // A container draws nothing of its own, and its first block already
+    // stood where the container stood.
+    let mut blocks = Vec::new();
+    open_containers(node.compact(), &mut blocks);
+    if blocks.is_empty() {
+        blocks.push(BlockNode::Unknown);
+    }
 
     Ok(ParsedDocument {
         source: source.to_string().into(),
-        blocks: Arc::new(vec![node]),
+        blocks: Arc::new(blocks),
     })
+}
+
+fn open_containers(node: BlockNode, blocks: &mut Vec<BlockNode>) {
+    match node {
+        BlockNode::Root { children, .. } => {
+            for child in children {
+                open_containers(child, blocks);
+            }
+        }
+        node => blocks.push(node),
+    }
 }
 
 fn cleanup_html(source: &str) -> Vec<u8> {

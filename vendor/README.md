@@ -73,5 +73,13 @@ code, `silent:` comments mark them.
   sixteen a frame from the second frame after the change, their old
   heights standing in meanwhile.
 
+- **HTML pages as lists of their blocks** (`gpui-base`,
+  `src/text/format/html.rs`): the parser gave a page as one block, which
+  the list laid out whole in every frame, 150 ms for a 250 KB page, even
+  to scroll. The containers around the blocks are opened, so the list
+  holds the blocks as it does Markdown's. A container draws nothing of its
+  own; what changes is the gap under a heading followed by a container's
+  first block, which now follows the heading as in Markdown.
+
 To take a newer gpui, copy its crates over these, drop their `Cargo.lock`
 and benchmarks, and carry the changes over.
