@@ -10,7 +10,10 @@ code, `silent:` comments mark them.
 - **Start-up marks**, everywhere: log records with the target
   `silent::trace`, which silent prints with `SILENT_TRACE` set, and with
   the target `silent::frames` each frame's configure, swapchain and
-  present, printed with `SILENT_TRACE=frames`.
+  present, printed with `SILENT_TRACE=frames`. Each frame's line also tells
+  the lines shaped, the glyphs rasterized and the tiles put in the atlas
+  since the last frame, and how long the renderer took to acquire, encode
+  and present it (`frame_tally.rs`).
 - **Vulkan alone** (`wgpu_context.rs`): with gpui's XCB display, wgpu's GL
   backend asks EGL for its XCB platform, which NVIDIA's EGL lacks; Mesa's
   EGL then takes the NVIDIA card and fails, costing 90 ms a start and once

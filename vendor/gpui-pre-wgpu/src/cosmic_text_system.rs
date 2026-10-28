@@ -263,8 +263,9 @@ impl PlatformTextSystem for CosmicTextSystem {
         self.0.read().glyph_for_char(font_id, ch)
     }
 
+    // silent: glyphs rendered (here, before their tiles) and lines shaped are tallied.
     fn glyph_raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
-        self.0.write().raster_bounds(params)
+        crate::frame_tally::RASTERIZED.time(1, || self.0.write().raster_bounds(params))
     }
 
     fn rasterize_glyph(
@@ -272,11 +273,13 @@ impl PlatformTextSystem for CosmicTextSystem {
         params: &RenderGlyphParams,
         raster_bounds: Bounds<DevicePixels>,
     ) -> Result<(Size<DevicePixels>, Vec<u8>)> {
-        self.0.write().rasterize_glyph(params, raster_bounds)
+        crate::frame_tally::RASTERIZED.time(0, || {
+            self.0.write().rasterize_glyph(params, raster_bounds)
+        })
     }
 
     fn layout_line(&self, text: &str, font_size: Pixels, runs: &[FontRun]) -> LineLayout {
-        self.0.write().layout_line(text, font_size, runs)
+        crate::frame_tally::SHAPED.time(1, || self.0.write().layout_line(text, font_size, runs))
     }
 
     fn recommended_rendering_mode(

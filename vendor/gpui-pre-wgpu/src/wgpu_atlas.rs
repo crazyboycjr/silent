@@ -201,6 +201,7 @@ impl WgpuAtlasTextures {
             AtlasTextureKind::Subpixel | AtlasTextureKind::Polychrome => self.color_texture_format,
         };
 
+        crate::frame_tally::TEXTURES.add(1, 0);
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("atlas"),
             size: wgpu::Extent3d {
@@ -259,6 +260,7 @@ impl WgpuAtlasTextures {
             .get(id)
             .map(|texture| swizzle_upload_data(bytes, texture.format))
             .unwrap_or_else(|| bytes.to_vec());
+        crate::frame_tally::UPLOADED.add(1, data.len() as u64);
 
         self.pending_uploads
             .push(PendingUpload { id, bounds, data });

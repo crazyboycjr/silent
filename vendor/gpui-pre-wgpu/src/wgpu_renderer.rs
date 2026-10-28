@@ -1280,6 +1280,7 @@ impl WgpuRenderer {
 
         // silent: the first frame's steps are marked, for each showing of the window.
         let first = !self.presented;
+        let started = std::time::Instant::now();
         let mut acquired = surface.get_current_texture();
         // silent: a window being resized has often outgrown the swapchain just made for it by
         // the time its frame is acquired. The swapchain is made again for the size the window
@@ -1375,6 +1376,7 @@ impl WgpuRenderer {
         let frame_view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        let acquired_at = std::time::Instant::now();
         let premultiplied_alpha =
             self.surface_config.alpha_mode == wgpu::CompositeAlphaMode::PreMultiplied;
         if let Err(error) = core.render_frame(
@@ -1390,9 +1392,23 @@ impl WgpuRenderer {
         if first {
             log::info!(target: "silent::trace", "encoded");
         }
+        let encoded_at = std::time::Instant::now();
 
         frame.present();
         self.presented = true;
+        if crate::frame_tally::on() {
+            let ms = |from: std::time::Instant, to: std::time::Instant| {
+                (to - from).as_secs_f64() * 1e3
+            };
+            log::debug!(
+                target: "silent::frames",
+                "frame: {}, acquired in {:.1} ms, encoded in {:.1} ms, presented in {:.1} ms",
+                crate::frame_tally::since_last(),
+                ms(started, acquired_at),
+                ms(acquired_at, encoded_at),
+                ms(encoded_at, std::time::Instant::now())
+            );
+        }
         log::debug!(
             target: "silent::frames",
             "presented {}x{}",
