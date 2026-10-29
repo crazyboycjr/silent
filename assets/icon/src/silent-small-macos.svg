@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" width="32" height="32" viewBox="0 0 32 32">
+  <title>silent</title>
+  <!-- silent's icon for macOS at 16 and 32 px: the small drawing set into
+       Apple's tile at 0.875, with the moonlit edge on the tile. -->
+  <defs>
+    <path id="body" d="M11.63 2L20.37 2C23.14 2 24.53 2 25.78 2.41L26.02 2.47C27.65 3.07 28.93 4.35 29.53 5.98L29.59 6.22C30 7.47 30 8.86 30 11.63L30 20.37C30 23.14 30 24.53 29.59 25.78L29.53 26.02C28.93 27.65 27.65 28.93 26.02 29.53L25.78 29.59C24.53 30 23.14 30 20.37 30L11.63 30C8.86 30 7.47 30 6.22 29.59L5.98 29.53C4.35 28.93 3.07 27.65 2.47 26.02L2.41 25.78C2 24.53 2 23.14 2 20.37L2 11.63C2 8.86 2 7.47 2.41 6.22L2.47 5.98C3.07 4.35 4.35 3.07 5.98 2.47L6.22 2.41C7.47 2 8.86 2 11.63 2Z"/>
+    <clipPath id="inside"><use xlink:href="#body"/></clipPath>
+    <linearGradient id="night" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#262d59"/>
+      <stop offset="1" stop-color="#11152d"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation=".9"/></filter>
+    <path id="horn" d="M12.6 9.2C11.6 7 10.6 4.7 9.3 2.2C11.2 3.8 13 5.7 15 7.6Z"/>
+  </defs>
+  <use xlink:href="#body" fill="url(#night)"/>
+  <g clip-path="url(#inside)">
+    <g transform="translate(16 16) scale(.875) translate(-16 -16)">
+      <use xlink:href="#horn" fill="#5a4130"/>
+      <use xlink:href="#horn" fill="#5a4130" transform="translate(32 0) scale(-1 1)"/>
+      <path d="M5.1 35C5.1 24.9 7.2 17.4 10.4 12.2C12.4 9.1 14.2 6.5 16 3.7C17.8 6.5 19.6 9.1 21.6 12.2C24.8 17.4 26.9 24.9 26.9 35Z" fill="#16261a"/>
+      <path d="M16 8.5C18.5 10.6 20.5 13.8 20.5 17.7C20.5 21.4 18.6 23.9 16 24.5C13.4 23.9 11.5 21.4 11.5 17.7C11.5 13.8 13.5 10.6 16 8.5Z" fill="#070a08"/>
+      <path d="M-3 23.6C5 21.2 13.2 19.5 21 18.8C23.4 18.6 25.2 19.4 25.2 21C25.3 22.6 23.8 23.6 21.8 23.8C14.4 24.6 6.6 26.4 -3 30Z" fill="#1a2e1c"/>
+      <g fill="none" stroke="#c6f544" stroke-width="1.2" stroke-linecap="round">
+        <path d="M16 3.7C14.2 6.5 12.4 9.1 10.4 12.2C7.2 17.4 5.1 24.9 5.1 35"/>
+        <path d="M-3 23.6C5 21.2 13.2 19.5 21 18.8C23.4 18.6 25.2 19.4 25.2 21"/>
+      </g>
+      <g fill="#b8f02e" filter="url(#glow)">
+        <ellipse cx="14.1" cy="14.6" rx="1.9" ry="1.1"/>
+        <ellipse cx="17.9" cy="14.6" rx="1.9" ry="1.1"/>
+      </g>
+      <g fill="#eaff96">
+        <ellipse cx="14.1" cy="14.6" rx="1.5" ry=".8"/>
+        <ellipse cx="17.9" cy="14.6" rx="1.5" ry=".8"/>
+      </g>
+    </g>
+    <use xlink:href="#body" fill="none" stroke="#b4bcf0" stroke-opacity=".42" stroke-width="1.2"/>
+  </g>
+</svg>

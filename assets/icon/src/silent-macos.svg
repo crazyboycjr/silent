@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>silent</title>
+  <!-- silent's icon, macOS master. A hooded, horned figure drawn in darkness
+       on darkness; only the acid rim along the hood and the raised arm, and
+       the two eyes, are lit. The night ground is lifted a little at the top
+       and the tile carries a fine moonlit edge, so it stays separate from a
+       dark Dock, dark tabs and dark pages.
+       Body: Apple's 824 grid on a 1024 canvas, continuous corners (r 185.4). -->
+  <defs>
+    <path id="body" d="M383.41 100L640.59 100C722.19 100 763 100 799.79 112.14L806.92 113.89C854.88 131.34 892.66 169.12 910.11 217.08L911.86 224.21C924 261 924 301.81 924 383.41L924 640.59C924 722.19 924 763 911.86 799.79L910.11 806.92C892.66 854.88 854.88 892.66 806.92 910.11L799.79 911.86C763 924 722.19 924 640.59 924L383.41 924C301.81 924 261 924 224.21 911.86L217.08 910.11C169.12 892.66 131.34 854.88 113.89 806.92L112.14 799.79C100 763 100 722.19 100 640.59L100 383.41C100 301.81 100 261 112.14 224.21L113.89 217.08C131.34 169.12 169.12 131.34 217.08 113.89L224.21 112.14C261 100 301.81 100 383.41 100Z"/>
+    <clipPath id="inside"><use xlink:href="#body"/></clipPath>
+    <linearGradient id="night" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#252c57"/>
+      <stop offset=".55" stop-color="#161b38"/>
+      <stop offset="1" stop-color="#0f1329"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b4bcf0" stop-opacity=".55"/>
+      <stop offset=".5" stop-color="#b4bcf0" stop-opacity=".2"/>
+      <stop offset="1" stop-color="#b4bcf0" stop-opacity=".3"/>
+    </linearGradient>
+    <filter id="blur16" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="16"/></filter>
+    <filter id="blur3" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation="3"/></filter>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="16"/></filter>
+    <filter id="haze" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="7"/></filter>
+    <path id="horn" d="M424 338C398 280 372 222 340 156C388 198 434 246 486 296Z"/>
+    <g id="rims" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M512 196C466 266 418 334 368 414C286 548 232 740 232 960"/>
+      <path d="M60 700C230 646 440 602 640 584C702 578 748 600 750 640"/>
+    </g>
+  </defs>
+  <use xlink:href="#body" fill="#000" opacity=".3" filter="url(#blur16)" transform="translate(0 12)"/>
+  <use xlink:href="#body" fill="#000" opacity=".14" filter="url(#blur3)" transform="translate(0 3)"/>
+  <use xlink:href="#body" fill="url(#night)"/>
+  <g clip-path="url(#inside)">
+    <path d="M900 180A330 330 0 1 1 610 700A290 290 0 1 0 900 180Z" fill="#232b58" opacity=".8"/>
+    <use xlink:href="#horn" fill="#4b3628"/>
+    <use xlink:href="#horn" fill="#4b3628" transform="translate(1024 0) scale(-1 1)"/>
+    <g stroke="#1b140f" stroke-width="9" stroke-linecap="round">
+      <path d="M404 290L446 268"/>
+      <path d="M382 244L416 226"/>
+      <path d="M362 202L388 188"/>
+      <path d="M620 290L578 268"/>
+      <path d="M642 244L608 226"/>
+      <path d="M662 202L636 188"/>
+    </g>
+    <path d="M232 960C232 740 286 548 368 414C418 334 466 266 512 196C558 266 606 334 656 414C738 548 792 740 792 960Z" fill="#132017"/>
+    <path d="M512 318C576 372 628 456 628 556C628 650 578 716 512 730C446 716 396 650 396 556C396 456 448 372 512 318Z" fill="#070a08"/>
+    <path d="M60 700C230 646 440 602 640 584C702 578 748 600 750 640C752 682 714 708 660 714C470 734 270 780 60 860Z" fill="#17291a"/>
+    <use xlink:href="#rims" stroke="#b8f02e" stroke-width="30" opacity=".45" filter="url(#haze)"/>
+    <use xlink:href="#rims" stroke="#c6f544" stroke-width="13"/>
+    <g fill="#b8f02e" filter="url(#glow)">
+      <ellipse cx="468" cy="472" rx="44" ry="22"/>
+      <ellipse cx="556" cy="472" rx="44" ry="22"/>
+    </g>
+    <g fill="#e6ff8a">
+      <path d="M432 474C448 452 482 448 504 466C488 488 454 492 432 474Z"/>
+      <path d="M592 474C576 452 542 448 520 466C536 488 570 492 592 474Z"/>
+    </g>
+    <!-- the fine moonlit edge, inside the tile -->
+    <use xlink:href="#body" fill="none" stroke="url(#edge)" stroke-width="14"/>
+  </g>
+</svg>
