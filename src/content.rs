@@ -35,12 +35,12 @@ const CARD: (f64, f64) = (600.0, 340.0);
 const AUDIO_CARD: (f64, f64) = (640.0, 300.0);
 /// Text beyond this is not read; the head is shown.
 pub const TEXT_LIMIT: usize = 2 << 20;
-/// Markdown and HTML past this open as their source, unless `s` asks: the
-/// text view parses and lays out every block of a document before its first
-/// frame, some 0.4 ms a kilobyte.
+/// Markdown past this opens as its source, unless `s` asks: the text view
+/// parses and lays out every block of a document before its first frame,
+/// some 0.4 ms a kilobyte.
 const RENDER_LIMIT: usize = 256 << 10;
-/// The same for pages laid out by Blitz, which takes 50 ms for a 126 KB
-/// page and 120 to 320 ms for most of 0.4 to 1.8 MB; past `PAGE_TIME` a
+/// The same for HTML, which Blitz lays out in 50 ms for a 126 KB page and
+/// in 120 to 320 ms for most of 0.4 to 1.8 MB; past `PAGE_TIME` a
 /// page opens as its source all the same, unless `s` asked: a few take
 /// seconds, such as one of 150 KB with 275 tables.
 const PAGE_LIMIT: usize = 1 << 20;
@@ -92,7 +92,7 @@ pub enum Body {
     Pdf(Pdf),
     Text(Box<Text>),
     Rendered(Box<Rendered>),
-    /// HTML, or Markdown made HTML, laid out by Blitz.
+    /// HTML laid out by Blitz.
     Page(Box<crate::web::Page>),
     Hex(Hex),
     Archive(Archive),
@@ -329,24 +329,22 @@ pub fn load_as(
             Some((bytes, truncated)) => {
                 loaded.markup = Markup::of(&path);
                 let left_as_source = matches!(loaded.view, Some(View::Lines { .. }));
-                let by_blitz = |markup| markup == Markup::Html || web::markdown_by_blitz();
                 let short = |markup| {
-                    let limit = if by_blitz(markup) {
-                        PAGE_LIMIT
-                    } else {
-                        RENDER_LIMIT
+                    let limit = match markup {
+                        Markup::Html => PAGE_LIMIT,
+                        Markup::Markdown => RENDER_LIMIT,
                     };
                     bytes.len() <= limit
                 };
                 let shown = loaded.markup.filter(|&markup| {
                     !truncated && rendered.unwrap_or(short(markup) && !left_as_source)
                 });
-                let page = shown.filter(|&markup| by_blitz(markup)).map(|markup| {
+                let page = shown.filter(|&markup| markup == Markup::Html).map(|_| {
                     // Asked for with s, a page takes as long as it takes.
                     let within = rendered.is_none().then_some(PAGE_TIME);
                     let view = loaded.view.as_ref();
                     let text = decode_text(&bytes);
-                    web::open(text, markup, &path, screen, zoom::level(), view, within)
+                    web::open(text, &path, screen, zoom::level(), view, within)
                 });
                 match (shown, page) {
                     (_, Some(Ok(page))) => (page.size, 0., Body::Page(Box::new(page))),

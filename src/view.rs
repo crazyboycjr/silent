@@ -629,7 +629,7 @@ impl Preview {
             Pane::Rendered(_) => {
                 Subject::Rendered(self.loaded.markup.unwrap_or(Markup::Markdown))
             }
-            Pane::Page(p) => Subject::Rendered(p.read(cx).markup()),
+            Pane::Page(_) => Subject::Rendered(Markup::Html),
             Pane::Pdf(_) => Subject::Pdf,
             Pane::Slides(_) => Subject::Slides,
             Pane::Doc(_) => Subject::Document,
@@ -804,7 +804,6 @@ impl Preview {
             Act::Strip => self.cycle_strip(window, cx),
             Act::Wrap => self.toggle_wrap(window, cx),
             Act::Source => self.toggle_source(window, cx),
-            Act::Engine => self.flip_engine(window, cx),
             Act::Help => self.help = !self.help,
             Act::Turn(clockwise) => self.turn(clockwise, window, cx),
             Act::Zoom(zoom) => self.step_zoom(zoom, None, window, cx),
@@ -1008,21 +1007,6 @@ impl Preview {
         let rendered = !matches!(self.pane, Pane::Rendered(_) | Pane::Page(_));
         let word = if rendered { "Rendered" } else { "Source" };
         self.read_again(rendered, word, window, cx);
-    }
-
-    /// B: rendered Markdown drawn by the text view or by Blitz, this file
-    /// and the next, so that the two can be compared.
-    fn flip_engine(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rendered = matches!(self.pane, Pane::Rendered(_) | Pane::Page(_));
-        if self.loaded.markup != Some(Markup::Markdown) || !rendered || self.switching.is_some() {
-            return;
-        }
-        let word = if crate::web::flip_markdown() {
-            "Markdown by Blitz"
-        } else {
-            "Markdown by the text view"
-        };
-        self.read_again(true, word, window, cx);
     }
 
     /// The file read again, rendered or as its source, into the window as

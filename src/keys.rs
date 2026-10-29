@@ -104,9 +104,6 @@ pub enum Act {
     Wrap,
     /// s: Markdown and HTML rendered, or their source.
     Source,
-    /// B: rendered Markdown drawn by the text view or by Blitz, to compare
-    /// them; kept off the card of keys while the user decides.
-    Engine,
     /// ? or F1: the card of silent's keys, shown or taken away.
     Help,
     /// r: a quarter turn of a picture, a PDF or a video, clockwise; with
@@ -247,7 +244,6 @@ pub fn route(kind: Kind, engaged: bool, key: &str, mods: Mods, held: bool, vim: 
         (false, "i") => once(Act::Strip),
         (false, "w") if kind == Kind::Lines => once(Act::Wrap),
         (false, "s") if matches!(kind, Kind::Lines | Kind::Rendered) => once(Act::Source),
-        (true, "b") | (_, "B") if kind == Kind::Rendered => once(Act::Engine),
         // GPUI names Shift with / by the character, but not every layout.
         (_, "?") | (true, "/") | (false, "f1") => once(Act::Help),
         (false, "r") if kind.turns() => once(Act::Turn(true)),
@@ -486,9 +482,9 @@ mod tests {
     }
 
     #[test]
-    fn shift_b_flips_what_draws_rendered_markdown_and_nothing_else() {
-        assert_eq!(shifted(Kind::Rendered, "b"), Act::Engine);
-        assert_eq!(press(Kind::Rendered, false, "B"), Act::Engine);
+    fn b_is_no_key() {
+        assert_eq!(shifted(Kind::Rendered, "b"), Act::Pass);
+        assert_eq!(press(Kind::Rendered, false, "B"), Act::Pass);
         assert_eq!(press(Kind::Rendered, false, "b"), Act::Pass);
         assert_eq!(shifted(Kind::Lines, "b"), Act::Pass);
     }

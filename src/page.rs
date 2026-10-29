@@ -14,7 +14,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::*;
-use silent::markup::Markup;
 use silent::memory::View;
 use silent::vim::Motion;
 
@@ -39,7 +38,6 @@ const RELAYOUT: Duration = Duration::from_millis(50);
 
 pub struct PagePane {
     doc: Doc,
-    markup: Markup,
     dir: Arc<PathBuf>,
     /// The scroll, in CSS pixels from the page's top.
     top: f64,
@@ -92,7 +90,6 @@ impl PagePane {
         let mut pane = Self {
             height: web::height(&page.doc),
             doc: page.doc,
-            markup: page.markup,
             dir: Arc::new(page.dir),
             top: page.top,
             size: (page.size.0.max(1) as u32, page.size.1.max(1) as u32),
@@ -115,10 +112,6 @@ impl PagePane {
             pane.window = Some((pane.device(pane.top), image));
         }
         pane
-    }
-
-    pub fn markup(&self) -> Markup {
-        self.markup
     }
 
     /// Lets the window's atlas go of the pictures drawn.

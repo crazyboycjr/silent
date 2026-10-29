@@ -1,15 +1,10 @@
-//! Web pages laid out by Blitz: an HTML file as it is, with its own CSS, or
-//! Markdown made HTML by comrak (GitHub's flavour, raw HTML kept) in
-//! silent's sheet, GitHub's layout in silent's colours. silent's paper, ink
-//! and fonts fill in only where a page says nothing. Nothing is fetched:
+//! HTML pages laid out by Blitz, as they are, with their own CSS: silent's
+//! paper, ink and fonts fill in only where a page says nothing. Nothing is fetched:
 //! files beside the page are read, and a picture from anywhere else becomes
 //! its words. vello_cpu paints the page into pictures for gpui, on the
 //! thread that holds the document.
 
-use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,14 +18,12 @@ use blitz_html::HtmlDocument;
 use blitz_traits::net::{Bytes, NetHandler, NetProvider, Request, Url};
 use blitz_traits::shell::{ColorScheme, Viewport};
 use gpui_kit::RenderImage;
-use gpui_kit::component::highlighter::{HighlightTheme, Language, SyntaxHighlighter};
 use silent::geometry::Screen;
-use silent::markup::{self, Markup};
+use silent::markup;
 use silent::memory::View;
 use smallvec::SmallVec;
 
 const PAGE_CSS: &str = include_str!("page.css");
-const MARKDOWN_CSS: &str = include_str!("markdown.css");
 
 /// The column pages are read in, in logical pixels, as the text view's.
 pub const COLUMN: f64 = 860.0;
@@ -40,19 +33,6 @@ const SHORTEST: f64 = 12.0 * 22.0 + 80.0;
 const TALLEST: f64 = 44.0 * 22.0 + 80.0;
 /// The device rows a strip of a page holds.
 pub const STRIP: u32 = 512;
-
-/// Whether Markdown is drawn by Blitz rather than the text view: B flips it
-/// for the files that follow, until silent stops.
-static MARKDOWN_BY_BLITZ: AtomicBool = AtomicBool::new(false);
-
-pub fn markdown_by_blitz() -> bool {
-    MARKDOWN_BY_BLITZ.load(Ordering::Relaxed)
-}
-
-/// B: Markdown drawn by the other one from now on; whether by Blitz.
-pub fn flip_markdown() -> bool {
-    !MARKDOWN_BY_BLITZ.fetch_xor(true, Ordering::Relaxed)
-}
 
 /// Whether the desktop is dark, as a window last saw it, for pages laid
 /// out before their window is drawn.
@@ -107,7 +87,6 @@ impl DerefMut for Doc {
 /// A page laid out, ready for its window.
 pub struct Page {
     pub doc: Doc,
-    pub markup: Markup,
     /// Where the file is, for its relative links.
     pub dir: PathBuf,
     /// The window's size in root-window pixels, which the layout fits.
@@ -150,13 +129,9 @@ fn fonts() -> FontContext {
 }
 
 /// Blitz's user-agent sheet and silent's, parsed once.
-fn sheets(markup: Markup) -> Vec<UserAgentStylesheet> {
+fn sheets() -> Vec<UserAgentStylesheet> {
     static PAGE: OnceLock<UserAgentStylesheet> = OnceLock::new();
-    static MARKDOWN: OnceLock<UserAgentStylesheet> = OnceLock::new();
-    let ours = match markup {
-        Markup::Html => PAGE.get_or_init(|| UserAgentStylesheet::parse(PAGE_CSS)),
-        Markup::Markdown => MARKDOWN.get_or_init(|| UserAgentStylesheet::parse(MARKDOWN_CSS)),
-    };
+    let ours = PAGE.get_or_init(|| UserAgentStylesheet::parse(PAGE_CSS));
     vec![UserAgentStylesheet::default_sheet(), ours.clone()]
 }
 
@@ -168,13 +143,12 @@ pub fn prepare() {
     ONCE.call_once(|| {
         let _ = std::thread::Builder::new().name("pages".into()).spawn(|| {
             let _ = fonts();
-            sheets(Markup::Html);
-            sheets(Markup::Markdown);
+            sheets();
             blitz_dom::util::prepare_svg_fonts();
-            let primer = "# Page\n\nSome *text* with `code`, a [link](#page).\n\n- one\n";
-            let html = markdown_html(primer);
+            let primer = "<!DOCTYPE html><h1 id=page>Page</h1><p>Some <em>text</em> with \
+                          <code>code</code>, a <a href=#page>link</a>.</p><ul><li>one</ul>";
             let viewport = Viewport::new(800, 600, 1.0, ColorScheme::Light);
-            let mut doc = document(&html, Markup::Markdown, None, viewport);
+            let mut doc = document(primer, None, viewport);
             doc.resolve(0.0);
             let _ = paint(&mut doc, 0.0, 800, 600, paper(false));
         });
@@ -218,11 +192,11 @@ fn data_url(url: &str) -> Option<Vec<u8>> {
     }
 }
 
-fn document(html: &str, markup: Markup, base: Option<&Url>, viewport: Viewport) -> Doc {
+fn document(html: &str, base: Option<&Url>, viewport: Viewport) -> Doc {
     let config = DocumentConfig {
         viewport: Some(viewport),
         base_url: base.map(Url::to_string),
-        ua_stylesheets: sheets(markup),
+        ua_stylesheets: sheets(),
         net_provider: Some(Arc::new(LocalOnly)),
         font_ctx: Some(fonts()),
         ..Default::default()
@@ -266,156 +240,6 @@ fn words_for_pictures(doc: &mut BaseDocument) {
             mutator.replace_node_with(*id, &[text]);
         }
     }
-}
-
-/// GitHub-flavoured Markdown, raw HTML kept, made a page for silent's
-/// Markdown sheet, its code coloured by silent's highlighter.
-pub fn markdown_html(text: &str) -> String {
-    let mut options = comrak::Options::default();
-    options.extension.strikethrough = true;
-    options.extension.table = true;
-    options.extension.autolink = true;
-    options.extension.tasklist = true;
-    options.extension.footnotes = true;
-    options.extension.alerts = true;
-    options.extension.header_id_prefix = Some(String::new());
-    options.render.r#unsafe = true;
-    options.render.tasklist_classes = true;
-    let mut plugins = comrak::options::Plugins::default();
-    plugins.render.codefence_syntax_highlighter = Some(&Highlighter);
-    let body = comrak::markdown_to_html_with_plugins(text, &options, &plugins);
-    format!(
-        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head>\
-         <body><article class=\"markdown-body\">{body}</article></body></html>"
-    )
-}
-
-/// Fenced code through the tree-sitter highlighter silent's text view uses,
-/// each run with its light and its dark colour, which the sheet picks from.
-struct Highlighter;
-
-impl comrak::adapters::SyntaxHighlighterAdapter for Highlighter {
-    fn write_highlighted(
-        &self,
-        output: &mut dyn fmt::Write,
-        lang: Option<&str>,
-        code: &str,
-    ) -> fmt::Result {
-        let language = lang
-            .and_then(|info| info.split([',', ' ', '{']).next())
-            .map(|name| Language::from_str(&name.to_ascii_lowercase()))
-            .filter(|language| *language != Language::Plain);
-        let Some(language) = language else {
-            return escape(output, code);
-        };
-        for (range, light, dark) in coloured(language.name(), code) {
-            let text = &code[range];
-            match (light, dark) {
-                (None, None) => escape(output, text)?,
-                (light, dark) => {
-                    output.write_str("<span style=\"")?;
-                    if let Some(light) = light {
-                        write!(output, "--l:{light};")?;
-                    }
-                    if let Some(dark) = dark {
-                        write!(output, "--d:{dark};")?;
-                    }
-                    output.write_str("\">")?;
-                    escape(output, text)?;
-                    output.write_str("</span>")?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn write_pre_tag(
-        &self,
-        output: &mut dyn fmt::Write,
-        attributes: HashMap<&'static str, Cow<'_, str>>,
-    ) -> fmt::Result {
-        comrak::html::write_opening_tag(output, "pre", attributes)
-    }
-
-    fn write_code_tag(
-        &self,
-        output: &mut dyn fmt::Write,
-        attributes: HashMap<&'static str, Cow<'_, str>>,
-    ) -> fmt::Result {
-        comrak::html::write_opening_tag(output, "code", attributes)
-    }
-}
-
-/// `code` in runs, each with its colour in the light and the dark theme, as
-/// `#rrggbb`; runs the themes leave alone have none.
-fn coloured(
-    language: &str,
-    code: &str,
-) -> Vec<(std::ops::Range<usize>, Option<String>, Option<String>)> {
-    let mut highlighter = SyntaxHighlighter::new(language);
-    highlighter.update(None, &ropey::Rope::from_str(code), None);
-    let all = 0..code.len();
-    let hex = |style: &gpui_kit::HighlightStyle| {
-        style.color.map(|color| {
-            let rgba = gpui_kit::Rgba::from(color);
-            let byte = |c: f32| (c.clamp(0., 1.) * 255.).round() as u8;
-            format!(
-                "#{:02x}{:02x}{:02x}",
-                byte(rgba.r),
-                byte(rgba.g),
-                byte(rgba.b)
-            )
-        })
-    };
-    let light: Vec<_> = highlighter
-        .styles(&all, &*HighlightTheme::default_light())
-        .iter()
-        .map(|(range, style)| (range.clone(), hex(style)))
-        .collect();
-    let dark: Vec<_> = highlighter
-        .styles(&all, &*HighlightTheme::default_dark())
-        .iter()
-        .map(|(range, style)| (range.clone(), hex(style)))
-        .collect();
-    // Every place a run of either theme starts or ends cuts the code.
-    let mut cuts: Vec<usize> = vec![0, code.len()];
-    for (range, _) in light.iter().chain(&dark) {
-        cuts.push(range.start.min(code.len()));
-        cuts.push(range.end.min(code.len()));
-    }
-    cuts.sort_unstable();
-    cuts.dedup();
-    let colour_at = |runs: &[(std::ops::Range<usize>, Option<String>)], at: usize| {
-        runs.iter()
-            .find(|(range, _)| range.start <= at && at < range.end)
-            .and_then(|(_, colour)| colour.clone())
-    };
-    cuts.windows(2)
-        .filter(|cut| {
-            cut[0] < cut[1] && code.is_char_boundary(cut[0]) && code.is_char_boundary(cut[1])
-        })
-        .map(|cut| {
-            let range = cut[0]..cut[1];
-            (
-                range.clone(),
-                colour_at(&light, cut[0]),
-                colour_at(&dark, cut[0]),
-            )
-        })
-        .collect()
-}
-
-fn escape(output: &mut dyn fmt::Write, text: &str) -> fmt::Result {
-    for c in text.chars() {
-        match c {
-            '&' => output.write_str("&amp;")?,
-            '<' => output.write_str("&lt;")?,
-            '>' => output.write_str("&gt;")?,
-            '"' => output.write_str("&quot;")?,
-            c => output.write_char(c)?,
-        }
-    }
-    Ok(())
 }
 
 /// The window of a page `height_css` CSS pixels tall at `zoom`: the column,
@@ -466,12 +290,11 @@ pub enum Failed {
     Unreadable,
 }
 
-/// `text` laid out as a page, in its window for `screen` at `zoom`, scrolled
+/// HTML `text` laid out as a page, in its window for `screen` at `zoom`, scrolled
 /// to where `view` left it, with what its first frame shows painted. Past
 /// `within`, it is left to finish on its own thread, unused.
 pub fn open(
     text: String,
-    markup: Markup,
     path: &Path,
     screen: Screen,
     zoom: f32,
@@ -489,16 +312,7 @@ pub fn open(
     let laying = std::thread::Builder::new()
         .name("page".into())
         .spawn(move || {
-            let html = match markup {
-                Markup::Markdown => markdown_html(&text),
-                Markup::Html => text,
-            };
-            let mut doc = document(
-                &html,
-                markup,
-                Some(&base),
-                viewport(tallest, scale, zoom, dark),
-            );
+            let mut doc = document(&text, Some(&base), viewport(tallest, scale, zoom, dark));
             doc.resolve(0.0);
             crate::trace::mark("page laid out");
             // A short page gets a short window, laid out again at its size.
@@ -543,7 +357,6 @@ pub fn open(
     crate::trace::mark("page painted");
     Ok(Page {
         doc,
-        markup,
         dir,
         size,
         zoom,
@@ -822,26 +635,6 @@ mod tests {
         // Between words, the one character there.
         assert_eq!(word(text, 12), (12, 13));
         assert_eq!(word("défini", 3), (0, 7));
-    }
-
-    #[test]
-    fn code_runs_carry_both_themes_colours() {
-        let runs = coloured("rust", "fn main() { let x = 1; }");
-        let text: String = runs
-            .iter()
-            .map(|(r, _, _)| &"fn main() { let x = 1; }"[r.clone()])
-            .collect();
-        assert_eq!(text, "fn main() { let x = 1; }");
-        let keyword = runs.iter().find(|(r, _, _)| r.start == 0).unwrap();
-        assert!(keyword.1.is_some() && keyword.2.is_some(), "{keyword:?}");
-    }
-
-    #[test]
-    fn markdown_keeps_its_raw_html_and_colours_its_code() {
-        let html = markdown_html("<div align=\"center\">x</div>\n\n```rust\nfn f() {}\n```\n");
-        assert!(html.contains("<div align=\"center\">"));
-        assert!(html.contains("--l:#"), "{html}");
-        assert!(html.contains("class=\"markdown-body\""));
     }
 
     #[test]

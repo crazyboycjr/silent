@@ -130,7 +130,7 @@ changes over.
 | `src/media.rs` | Video and audio through GStreamer |
 | `src/pdf.rs`, `src/pdftext.rs`, `src/paged.rs`, `src/slides.rs` | PDF pages and their text, and slides, in a scroll |
 | `src/lines.rs`, `src/wrap.rs`, `src/hexdump.rs`, `src/pretty.rs` | Text, code, wrapping, hexdumps and minified JSON |
-| `src/web.rs`, `src/page.rs`, `src/rendered.rs`, `src/markup.rs` | HTML through Blitz, and Markdown |
+| `src/web.rs`, `src/page.rs`, `src/rendered.rs`, `src/markup.rs` | HTML through Blitz, and Markdown through the text view |
 | `src/office/`, `src/docview.rs`, `src/grid.rs` | The Office and OpenDocument readers, documents and spreadsheets |
 | `src/archive.rs`, `src/extract.rs`, `src/unpack.rs` | Archives as a tree, files taken out of them, compressed files |
 | `src/overview.rs`, `src/strip.rs`, `src/scrim.rs` | Minimaps and thumbnails, the info line and its colours |

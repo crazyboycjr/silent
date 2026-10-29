@@ -8,8 +8,7 @@ license = "Apache-2.0"
 publish = false
 
 [dependencies]
-# HTML pages, and Markdown made HTML, laid out by Blitz and painted on the
-# CPU by vello_cpu.
+# HTML pages laid out by Blitz and painted on the CPU by vello_cpu.
 anyrender = "0.14"
 anyrender_vello_cpu = { version = "0.18", features = ["multithreading"] }
 async-channel = "2.5"
@@ -20,7 +19,6 @@ blitz-html = { version = "=0.3.0-beta.4", default-features = false }
 blitz-paint = { version = "=0.3.0-beta.4", default-features = false, features = ["svg"] }
 blitz-traits = { version = "=0.3.0-beta.4", default-features = false }
 calamine = "0.37"
-comrak = { version = "0.59", default-features = false }
 compress-tools = "0.16"
 encoding_rs = "0.8"
 fast_image_resize = { version = "6.1", features = ["rayon"] }
