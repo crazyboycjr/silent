@@ -50,6 +50,10 @@ fn main() -> ExitCode {
             print!("{USAGE}");
             ExitCode::SUCCESS
         }
+        Some("--version" | "-V") => {
+            println!("silent {}", env!("CARGO_PKG_VERSION"));
+            ExitCode::SUCCESS
+        }
         Some(word) if let Some(ask) = Ask::parse(word) => client(ask, &args[1..]),
         Some(path) => standalone(path),
         None => serve(),
@@ -68,6 +72,7 @@ usage: silent                  serve Nautilus's previewer on the session bus
                                closes its preview when it ends; the parent by default
          --focus               the preview takes the keyboard, as Nautilus's does
        silent --probe FILE...  print what a preview would be, and its timings
+       silent --version        print the version
 
 show, toggle, follow, close and warm print whether the preview is shown or closed.
 ";

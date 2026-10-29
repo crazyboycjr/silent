@@ -1,6 +1,6 @@
 # Builds the working tree this file sits in.
 pkgname=silent
-pkgver=0.1.0
+pkgver=1.0.0
 pkgrel=1
 pkgdesc='A borderless, fast file previewer for Nautilus (replaces sushi)'
 arch=('x86_64')
