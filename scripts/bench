@@ -44,7 +44,8 @@ NAME = "org.gnome.NautilusPreviewer"
 OBJECT = "/org/gnome/NautilusPreviewer"
 IFACE = "org.gnome.NautilusPreviewer2"
 REPO = pathlib.Path(__file__).resolve().parent.parent
-SCRATCH = pathlib.Path(os.environ.get("SILENT_SCRATCH", pathlib.Path.home() / ".cache/claude-scratch/silent"))
+SCRATCH = pathlib.Path(os.environ.get("SILENT_SCRATCH", pathlib.Path(
+    os.environ.get("XDG_CACHE_HOME", pathlib.Path.home() / ".cache")) / "silent-harness"))
 FIXTURES = pathlib.Path(os.environ.get("SILENT_FIXTURES", SCRATCH / "fixtures"))
 USER_SERVICE = pathlib.Path.home() / ".local/share/dbus-1/services" / f"{NAME}.service"
 SUSHI = "/usr/lib/org.gnome.NautilusPreviewer"
@@ -422,6 +423,7 @@ def run(args):
     real = not args.test
     if real and os.environ.get("DISPLAY", "").split(".")[0] not in (":0", ""):
         sys.exit("bench: the real run is for the desktop's display and bus; --test for others")
+    SCRATCH.mkdir(parents=True, exist_ok=True)
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="speed-bench.", dir=SCRATCH))
     daemon = None
     if real:
@@ -446,12 +448,15 @@ def run(args):
     out = pathlib.Path(args.out)
     try:
         for which, mode in (("silent", "cold"), ("silent", "warm"), ("sushi", "cold"), ("sushi", "warm")):
-            if which not in args.previewers.split(","):
+            if which not in args.previewers.split(",") or mode not in args.modes.split(","):
                 continue
             previewers.use(which)
             shown = [(k, p) for k, p, can in files if which == "silent" or can]
-            # An untimed first preview: the previewer starts, or the run stops here.
-            if run_one(bus, screen, which, "cold", shown[0][1], None, [])["ms"] is None:
+            # An untimed first preview, of the first file of all, which both
+            # previewers show (sushi dies on some, such as the MP3): the
+            # previewer starts, or the run stops here.
+            first = FIXTURES / KINDS[0][2]
+            if run_one(bus, screen, which, "cold", first, None, [])["ms"] is None:
                 sys.exit(f"bench: {which} showed nothing; is its service file right?")
             for i, (key, path) in enumerate(shown):
                 after = shown[(i + 1) % len(shown)][1]
@@ -495,7 +500,13 @@ def percentile(values, q):
 
 def report(results, markdown, note=None):
     cells, failed = {}, {}
+    # Switches are compared like for like: only those made in a process that
+    # was already running when its preview opened, as with Nautilus. A switch
+    # right after a cold start shares its window with a process still settling.
+    warm_pids = {r["pid"] for r in results if r["mode"] == "warm" and r.get("warm_process") and r.get("pid")}
     for r in results:
+        if r["mode"] == "switch" and r.get("pid") not in warm_pids:
+            continue
         key = (r["file"], r["previewer"], r["mode"])
         if r["ms"] is None or (r["mode"] == "warm" and not r["warm_process"]):
             failed.setdefault(key, []).append(r.get("error") or "no frame")
@@ -512,7 +523,9 @@ def report(results, markdown, note=None):
             times = [r["ms"] for r in runs]
             row[f"{which} {mode}"] = (statistics.median(times), percentile(times, 95), len(times)) if times else None
         for which in ("silent", "sushi"):
-            opens = [r for (n, w, m), rs in cells.items() if n == name and w == which and m != "switch" for r in rs]
+            # Memory as a new process showing just this file: a process kept
+            # warm has grown with every file before.
+            opens = [r for (n, w, m), rs in cells.items() if n == name and w == which and m == "cold" for r in rs]
             rss = [r["rss_mb"] for r in opens if r.get("rss_mb")]
             vram = [r["vram_mib"] for r in opens if r.get("vram_mib")]
             row[f"{which} rss"] = statistics.median(rss) if rss else None
@@ -550,12 +563,12 @@ def write_markdown(rows, columns, results, notes, note, path):
     ]
     for r in rows:
         mb = lambda v: "–" if v is None else f"{v:.0f}"
-        sushi = lambda c: cell(r[c]) if r["sushi_can"] else "sushi can't"
+        sushi = lambda c: cell(r[c]) if r["sushi_can"] else "needs LibreOffice"
         lines.append(f"| {r['label']} | {cell(r['silent cold'])} | {cell(r['silent warm'])} | {sushi('sushi cold')} | {sushi('sushi warm')} "
                      f"| {cell(r['silent switch'])} | {sushi('sushi switch')} "
                      f"| {mb(r['silent rss'])} / {mb(r['sushi rss']) if r['sushi_can'] else '–'} "
                      f"| {mb(r['silent vram'])} / {mb(r['sushi vram']) if r['sushi_can'] else '–'} |")
-    lines += ["", "Office documents: sushi shows them only with LibreOffice installed, which is not."]
+    lines += ["", "Office documents: sushi shows them only when LibreOffice is installed."]
     if notes:
         lines += ["", "Runs left out of the medians:", ""] + [f"- {note}" for note in notes]
     lines.append("")
@@ -566,60 +579,94 @@ def write_markdown(rows, columns, results, notes, note, path):
     print(f"bench: {path}", file=sys.stderr)
 
 
+# The chart's colours: one per previewer, the same in both panels, on silent's
+# paper; checked for every colour vision against their own background.
+CHART_THEMES = {
+    "light": {"bg": "#fbf8f2", "text": "#2b2520", "muted": "#6c6156", "grid": "#e7ded2",
+              "silent": "#bf5f2b", "sushi": "#7a4f8a"},
+    "dark": {"bg": "#26211d", "text": "#ede5d9", "muted": "#a99d8f", "grid": "#3a332d",
+             "silent": "#d4703a", "sushi": "#a578bd"},
+}
+
+
+def nice_step(most):
+    """A round tick step for an axis that reaches `most`."""
+    for step in (5, 10, 20, 25, 50, 100, 200, 250, 500):
+        if most / step <= 5:
+            return step
+    return 1000
+
+
 def write_chart(rows, path):
-    """Grouped horizontal bars of the medians, warm and cold, in the first four
-    categorical slots of the dataviz reference palette, whose neighbours tell
-    apart for every colour vision in light and dark."""
-    series = [("silent warm", "silent, warm", 1), ("sushi warm", "sushi, warm", 2),
-              ("silent cold", "silent, cold", 3), ("sushi cold", "sushi, cold", 4)]
-    bar, gap, group_gap, label_w, plot_w, top = 8, 2, 12, 150, 520, 50
-    group = (bar + gap) * len(series) + group_gap
-    height = top + group * len(rows) + 28
-    width = label_w + plot_w + 40
-    most = max((r[k][0] for r in rows for k, _, _ in series if r[k]), default=1)
-    scale = plot_w / (most * 1.05)
+    """Two panels of horizontal bars, the medians of each file: on the left
+    with each previewer already running (warm), on the right started for the
+    file (cold), silent and sushi side by side in each, every bar labelled,
+    both panels on one scale. Written as benchmark.svg and, in silent's dark
+    colours, benchmark-dark.svg."""
+    for theme, name in (("light", path.name), ("dark", path.stem + "-dark.svg")):
+        path.with_name(name).write_text(chart_svg(rows, CHART_THEMES[theme]))
+
+
+def chart_svg(rows, c):
+    label_w, panel_w, panel_gap, right = 150, 280, 56, 24
+    top, bar, gap, row_gap = 92, 9, 2, 12
+    row_h = 2 * bar + gap + row_gap
+    width = label_w + 2 * panel_w + panel_gap + right
+    height = top + row_h * len(rows) + 34
+    panels = [("warm", "Already running (warm)", label_w),
+              ("cold", "Started for the file (cold)", label_w + panel_w + panel_gap)]
 
     def data_bar(x, y, w, h):
-        # Square at the baseline, rounded 4 px at the value's end.
-        r = min(4, h / 2, w)
-        return (f"M{x},{y}H{x + w - r:.1f}A{r},{r} 0 0 1 {x + w:.1f},{y + r:.1f}"
-                f"V{y + h - r:.1f}A{r},{r} 0 0 1 {x + w - r:.1f},{y + h}H{x}Z")
+        # Square at the baseline, rounded 3 px at the value's end.
+        r = min(3, h / 2, w)
+        return (f"M{x:.1f},{y}H{x + w - r:.1f}A{r},{r} 0 0 1 {x + w:.1f},{y + r:.1f}"
+                f"V{y + h - r:.1f}A{r},{r} 0 0 1 {x + w - r:.1f},{y + h}H{x:.1f}Z")
 
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-           f'viewBox="0 0 {width} {height}" font-family="Noto Sans, sans-serif" font-size="12">',
-           "<style>"
-           ".bg{fill:#fcfcfb}text{fill:#0b0b0b}.muted{fill:#52514e}.grid{stroke:#e4e2dc}"
-           ".s1{fill:#2a78d6}.s2{fill:#eb6834}.s3{fill:#1baf7a}.s4{fill:#eda100}"
-           "@media (prefers-color-scheme: dark){.bg{fill:#1a1a19}text{fill:#f0efec}.muted{fill:#c3c2b7}"
-           ".grid{stroke:#34332f}.s1{fill:#3987e5}.s2{fill:#d95926}.s3{fill:#199e70}.s4{fill:#c98500}}"
-           "</style>",
-           f'<rect class="bg" width="{width}" height="{height}"/>']
-    x = label_w
-    for _, name, slot in series:
-        out.append(f'<rect class="s{slot}" x="{x}" y="14" width="10" height="10" rx="2"/>')
-        out.append(f'<text x="{x + 15}" y="23">{name}</text>')
-        x += 15 + 7 * len(name) + 26
-    step = 100 if most < 900 else 250
-    for v in range(0, int(most * 1.05) + 1, step):
-        gx = label_w + v * scale
-        out.append(f'<line class="grid" x1="{gx:.1f}" y1="{top - 8}" x2="{gx:.1f}" y2="{height - 22}"/>')
-        out.append(f'<text class="muted" x="{gx:.1f}" y="{height - 8}" text-anchor="middle">{v}</text>')
-    out.append(f'<text class="muted" x="{width - 4}" y="{height - 8}" text-anchor="end">ms</text>')
-    for i, r in enumerate(rows):
-        y = top + i * group
-        middle = y + (group - group_gap) / 2 + 4
-        out.append(f'<text x="{label_w - 10}" y="{middle:.1f}" text-anchor="end">{r["label"]}</text>')
-        for j, (key, name, slot) in enumerate(series):
-            by = y + j * (bar + gap)
-            value = r[key]
-            if value:
-                out.append(f'<path class="s{slot}" d="{data_bar(label_w, by, max(value[0] * scale, 1), bar)}">'
-                           f'<title>{r["label"]}, {name}: {value[0]:.0f} ms, median of {value[2]}</title></path>')
-            elif not r["sushi_can"]:
-                out.append(f'<text class="muted" x="{label_w + 6}" y="{by + bar + 6}" font-size="11">sushi can\'t show it</text>')
-                break
+           f'viewBox="0 0 {width} {height}" font-family="Noto Sans, Helvetica, Arial, sans-serif" font-size="13">',
+           f'<rect width="{width}" height="{height}" rx="12" fill="{c["bg"]}"/>']
+    # Legend: a swatch beside each name, the names in the text colour.
+    x = 24
+    for who in ("silent", "sushi"):
+        out.append(f'<rect x="{x}" y="24" width="12" height="12" rx="3" fill="{c[who]}"/>')
+        out.append(f'<text x="{x + 18}" y="34.5" fill="{c["text"]}">{who}</text>')
+        x += 18 + 8 * len(who) + 28
+    out.append(f'<text x="{width - right}" y="34.5" text-anchor="end" fill="{c["muted"]}" font-size="12">'
+               f'median, in milliseconds</text>')
+    values = [r[f"{who} {mode}"][0] for r in rows for who in ("silent", "sushi") for mode in ("warm", "cold")
+              if r[f"{who} {mode}"]]
+    most = max(values, default=1) * 1.15
+    step = nice_step(most)
+    most = (int(most) // step + 1) * step
+    scale = panel_w / most
+    for mode, title, x0 in panels:
+        out.append(f'<text x="{x0}" y="{top - 20}" fill="{c["text"]}" font-weight="600">{title}</text>')
+        ticks = range(0, int(most) + 1, step)
+        for v in ticks:
+            gx = x0 + v * scale
+            out.append(f'<line x1="{gx:.1f}" y1="{top - 6}" x2="{gx:.1f}" y2="{height - 30}" stroke="{c["grid"]}"/>')
+            out.append(f'<text x="{gx:.1f}" y="{height - 12}" text-anchor="middle" fill="{c["muted"]}" '
+                       f'font-size="12">{v}</text>')
+        for i, r in enumerate(rows):
+            y = top + i * row_h
+            if mode == "warm":
+                out.append(f'<text x="{label_w - 14}" y="{y + bar + 5}" text-anchor="end" '
+                           f'fill="{c["text"]}">{r["label"]}</text>')
+            for j, who in enumerate(("silent", "sushi")):
+                by = y + j * (bar + gap)
+                value = r[f"{who} {mode}"]
+                if value:
+                    w = max(value[0] * scale, 1.5)
+                    out.append(f'<path fill="{c[who]}" d="{data_bar(x0, by, w, bar)}">'
+                               f'<title>{r["label"]}, {who}, {mode}: {value[0]:.0f} ms, median of {value[2]}</title></path>')
+                    out.append(f'<text x="{x0 + w + 5:.1f}" y="{by + bar - 0.5}" fill="{c["muted"]}" '
+                               f'font-size="11">{value[0]:.0f}</text>')
+                elif who == "sushi":
+                    why = "sushi needs LibreOffice" if not r["sushi_can"] else "not measured"
+                    out.append(f'<text x="{x0 + 2}" y="{by + bar - 0.5}" fill="{c["muted"]}" '
+                               f'font-size="11">{why}</text>')
     out.append("</svg>")
-    path.write_text("\n".join(out))
+    return "\n".join(out)
 
 
 def main():
@@ -630,6 +677,7 @@ def main():
     r.add_argument("--n", type=int, default=5, help="runs a cell (5)")
     r.add_argument("--only", help="kinds, comma-separated: " + ",".join(k[0] for k in KINDS))
     r.add_argument("--previewers", default="silent,sushi")
+    r.add_argument("--modes", default="cold,warm", help="cold, warm or both; switches come with either")
     r.add_argument("--silent", default=str(pathlib.Path.home() / ".local/bin/silent"), help="the silent to time")
     r.add_argument("--test", action="store_true", help="on a private bus and the DISPLAY given, not the desktop's")
     r.add_argument("--out", default=str(SCRATCH / "bench-results.json"))

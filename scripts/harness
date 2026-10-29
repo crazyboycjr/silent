@@ -13,9 +13,13 @@
 #                                    N cold D-Bus activations of BINARY showing FILE, timed
 #                                    from the call to the first frame; with NEXT, also the
 #                                    switch to NEXT in the open window (arrow browsing)
+#
+# Its files, the fixtures among them, go to $SILENT_SCRATCH, by default
+# $XDG_CACHE_HOME/silent-harness; $SILENT_FIXTURES names the fixtures alone.
 set -euo pipefail
 
-SCRATCH=${SILENT_SCRATCH:-$HOME/.cache/claude-scratch/silent}
+SCRATCH=${SILENT_SCRATCH:-${XDG_CACHE_HOME:-$HOME/.cache}/silent-harness}
+mkdir -p "$SCRATCH"
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 FIXTURES=${SILENT_FIXTURES:-$SCRATCH/fixtures}
 NAME=org.gnome.NautilusPreviewer
@@ -746,5 +750,5 @@ cold-runs() {
 cmd=${1:-}; shift || true
 case $cmd in
     fixtures | display | bus | show | close | shot | cold | cold-runs) "$cmd" "$@" ;;
-    *) sed -n '2,17p' "$0"; exit 2 ;;
+    *) sed -n '2,18p' "$0"; exit 2 ;;
 esac
