@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>silent, the borderless file previewer</title>
+<meta name="description" content="Press Space in Nautilus and the file is there: centred, borderless and fast, with Office files, PDFs, video, code and archives. A previewer for X11, built in Rust on GPUI.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="favicon.ico" sizes="16x16 32x32 48x48">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="silent">
+<meta property="og:title" content="silent, the borderless file previewer">
+<meta property="og:description" content="Press Space in Nautilus and the file is there: centred, borderless and fast, with Office files, PDFs, video, code and archives. For X11, built in Rust on GPUI.">
+<meta property="og:url" content="https://crazyboycjr.github.io/silent/">
+<meta property="og:image" content="https://crazyboycjr.github.io/silent/media/social-preview.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="silent's icon, a hooded figure with an acid-green rim of light, beside the name and the line: a quiet, fast file previewer">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="silent, the borderless file previewer">
+<meta name="twitter:description" content="Press Space in Nautilus and the file is there: centred, borderless and fast. For X11, built in Rust on GPUI.">
+<meta name="twitter:image" content="https://crazyboycjr.github.io/silent/media/social-preview.png">
+<link rel="preload" href="fonts/literata-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/noto-sans-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+<script>
+  // The theme chosen with the toggle, before the first paint.
+  try {
+    var theme = localStorage.getItem("silent-theme");
+    if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+  } catch (e) {}
+</script>
+<script src="main.js" defer></script>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap top-row">
+    <a class="brand" href="#">
+      <img src="favicon.svg" width="32" height="32" alt="">
+      <span>silent</span>
+    </a>
+    <nav class="top-nav" aria-label="Sections">
+      <a href="#no-border">Features</a>
+      <a href="#formats">Formats</a>
+      <a href="#keys">Keys</a>
+      <a href="#file-managers">File managers</a>
+      <a href="#install">Install</a>
+    </nav>
+    <div class="top-actions">
+      <a class="icon-button" href="https://github.com/crazyboycjr/silent" aria-label="silent on GitHub" title="Source on GitHub">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.53 2.35 1.09 2.92.83.09-.65.35-1.09.64-1.34-2.22-.25-4.56-1.11-4.56-4.95 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.6 9.6 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.85-2.34 4.7-4.57 4.94.36.31.68.92.68 1.86v2.76c0 .27.18.58.69.48A10 10 0 0 0 12 2.2Z"/></svg>
+      </a>
+      <button class="icon-button theme-toggle" type="button" aria-label="Dark theme" aria-pressed="false">
+        <svg class="when-light" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.55 1.55M17.15 17.15l1.55 1.55M5.3 18.7l1.55-1.55M17.15 6.85l1.55-1.55"/></svg>
+        <svg class="when-dark" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 14.6A8.4 8.4 0 0 1 9.4 3.8a8.4 8.4 0 1 0 10.8 10.8Z"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<section class="hero">
+  <div class="wrap hero-text">
+    <img class="hero-icon" src="icon.svg" width="112" height="112" alt="silent's icon: a hooded figure in the dark, two eyes and a rim of acid-green light">
+    <p class="kicker">silent 1.0, a file previewer for Nautilus on X11</p>
+    <h1>Press Space;<br>the file is there.</h1>
+    <p class="lede">silent shows the file you press Space on at once, in the middle of the screen, with nothing around it. It takes the place of GNOME's sushi on X11, and previews for Nemo, yazi and terminal file managers too.</p>
+    <div class="actions">
+      <a class="button primary" href="#install">Install silent</a>
+      <a class="button" href="https://github.com/crazyboycjr/silent">Source on GitHub</a>
+    </div>
+  </div>
+  <figure class="wrap hero-media">
+    <div class="frame">
+      <video class="clip only-light" muted loop playsinline preload="metadata" data-poster="media/space.webp" width="1600" height="956" aria-label="Nautilus with a folder of photos, documents and code; Space opens a photo, then a PDF, then slides, each in a borderless window, and Space again closes each">
+        <source src="media/space.webm" type="video/webm">
+        <source src="media/space.mp4" type="video/mp4">
+      </video>
+      <video class="clip only-dark" muted loop playsinline preload="none" data-poster="media/space-dark.webp" width="1600" height="956" aria-label="Nautilus in its dark style; Space opens a photo, then a PDF, then slides, each in a borderless window, and Space again closes each">
+        <source src="media/space-dark.webm" type="video/webm">
+        <source src="media/space-dark.mp4" type="video/mp4">
+      </video>
+    </div>
+    <figcaption>Space in Nautilus opens a photo, a PDF and a deck of slides, and Space again closes each.</figcaption>
+  </figure>
+</section>
+
+<section class="points wrap" aria-label="What silent is">
+  <div class="point">
+    <h2><a href="#no-border">No border</a></h2>
+    <p>The window is the file, with no title bar, frame or buttons around it.</p>
+  </div>
+  <div class="point">
+    <h2><a href="#minimal">Minimal</a></h2>
+    <p>One line of facts, the info line, there when you move the mouse and gone when you rest.</p>
+  </div>
+  <div class="point">
+    <h2><a href="#fast">Blazing fast</a></h2>
+    <p>Once it runs beside Nautilus, a source file shows in about 5&nbsp;ms and a PDF in 30 to 45.</p>
+  </div>
+  <div class="point">
+    <h2><a href="#formats">Smarter formats</a></h2>
+    <p>Office files without an office suite, hexdumps, GBK text, and archives you can look into.</p>
+  </div>
+</section>
+
+<section class="feature wrap" id="no-border">
+  <div class="feature-head">
+    <div>
+      <p class="kicker">No border</p>
+      <h2>Nothing between you and the file</h2>
+    </div>
+    <div class="feature-text">
+      <p>silent works out the window's size from what it shows before the window appears, centres it, and draws nothing else: no title bar, no frame, no buttons. A photo fills it edge to edge, and a PDF arrives with its pages and a rail of thumbnails.</p>
+      <p>Under a compositor the corners are gently rounded, and the colours follow your desktop's light or dark style, in warm paper tones.</p>
+    </div>
+  </div>
+  <figure class="cutout">
+    <img class="only-light" src="media/no-border-pair.webp" width="1712" height="718" loading="lazy" alt="Two previews side by side: a photo of a red-roofed house among autumn maples, edge to edge, and a PDF field guide with its page thumbnails at the right">
+    <img class="only-dark" src="media/no-border-pair-dark.webp" width="1712" height="718" loading="lazy" alt="The same photo and PDF on a dark desktop">
+  </figure>
+</section>
+
+<section class="feature wrap" id="minimal">
+  <div class="feature-head">
+    <div>
+      <p class="kicker">Minimal</p>
+      <h2>Facts when you want them</h2>
+    </div>
+    <div class="feature-text">
+      <p>Move the mouse and one line of facts, the info line, fades in over the bottom of the preview: the name, the size, and the dimensions or the length. Rest, and it fades away again. The veil under it is worked out from the pixels it covers, only as dark or as light as the letters need to stay readable.</p>
+      <p>Long text gets a minimap while you scroll, and <kbd>m</kbd> keeps it docked beside the text.</p>
+    </div>
+  </div>
+  <div class="frame">
+    <video class="clip only-light" muted loop playsinline preload="none" data-poster="media/minimap.webp" width="1600" height="1040" aria-label="Scrolling a Rust file: the minimap shows at the right edge while it scrolls, the info line fades in when the mouse moves, and m docks the minimap">
+      <source src="media/minimap.webm" type="video/webm">
+      <source src="media/minimap.mp4" type="video/mp4">
+    </video>
+    <video class="clip only-dark" muted loop playsinline preload="none" data-poster="media/minimap-dark.webp" width="1600" height="1040" aria-label="The same scroll through a Rust file in silent's dark style">
+      <source src="media/minimap-dark.webm" type="video/webm">
+      <source src="media/minimap-dark.mp4" type="video/mp4">
+    </video>
+  </div>
+</section>
+
+<section class="feature wrap" id="fast">
+  <div class="feature-head">
+    <div>
+      <p class="kicker">Blazing fast</p>
+      <h2>Quick enough to browse with</h2>
+    </div>
+    <div class="feature-text">
+      <p>silent starts with Nautilus and keeps its window and its GPU device ready, so a preview opens at its final size, with the file drawn within a frame or two. Step through a folder with the arrow keys and each file follows, the window growing or shrinking about the same centre.</p>
+      <p>On 29 October 2026, timed from Nautilus's call to the first frame that shows the file on X11 with an NVIDIA RTX 4070 SUPER, a source file showed in about 5&nbsp;ms, a PDF in 30 to 45 and a 12-megapixel photo in about 95. Started from nothing, a preview took about 180&nbsp;ms.</p>
+      <p class="more"><a href="https://github.com/crazyboycjr/silent/blob/main/docs/benchmark.md">Every file, how it was measured, and how to run it yourself</a></p>
+    </div>
+  </div>
+  <div class="frame">
+    <video class="clip only-light" muted loop playsinline preload="none" data-poster="media/browse.webp" width="1600" height="916" aria-label="The arrow keys walk through a folder in Nautilus while silent shows each file in turn: photos, a PDF, slides, a song, Markdown, a spreadsheet, a video and a Word document">
+      <source src="media/browse.webm" type="video/webm">
+      <source src="media/browse.mp4" type="video/mp4">
+    </video>
+    <video class="clip only-dark" muted loop playsinline preload="none" data-poster="media/browse-dark.webp" width="1600" height="916" aria-label="The same walk through the folder in Nautilus's and silent's dark styles">
+      <source src="media/browse-dark.webm" type="video/webm">
+      <source src="media/browse-dark.mp4" type="video/mp4">
+    </video>
+  </div>
+  <div class="card chart" id="chart">
+    <ul class="legend" aria-hidden="true">
+      <li><span class="swatch s-silent"></span>silent</li>
+      <li><span class="swatch s-sushi"></span>sushi</li>
+      <li class="legend-unit">median, in milliseconds</li>
+    </ul>
+    <div class="chart-grid" aria-hidden="true"></div>
+    <details class="chart-table">
+      <summary>The numbers as a table</summary>
+      <table>
+        <thead><tr><th scope="col">File</th><th scope="col">silent, warm</th><th scope="col">sushi, warm</th><th scope="col">silent, cold</th><th scope="col">sushi, cold</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">JPEG, 12 MP</th><td>94</td><td>157</td><td>187</td><td>361</td></tr>
+          <tr><th scope="row">PNG, 3840×2160</th><td>133</td><td>187</td><td>193</td><td>398</td></tr>
+          <tr><th scope="row">Animated GIF</th><td>20</td><td>22</td><td>183</td><td>262</td></tr>
+          <tr><th scope="row">PDF, 3 pages</th><td>45</td><td>87</td><td>186</td><td>284</td></tr>
+          <tr><th scope="row">PDF, 42 pages</th><td>29</td><td>20</td><td>180</td><td>257</td></tr>
+          <tr><th scope="row">Video, 1080p</th><td>138</td><td>517</td><td>363</td><td>657</td></tr>
+          <tr><th scope="row">MP3 with cover</th><td>18</td><td>not measured</td><td>175</td><td>not measured</td></tr>
+          <tr><th scope="row">Source file, 9 KB</th><td>5</td><td>21</td><td>188</td><td>240</td></tr>
+          <tr><th scope="row">Text, 2 MB</th><td>21</td><td>22</td><td>177</td><td>248</td></tr>
+          <tr><th scope="row">Zip archive</th><td>6</td><td>26</td><td>188</td><td>243</td></tr>
+          <tr><th scope="row">Folder</th><td>13</td><td>20</td><td>172</td><td>240</td></tr>
+          <tr><th scope="row">Word document</th><td>35</td><td>needs LibreOffice</td><td>208</td><td>needs LibreOffice</td></tr>
+          <tr><th scope="row">Spreadsheet</th><td>23</td><td>needs LibreOffice</td><td>175</td><td>needs LibreOffice</td></tr>
+          <tr><th scope="row">Presentation</th><td>19</td><td>needs LibreOffice</td><td>182</td><td>needs LibreOffice</td></tr>
+        </tbody>
+      </table>
+    </details>
+  </div>
+  <p class="caption">silent 1.0 against GNOME's sushi on 29 October 2026: the median of five runs, in milliseconds, from Nautilus's call to the first frame that shows the file, on X11 with an NVIDIA RTX 4070 SUPER. Started cold, silent is faster on every file; warm, on most of them, with the GIF and the 2&nbsp;MB text tied and sushi faster on the 42-page PDF.</p>
+</section>
+
+<section class="feature wrap" id="formats">
+  <div class="feature-head">
+    <div>
+      <p class="kicker">Smarter, broader format support</p>
+      <h2>It knows what a file is</h2>
+    </div>
+    <div class="feature-text">
+      <p>Code comes highlighted with a minimap, archives open as a tree you can preview inside, and Word, Excel and PowerPoint documents open without an office suite. Binaries show as <code>hexdump -C</code> prints them, a gzipped JSON file comes out laid out, Chinese saved in GBK reads right, and Markdown and HTML are rendered with nothing fetched from the network.</p>
+      <p class="more"><a href="https://github.com/crazyboycjr/silent/blob/main/docs/formats.md">Every format, and how each is shown</a></p>
+    </div>
+  </div>
+  <div class="tiles">
+    <figure class="tile">
+      <img class="only-light" src="media/fmt-code.webp" width="1000" height="625" loading="lazy" alt="A Rust source file, highlighted, with line numbers and its minimap docked at the right">
+      <img class="only-dark" src="media/fmt-code-dark.webp" width="1000" height="625" loading="lazy" alt="The same source file in silent's dark style">
+      <figcaption>Code <span>highlighted, with a minimap</span></figcaption>
+    </figure>
+    <figure class="tile">
+      <img class="only-light" src="media/fmt-archive.webp" width="1000" height="625" loading="lazy" alt="A zip archive as a tree of folders and files, with the size of every entry">
+      <img class="only-dark" src="media/fmt-archive-dark.webp" width="1000" height="625" loading="lazy" alt="The same archive in silent's dark style">
+      <figcaption>Archives <span>a tree, with the size of every entry</span></figcaption>
+    </figure>
+    <figure class="tile">
+      <img class="only-light" src="media/fmt-docx.webp" width="1000" height="625" loading="lazy" alt="A Word document, a trip report with a heading, a paragraph and a photo, as a column on a page">
+      <img class="only-dark" src="media/fmt-docx-dark.webp" width="1000" height="625" loading="lazy" alt="The same Word document on a dark desktop">
+      <figcaption>Word documents <span>docx, odt and doc, as a column on a page</span></figcaption>
+    </figure>
+    <figure class="tile">
+      <img class="only-light" src="media/fmt-xlsx.webp" width="1000" height="625" loading="lazy" alt="A spreadsheet as a grid with column letters and row numbers">
+      <img class="only-dark" src="media/fmt-xlsx-dark.webp" width="1000" height="625" loading="lazy" alt="The same spreadsheet in silent's dark style">
+      <figcaption>Spreadsheets <span>xlsx, xls and ods, a tab for each sheet</span></figcaption>
+    </figure>
+    <figure class="tile">
+      <img class="only-light" src="media/fmt-pptx.webp" width="1000" height="625" loading="lazy" alt="A slide with a bar chart of golden hour by month, and the deck's thumbnails at the right">
+      <img class="only-dark" src="media/fmt-pptx-dark.webp" width="1000" height="625" loading="lazy" alt="The same slide on a dark desktop">
+      <figcaption>Slides <span>pptx in a scroll, with a rail of thumbnails</span></figcaption>
+    </figure>
+    <figure class="tile">
+      <img class="only-light" src="media/fmt-markdown.webp" width="1000" height="625" loading="lazy" alt="A README rendered from Markdown, with highlighted code and a table">
+      <img class="only-dark" src="media/fmt-markdown-dark.webp" width="1000" height="625" loading="lazy" alt="The same README in silent's dark style">
+      <figcaption>Markdown and HTML <span>rendered, with nothing fetched</span></figcaption>
+    </figure>
+    <figure class="tile">
+      <img class="only-light" src="media/fmt-video.webp" width="1000" height="625" loading="lazy" alt="A sunset video, paused, with the playbar and the info line over the bottom of the picture">
+      <img class="only-dark" src="media/fmt-video-dark.webp" width="1000" height="625" loading="lazy" alt="The same video on a dark desktop">
+      <figcaption>Video and sound <span>with a playbar, and where you left off</span></figcaption>
+    </figure>
+    <figure class="tile">
+      <img class="only-light" src="media/fmt-hexdump.webp" width="1000" height="625" loading="lazy" alt="A program shown as hexdump -C prints it">
+      <img class="only-dark" src="media/fmt-hexdump-dark.webp" width="1000" height="625" loading="lazy" alt="The same hexdump in silent's dark style">
+      <figcaption>Binaries <span>as <code>hexdump -C</code> prints them</span></figcaption>
+    </figure>
+    <figure class="tile">
+      <img class="only-light" src="media/fmt-json.webp" width="1000" height="625" loading="lazy" alt="A gzipped JSON file of weather readings, laid out one member a line">
+      <img class="only-dark" src="media/fmt-json-dark.webp" width="1000" height="625" loading="lazy" alt="The same JSON in silent's dark style">
+      <figcaption>Gzipped JSON <span>unpacked and laid out</span></figcaption>
+    </figure>
+    <figure class="tile">
+      <img class="only-light" src="media/fmt-gbk.webp" width="1000" height="625" loading="lazy" alt="Four Tang poems saved in GBK, read correctly, with line numbers">
+      <img class="only-dark" src="media/fmt-gbk-dark.webp" width="1000" height="625" loading="lazy" alt="The same poems in silent's dark style">
+      <figcaption>Chinese in GBK <span>read right, not as gibberish</span></figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="feature wrap" id="archives">
+  <div class="feature-head">
+    <div>
+      <p class="kicker">Archives</p>
+      <h2>Look inside archives</h2>
+    </div>
+    <div class="feature-text">
+      <p>An archive opens as a tree, with the size of every entry. Click the tree, and Space on an entry opens it over the archive in the same window; Space again goes back, with your place kept. Archives inside archives work the same way.</p>
+    </div>
+  </div>
+  <div class="frame">
+    <video class="clip only-light" muted loop playsinline preload="none" data-poster="media/archive.webp" width="1600" height="1098" aria-label="A zip archive opens as a tree; Space on a photo inside it shows the photo over the archive, and Space again goes back to the tree">
+      <source src="media/archive.webm" type="video/webm">
+      <source src="media/archive.mp4" type="video/mp4">
+    </video>
+    <video class="clip only-dark" muted loop playsinline preload="none" data-poster="media/archive-dark.webp" width="1600" height="1098" aria-label="The same archive and photos in silent's dark style">
+      <source src="media/archive-dark.webm" type="video/webm">
+      <source src="media/archive-dark.mp4" type="video/mp4">
+    </video>
+  </div>
+</section>
+
+<section class="feature wrap" id="zoom">
+  <div class="feature-head">
+    <div>
+      <p class="kicker">Zoom</p>
+      <h2>Zoom that keeps up</h2>
+    </div>
+    <div class="feature-text">
+      <p>Ctrl with <kbd>+</kbd> or <kbd>−</kbd> zooms PDFs, slides and pictures. Each step shows at once from what is already drawn, and a moment later the part in view is drawn again, sharp.</p>
+    </div>
+  </div>
+  <div class="frame">
+    <video class="clip only-light" muted loop playsinline preload="none" data-poster="media/zoom.webp" width="1600" height="1098" aria-label="Ctrl and plus zoom into a PDF page step by step, and Ctrl with the wheel zooms into a photo of a house under the pointer">
+      <source src="media/zoom.webm" type="video/webm">
+      <source src="media/zoom.mp4" type="video/mp4">
+    </video>
+    <video class="clip only-dark" muted loop playsinline preload="none" data-poster="media/zoom-dark.webp" width="1600" height="1098" aria-label="The same zoom on a dark desktop">
+      <source src="media/zoom-dark.webm" type="video/webm">
+      <source src="media/zoom-dark.mp4" type="video/mp4">
+    </video>
+  </div>
+</section>
+
+<section class="feature wrap" id="resize">
+  <div class="feature-head">
+    <div>
+      <p class="kicker">Resize</p>
+      <h2>The text flows again as you resize</h2>
+    </div>
+    <div class="feature-text">
+      <p>The window has no frame to drag, so resize it with your window manager's own resize: Alt+F8, or Super and the middle mouse button, in GNOME. Text and tables flow again to the new width, and pages and pictures fit it again.</p>
+    </div>
+  </div>
+  <div class="frame">
+    <video class="clip only-light" muted loop playsinline preload="none" data-poster="media/resize.webp" width="1600" height="1168" aria-label="A window of rendered Markdown made narrower, its text and table flowing again as it goes">
+      <source src="media/resize.webm" type="video/webm">
+      <source src="media/resize.mp4" type="video/mp4">
+    </video>
+    <video class="clip only-dark" muted loop playsinline preload="none" data-poster="media/resize-dark.webp" width="1600" height="1168" aria-label="The same resize in silent's dark style">
+      <source src="media/resize-dark.webm" type="video/webm">
+      <source src="media/resize-dark.mp4" type="video/mp4">
+    </video>
+  </div>
+</section>
+
+<section class="feature wrap" id="keys">
+  <div class="feature-head">
+    <div>
+      <p class="kicker">Keys</p>
+      <h2>Press ? for the keys</h2>
+    </div>
+    <div class="feature-text">
+      <p>A card lists the keys for the file in front of you, silent's own first, written the way you type them. Vim's keys move through text, documents and pages, and the arrows keep browsing Nautilus's files.</p>
+      <p class="keyrow" aria-hidden="true"><kbd>j</kbd><kbd>k</kbd><kbd>g</kbd><kbd>g</kbd><kbd>G</kbd><kbd>m</kbd><kbd>i</kbd><kbd>w</kbd><kbd>?</kbd></p>
+      <p class="more"><a href="https://github.com/crazyboycjr/silent/blob/main/docs/usage.md">Every key, and what each view does</a></p>
+    </div>
+  </div>
+  <div class="frame">
+    <video class="clip only-light" muted loop playsinline preload="none" data-poster="media/help.webp" width="1600" height="1148" aria-label="The keys card shown over a Rust file, then over a PDF album, then over a video, each whole">
+      <source src="media/help.webm" type="video/webm">
+      <source src="media/help.mp4" type="video/mp4">
+    </video>
+    <video class="clip only-dark" muted loop playsinline preload="none" data-poster="media/help-dark.webp" width="1600" height="1148" aria-label="The same keys cards in silent's dark style">
+      <source src="media/help-dark.webm" type="video/webm">
+      <source src="media/help-dark.mp4" type="video/mp4">
+    </video>
+  </div>
+</section>
+
+<section class="feature wrap" id="file-managers">
+  <div class="feature-head">
+    <div>
+      <p class="kicker">Your file manager</p>
+      <h2>Nautilus, Nemo, yazi and the rest</h2>
+    </div>
+    <div class="feature-text">
+      <p>Nautilus and Nemo call silent over D-Bus when you press Space. yazi has a small plugin that keeps the preview following its cursor, and any other file manager can run <code>silent show</code>, which hands the file to the previewer that runs beside Nautilus, starting it if need be.</p>
+      <p class="more"><a href="https://github.com/crazyboycjr/silent/blob/main/docs/integration.md">How to set each one up</a></p>
+    </div>
+  </div>
+  <div class="frame">
+    <video class="clip only-light" muted loop playsinline preload="none" data-poster="media/yazi.webp" width="1600" height="888" aria-label="yazi in a terminal on one monitor and silent's preview on the other; as yazi's cursor moves, the preview follows while the keys stay in yazi">
+      <source src="media/yazi.webm" type="video/webm">
+      <source src="media/yazi.mp4" type="video/mp4">
+    </video>
+    <video class="clip only-dark" muted loop playsinline preload="none" data-poster="media/yazi-dark.webp" width="1600" height="888" aria-label="The same yazi session in dark styles">
+      <source src="media/yazi-dark.webm" type="video/webm">
+      <source src="media/yazi-dark.mp4" type="video/mp4">
+    </video>
+  </div>
+  <table class="fm-table" style="margin-top:36px">
+    <thead><tr><th scope="col">File manager</th><th scope="col">How it previews</th><th scope="col">Tested with</th></tr></thead>
+    <tbody>
+      <tr><td>Nautilus</td><td><kbd>Space</kbd>, with nothing to set up</td><td>Nautilus 51</td></tr>
+      <tr><td>Nemo</td><td><kbd>Space</kbd>, with silent's preview service</td><td>Nemo 6.6</td></tr>
+      <tr><td>yazi</td><td><kbd>i</kbd>, with the plugin; the preview follows the cursor</td><td>yazi 26.9</td></tr>
+      <tr><td>lf</td><td><kbd>i</kbd>; the preview follows the cursor</td><td>lf 42</td></tr>
+      <tr><td>ranger</td><td><kbd>i</kbd>, with one line in <code>rc.conf</code></td><td>ranger 1.9</td></tr>
+      <tr><td>nnn</td><td><kbd>;</kbd> then <kbd>i</kbd>, with a plugin key</td><td>nnn 5.3</td></tr>
+      <tr class="untested"><td>Thunar, PCManFM, Dolphin</td><td>An action in the context menu</td><td>Not tested</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="feature wrap" id="terminal">
+  <div class="feature-head">
+    <div>
+      <p class="kicker">From the terminal</p>
+      <h2>One command, and the file is there</h2>
+    </div>
+    <div class="feature-text">
+      <p><code>silent FILE</code> previews a file on its own, which helps with whatever a terminal cannot show: a PDF, a photo, or text saved in GBK that <code>cat</code> turns into gibberish.</p>
+      <p>The other commands talk to the previewer that runs beside Nautilus, starting it if need be, as the file managers do. Each prints whether the preview is shown or closed afterwards, so a script can follow along.</p>
+    </div>
+  </div>
+  <figure class="frame">
+    <img class="only-light" src="media/terminal.webp" width="1600" height="551" loading="lazy" alt="A terminal where cat prints a GBK file as gibberish, and beside it silent's preview of the same file, four Tang poems readable">
+    <img class="only-dark" src="media/terminal-dark.webp" width="1600" height="551" loading="lazy" alt="The same terminal and preview in their dark styles">
+  </figure>
+  <table class="verbs" style="margin-top:36px">
+    <thead><tr><th scope="col">Command</th><th scope="col">What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>silent FILE</code></td><td>Previews FILE on its own</td></tr>
+      <tr><td><code>silent show FILE</code></td><td>Shows FILE in the resident previewer, starting it if need be</td></tr>
+      <tr><td><code>silent toggle FILE</code></td><td>The same, or closes the preview if it is open</td></tr>
+      <tr><td><code>silent follow FILE</code></td><td>Shows FILE only while the preview is open, as a cursor moves</td></tr>
+      <tr><td><code>silent close</code></td><td>Closes the preview</td></tr>
+      <tr><td><code>silent warm</code></td><td>Starts the previewer ahead of the first preview</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="feature wrap" id="built">
+  <div class="section-head">
+    <p class="kicker">Built with</p>
+    <h2>Rust and GPUI</h2>
+    <p>silent is written in Rust on GPUI, the GPU-accelerated UI toolkit made for the Zed editor, through gpui-kit, and it draws with Vulkan. These are the pieces it stands on.</p>
+  </div>
+  <dl class="stack">
+    <div><dt><a href="https://www.gpui.rs">GPUI</a> and <a href="https://crates.io/crates/gpui-kit">gpui-kit</a></dt><dd>Its windows, text, the archive tree and the Markdown view</dd></div>
+    <div><dt><a href="https://wgpu.rs">wgpu</a></dt><dd>Drawing with Vulkan, with the GPU device made before the first window</dd></div>
+    <div><dt><a href="https://github.com/DioxusLabs/blitz">Blitz</a></dt><dd>HTML pages, laid out with their own CSS</dd></div>
+    <div><dt><a href="https://github.com/LaurenzV/hayro">hayro</a></dt><dd>PDF pages, drawn only where they are in view</dd></div>
+    <div><dt><a href="https://gitlab.gnome.org/GNOME/glycin">glycin</a></dt><dd>Pictures other than JPEG and PNG, each format's loader in a sandbox of its own</dd></div>
+    <div><dt><a href="https://gstreamer.freedesktop.org">GStreamer</a></dt><dd>Video and sound, with hardware decoding where it has it</dd></div>
+    <div><dt><a href="https://tree-sitter.github.io">tree-sitter</a></dt><dd>Highlighting for some twenty languages</dd></div>
+    <div><dt><a href="https://github.com/tafia/calamine">calamine</a> and <a href="https://libarchive.org">libarchive</a></dt><dd>Spreadsheets, and zip, tar, 7z, rar, ISO and more</dd></div>
+  </dl>
+</section>
+
+<section class="feature wrap" id="install">
+  <div class="section-head">
+    <p class="kicker">Install</p>
+    <h2>From source, in three commands</h2>
+    <p>silent runs on X11 only for now; it does not run on Wayland.</p>
+  </div>
+  <div class="install-grid">
+    <div class="card install-item">
+      <header><h3>Arch Linux</h3><button class="copy" type="button">Copy</button></header>
+      <div class="code"><pre><code>git clone https://github.com/crazyboycjr/silent
+cd silent/packaging/arch
+makepkg -si</code></pre></div>
+      <p>The package replaces sushi and installs the D-Bus service Nautilus calls, so your next Space starts silent, with no restart.</p>
+    </div>
+    <div class="card install-item">
+      <header><h3>Other distributions</h3><button class="copy" type="button">Copy</button></header>
+      <div class="code"><pre><code>git clone https://github.com/crazyboycjr/silent
+cd silent
+cargo build --release</code></pre></div>
+      <p>Then point <code>org.gnome.NautilusPreviewer</code> at <code>target/release/silent</code> with a D-Bus service file, as <a href="https://github.com/crazyboycjr/silent/blob/main/docs/development.md">the development guide</a> shows.</p>
+    </div>
+  </div>
+  <div class="needs">
+    <p>It needs:</p>
+    <ul>
+      <li>a Vulkan driver;</li>
+      <li>glycin's image loaders, with bubblewrap;</li>
+      <li>GStreamer, for video and sound;</li>
+      <li>libarchive.</li>
+    </ul>
+    <p>A tiling window manager should float silent's windows, whose class is <code>silent</code>. In xmonad: <code>className =? "silent" --&gt; hasBorder False &lt;+&gt; doCenterFloat</code>, with the layout wrapped in <code>smartBorders</code>, or <code>lessBorders</code> with a policy.</p>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-row">
+    <p>silent 1.0 is free software under the <a href="https://github.com/crazyboycjr/silent/blob/main/LICENSE">Apache License 2.0</a>. <a href="https://github.com/crazyboycjr/silent">Source</a> · <a href="https://github.com/crazyboycjr/silent/blob/main/CHANGELOG.md">Changes</a> · <a href="https://github.com/crazyboycjr/silent/tree/main/docs">Docs</a></p>
+    <p class="credits">The photographs are by Sam Ferrara, Romain Guy, Jebulon, Wilfredor and Johannes Groll, and the sunset clip by Mostafameraji, all released into the public domain (CC0) on Wikimedia Commons. Type is set in Literata, Noto Sans and JetBrains Mono.</p>
+  </div>
+</footer>
+
+</body>
+</html>
