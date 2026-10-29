@@ -1,33 +1,122 @@
-# silent against sushi
+# How fast silent is
 
-From Nautilus's ShowFile call to the first frame that shows the file, in ms: the median, and in brackets the 95th percentile, of 5 runs a cell. Measured by `scripts/bench run` on 2026-10-25, from outside both previewers: a call as Nautilus makes it, and the window's pixels read back from the X server until they settle. Each previewer is timed to the content, not to its window's map, which comes a little before it in both. Cold: no previewer process before the call. Warm: sushi's process kept alive between previews, as it normally lives; silent has no resident process, so it is always cold. Switch: the next file in an open window, as the arrow keys show it.
+silent 1.0 against GNOME's sushi 51.2, measured on 2026-10-29. Every number is
+the time from Nautilus's call to the first frame that shows the file, in
+milliseconds: the median of five runs, with the 95th percentile in brackets.
 
-![Time to the first frame of each file](benchmark.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="benchmark-dark.svg">
+  <img src="benchmark.svg" width="100%" alt="Two bar charts of the time to the first frame of fourteen files, silent against sushi, with each previewer already running and with each started for the file">
+</picture>
 
-This run is partial. The user needed the screen back during sushi's warm runs: its warm zip has 2 runs and its warm folder none, and the warm runs' switches and memory were not kept, so sushi's switch column holds the switches of its cold runs. sushi aborted on the MP3 in GStreamer's decodebin3 (`mq_slot_handle_stream_start: assertion failed: (collection)`), with its sound going to a null sink of the audio server's as silent's did, so its MP3 cells hold the one run it survived. Its switch from the zip to the folder is not timed: its cards for the two differ too little in the pixels the bench samples. silent was the build installed then (sha256 52d7a3ab…6d84): the start-up work and the playbar fix of this branch, with a new window's size settling for every resize rather than only before its first frame. Its switches that resize the window, to the JPEG, the Word, spreadsheet and presentation files and once to the zip, took 600–1000 ms on the desktop, while the same switches take 15–160 ms on a display without a window manager; that settling, since confined to a window's first frame, is the likely cause, and those cells want measuring again.
+## Already running, and started for the file
 
-| File | silent, cold | sushi, cold | sushi, warm | silent, switch | sushi, switch | RSS, silent / sushi (MB) | VRAM, silent / sushi (MiB) |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| JPEG, 12 MP | 238 (280) | 372 (381) | 135 (146) | 936 (976) | 150 (155) | 230 / 333 | 51 / – |
-| PNG, 3840×2160 | 252 (259) | 397 (408) | 159 (164) | 215 (236) | 151 (161) | 222 / 288 | 35 / – |
-| Animated GIF | 289 (369) | 260 (270) | 53 (56) | 70 (76) | 23 (30) | 166 / 240 | 208 / – |
-| PDF, 3 pages | 321 (332) | 304 (386) | 81 (82) | 95 (114) | 66 (91) | 383 / 266 | 97 / – |
-| PDF, 42 pages | 237 (257) | 268 (269) | 54 (57) | 76 (82) | 29 (33) | 261 / 286 | 225 / 88 |
-| Video, 1080p | 457 (552) | 706 (712) | 579 (598) | 296 (367) | 466 (480) | 446 / 551 | 55 / – |
-| MP3 with cover | 479 (494) | 426 (426) | – | 72 (76) | – | 175 / 305 | 19 / – |
-| Source file, 9 KB | 187 (193) | 243 (287) | 53 (88) | 26 (28) | 61 (61) | 163 / 219 | 19 / – |
-| Text, 2 MB | 180 (188) | 249 (254) | 48 (50) | 8 (164) | 27 (29) | 162 / 226 | 19 / – |
-| Zip archive | 185 (194) | 266 (274) | 53 (54) | 9 (954) | 21 (22) | 164 / 214 | 19 / – |
-| Folder | 179 (185) | 254 (260) | – | 4 (4) | – | 155 / 218 | 19 / – |
-| Word document | 199 (201) | sushi can't | sushi can't | 964 (1001) | sushi can't | 171 / – | 19 / – |
-| Spreadsheet | 176 (194) | sushi can't | sushi can't | 618 (621) | sushi can't | 158 / – | 19 / – |
-| Presentation | 172 (187) | sushi can't | sushi can't | 958 (989) | sushi can't | 156 / – | 43 / – |
+**Warm** is how both previewers usually answer: silent runs as long as
+Nautilus does, and sushi stays for a while after each preview. **Cold** is a
+new process for the file, as on the first Space after logging in.
 
-Office documents: sushi shows them only with LibreOffice installed, which is not.
+| File | silent, warm | sushi, warm | silent, cold | sushi, cold |
+| --- | ---: | ---: | ---: | ---: |
+| JPEG, 12 MP | 94 (99) | 157 (180) | 187 (194) | 361 (380) |
+| PNG, 3840×2160 | 133 (143) | 187 (199) | 193 (198) | 398 (421) |
+| Animated GIF | 20 (29) | 22 (27) | 183 (191) | 262 (269) |
+| PDF, 3 pages | 45 (55) | 87 (100) | 186 (194) | 284 (290) |
+| PDF, 42 pages | 29 (32) | 20 (22) | 180 (190) | 257 (299) |
+| Video, 1080p | 138 (147) | 517 (539) | 363 (375) | 657 (1069) |
+| MP3 with cover | 18 (22) | not measured¹ | 175 (179) | not measured¹ |
+| Source file, 9 KB | 5 (5) | 21 (81) | 188 (198) | 240 (247) |
+| Text, 2 MB | 21 (23) | 22 (25) | 177 (183) | 248 (252) |
+| Zip archive | 6 (9) | 26 (32) | 188 (188) | 243 (261) |
+| Folder | 13 (36) | 20 (109) | 172 (184) | 240 (258) |
+| Word document | 35 (56) | needs LibreOffice | 208 (222) | needs LibreOffice |
+| Spreadsheet | 23 (24) | needs LibreOffice | 175 (180) | needs LibreOffice |
+| Presentation | 19 (19) | needs LibreOffice | 182 (188) | needs LibreOffice |
 
-Runs left out of the medians:
+Started cold, silent is faster on every file, by roughly a quarter to a
+half. Warm, it is faster on most files: the animated GIF (20 against 22 ms)
+and the 2 MB text (21 against 22) are ties, and sushi is faster on the
+42-page PDF (20 against 29). sushi shows Office files only when LibreOffice
+is installed, and it was not.
 
-- sushi, switch, Folder: 5 of 5 runs without a frame (the window kept showing the file before)
-- sushi, cold, MP3 with cover: 4 of 5 runs without a frame (the previewer died)
-- sushi, switch, MP3 with cover: 5 of 5 runs without a frame (the previewer died)
-- sushi, warm, MP3 with cover: 5 of 5 runs without a frame (no frame)
+¹ In this setup sushi's process aborted on the MP3 in every run, inside
+GStreamer's playback code. GStreamer's playbin and playbin3 play the file to
+the end on their own, so the cause isn't settled and these cells are left
+unmeasured.
+
+## Switching files, and memory
+
+A switch is the next file in a window that is already open, as the arrow
+keys show it; each row is the switch to that file, made by a previewer that
+was already running, as with Nautilus. The memory is the previewer's resident
+set in the cold runs: a new process showing just that file.
+
+| File | silent, switch | sushi, switch | silent, memory (MB) | sushi, memory (MB) |
+| --- | ---: | ---: | ---: | ---: |
+| JPEG, 12 MP | 87 (90) | 119 (142) | 192 | 328 |
+| PNG, 3840×2160 | 129 (138) | 151 (159) | 199 | 287 |
+| Animated GIF | 16 (32) | 23 (30) | 173 | 239 |
+| PDF, 3 pages | 43 (46) | 34 (93) | 264 | 271 |
+| PDF, 42 pages | 29 (30) | 28 (34) | 211 | 280 |
+| Video, 1080p | 135 (210) | 230 (399) | 448 | 553 |
+| MP3 with cover | 15 (16) | not measured¹ | 184 | – |
+| Source file, 9 KB | 4 (4) | not measured² | 172 | 218 |
+| Text, 2 MB | 12 (12) | 30 (33) | 170 | 225 |
+| Zip archive | 4 (4) | 11 (21) | 174 | 214 |
+| Folder | 4 (4) | not measured³ | 166 | 219 |
+| Word document | 4 (4) | needs LibreOffice | 176 | – |
+| Spreadsheet | 12 (15) | needs LibreOffice | 169 | – |
+| Presentation | 4 (4) | needs LibreOffice | 168 | – |
+
+Switching, sushi is ahead on the 3-page PDF and level on the 42-page one,
+and silent is ahead on the rest.
+
+² In the run's order this switch follows the MP3, where sushi had aborted.
+
+³ sushi does switch from the zip to the folder, as a check on a test display
+showed, but its two cards differ too little in the pixels the bench samples
+for it to see when.
+
+## How it is measured
+
+`scripts/bench run` calls ShowFile as Nautilus does and watches the
+previewer's window from the X server, reading its pixels back until they
+settle. A previewer is timed from the call to the first frame that shows the
+file, not to the moment its window maps, which comes a little earlier. Sound
+goes to a null sink made for the run, and the previewer the run is not timing
+is kept off the bus.
+
+The machine: an AMD Ryzen 9 9950X (16 cores) with an NVIDIA RTX 4070 SUPER,
+X11 at 3840×2160 with an X11 compositing manager and NVIDIA's
+ForceFullCompositionPipeline on, otherwise idle; Nautilus 51.1 and
+GStreamer 1.28.8. The run took two sittings the same afternoon; sushi's cold
+video holds two runs from the first and three from the second. Every run is
+in [benchmark.json](benchmark.json).
+
+A first, partial comparison on 2026-10-25 timed silent before it stayed
+running beside Nautilus, so every silent number in it was a cold start, under
+a different compositor; its runs are in
+[benchmark-2026-10-25.json](benchmark-2026-10-25.json).
+
+## Run it yourself
+
+The bench is [scripts/bench](../scripts/bench), and it times the previewers on
+the X11 session you are logged into. It needs sushi installed beside silent,
+`pactl` for the null sink that takes the sound, and Python 3 with numpy,
+PyGObject and python-xlib. Its test files are made by `scripts/harness
+fixtures`, which uses ffmpeg, ImageMagick, exiftool, zip, gzip, xz, zstd,
+bzip2 and lz4, takes two PDFs from the graphviz and ghostscript
+documentation, installs python-docx and a few others into a virtual
+environment of its own, and keeps everything in `~/.cache/silent-harness`.
+
+```sh
+scripts/bench fixtures                                # the test files, once
+scripts/bench run --n 5 --silent /usr/bin/silent      # about a quarter of an hour
+```
+
+For the run, the bench moves your D-Bus service file for
+`org.gnome.NautilusPreviewer` aside, points the name at each previewer in
+turn, and puts your file back however the run ends, then checks that silent
+answers again. Previews open in the middle of your screen the whole time, so
+leave the desk to it. `--previewers`, `--modes` and `--only` measure a part
+of it, and `scripts/bench report RESULTS --markdown OUT.md` writes a table
+and the charts from a run's results.

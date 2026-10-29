@@ -73,6 +73,14 @@ Zoomed wider than the window, pages scroll sideways with Shift and the
 wheel, `h` and `l`, and after a click the arrows, which go on to the next
 page at the edge; a picture larger than the window moves with a drag.
 
+## Resizing the window
+
+silent's window has no frame or handles, so it is resized with the window
+manager's own resize: Alt+F8, or Super and the middle mouse button, in
+GNOME; the modifier key and the right mouse button in xmonad. The content
+follows as the window changes: text and documents flow again, pages and
+pictures fit again, and the line or the place at the top stays there.
+
 ## What silent remembers
 
 A file you leave, by moving to another or closing the preview, comes back
@@ -98,6 +106,24 @@ away (F1 shows it too, where the window manager leaves F1 alone). Letters
 are written as vim writes them, as typed: `j` is the key and `J` is Shift
 with it.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../site/media/keys-code-dark.webp">
+  <img src="../site/media/keys-code.webp" width="100%" alt="The keys card over a Rust file: view, navigation, selection, vim keys, general keys and Nautilus's">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../site/media/keys-pdf-dark.webp">
+  <img src="../site/media/keys-pdf.webp" width="100%" alt="The keys card over a PDF: pages, view, selection, vim keys, general keys and Nautilus's">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../site/media/keys-video-dark.webp">
+  <img src="../site/media/keys-video.webp" width="100%" alt="The keys card over a video: playback, view, general keys and Nautilus's">
+</picture>
+
+The card over a photo is in the [README](../README.md#keys). The tables
+below say the same in words.
+
 | Key | Action |
 | --- | --- |
 | Space | Toggles the preview of the selection: closes it, or, over the archive a file was taken out of, goes back to the archive; stops a file being taken out |
@@ -122,8 +148,8 @@ with it.
 | Drag, double-click, triple-click | Select text, a word, a line (in an HTML page, a block); the selection is also the primary selection |
 | Ctrl+a, Ctrl+c | Select all, copy |
 
-Text, code, hexdumps, Word documents, PDFs and slides also move with vim's
-keys. What has been typed of a command shows at the right of the info
+Text, code, hexdumps, rendered Markdown and HTML, Word documents, PDFs and
+slides also move with vim's keys. What has been typed of a command shows at the right of the info
 line, as vim's `showcmd` does:
 
 | Key | Action |

@@ -6,7 +6,7 @@ wgpu on X11.
 
 ## Building
 
-You need Rust 1.88 or newer and the libraries silent links: on Arch Linux,
+You need Rust 1.95 or newer and the libraries silent links: on Arch Linux,
 `glycin`, `libarchive`, `gstreamer` with `gst-plugins-base` and
 `gst-plugins-good`, `vulkan-icd-loader`, `libxcb`, `libxkbcommon`,
 `libxkbcommon-x11`, `fontconfig`, `glib2` and `libseccomp`, and at run time
@@ -67,17 +67,18 @@ silent draws on the CPU (Mesa's lavapipe) and plays sound into nothing.
 ```sh
 scripts/harness fixtures
 export DISPLAY=$(scripts/harness display)
-scripts/harness cold "$PWD/target/release/silent" ~/.cache/claude-scratch/silent/fixtures/images/photo-4032x3024.jpg 10
+F=~/.cache/silent-harness/fixtures
+scripts/harness cold "$PWD/target/release/silent" $F/images/photo-4032x3024.jpg 10
 ```
 
-The fixtures go to `$SILENT_SCRATCH/fixtures`, by default
-`~/.cache/claude-scratch/silent/fixtures`. To look at a preview, run a
-command on the private bus, where `harness show` calls ShowFile as Nautilus
-does and `harness shot` saves the display:
+The harness keeps its files, the fixtures among them, in `$SILENT_SCRATCH`,
+by default `~/.cache/silent-harness`. To look at a preview, run a command on
+the private bus, where `harness show` calls ShowFile as Nautilus does and
+`harness shot` saves the display:
 
 ```sh
 scripts/harness bus "$PWD/target/release/silent" -- bash -c '
-    scripts/harness show "$1"; sleep 2; scripts/harness shot pdf' _ ~/.cache/claude-scratch/silent/fixtures/docs/dotguide.pdf
+    scripts/harness show "$1"; sleep 2; scripts/harness shot pdf' _ $F/docs/dotguide.pdf
 ```
 
 `silent --probe FILE...` prints what a preview of each file would be and how

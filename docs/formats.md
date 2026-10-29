@@ -25,9 +25,9 @@ laid-out JSON, and Chinese saved in GBK reads right.
 
 ## Office documents
 
-The Office files are read the way macOS Quick Look reads them: silent opens
-the package and parses its XML itself, or the binary streams of the formats
-of Office 97 to 2003, with no office suite, and draws the result natively.
+silent opens an Office package and parses its XML itself, or the binary
+streams of the formats of Office 97 to 2003, with no office suite, and draws
+the result natively.
 The faces a document names are drawn in installed families with the same
 metrics, Carlito for Calibri and Caladea for Cambria among them.
 

@@ -3,7 +3,9 @@
 silent is one resident process. Nautilus starts it through D-Bus and keeps
 it while Nautilus runs; any other file manager hands it a file with
 `silent show FILE` and its kin, which start it the same way when it is not
-running, so every preview is as quick as Nautilus's:
+running, so every preview after the first is as quick as Nautilus's. The
+first is a cold start, unless `silent warm` ran when the file manager
+started, as yazi's plugin does:
 
 | Command | What it does |
 | --- | --- |
@@ -66,8 +68,9 @@ window as a number and whether to close a preview of the same file, and
 Close), and silent answers that interface too. For Nemo to start silent,
 put [data/org.nemo.Preview.service](../data/org.nemo.Preview.service) in
 `~/.local/share/dbus-1/services/`, with silent's path on its `Exec` line,
-in place of nemo-preview's, which owns the same name. Space then previews.
-Tested with Nemo's calls made by `gdbus`; not with Nemo itself.
+in place of nemo-preview's, which owns the same name. Space then previews,
+and Space again, in Nemo or in the preview, closes it. Tested with Nemo
+6.6.4.
 
 ## Thunar
 
@@ -135,14 +138,19 @@ map i $silent toggle --owner $PPID "$f" >/dev/null
 cmd on-select &silent follow --owner $PPID "$f" >/dev/null
 ```
 
-Not tested.
+Tested with lf 42: `i` shows the hovered file and closes the preview again,
+the preview follows the cursor, and it closes when lf quits.
 
 ## nnn
 
-nnn's plugin keys run a command with the hovered file as `$nnn`:
+nnn's plugin keys run a command with the hovered file as `$nnn`; press `;`
+and then the key:
 
 ```sh
-export NNN_PLUG='i:!silent show --focus --owner $PPID "$nnn"*'
+export NNN_PLUG='i:!silent show --focus --owner $(ps -o ppid= -p $PPID) "$nnn"*'
 ```
 
-`*` skips nnn's prompt after the command. Not tested.
+nnn runs the command from a copy of itself that it forks for the purpose,
+so `$PPID` is that copy, which ends with the command; its parent is nnn.
+`*` skips nnn's prompt after the command. Tested with nnn 5.3: `;i` shows
+the hovered file, and the preview closes when nnn quits.
