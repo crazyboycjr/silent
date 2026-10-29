@@ -27,6 +27,7 @@ use crate::overview::{self, Docking, Geometry, Mode, Overview, Overviewed, Shown
 use crate::paged::{GAP, Pages, RAIL, THUMB};
 use crate::pdftext::{Area, PageText};
 use crate::theme::Theme;
+use crate::view::{paint_inside, paint_picture, radius};
 
 /// Pages kept drawn on each side of those in view.
 const MARGIN: usize = 2;
@@ -630,15 +631,23 @@ pub fn rasterize(
     })
 }
 
-/// A page, or a part of it, where it lies on a page `width` by `height`.
-fn placed(raster: &Raster, width: f32, height: f32) -> Img {
-    let [left, top, right, bottom] = raster.area;
-    img(ImageSource::Render(raster.image.clone()))
-        .absolute()
-        .left(px(left * width))
-        .top(px(top * height))
-        .w(px((right - left) * width))
-        .h(px((bottom - top) * height))
+/// A page on white, with what is drawn of it where that lies on the page:
+/// the page whole, or a part of it.
+fn sheet(drawn: Vec<(Arc<RenderImage>, [f32; 4])>) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |page, _, window, _| {
+            paint_inside(fill(page, rgb(0xffffff)), window);
+            let at =
+                |x: f32, y: f32| page.origin + point(page.size.width * x, page.size.height * y);
+            for (image, [left, top, right, bottom]) in &drawn {
+                let place = Bounds::from_corners(at(*left, *top), at(*right, *bottom));
+                paint_picture(image, place, px(0.), window);
+            }
+        },
+    )
+    .absolute()
+    .size_full()
 }
 
 /// A page on the rail, `top` pixels down the track and `height` tall,
@@ -700,18 +709,17 @@ impl Render for PdfPane {
             .zip(self.selection());
         let pages = self.pages.sizes.iter().enumerate().map(|(i, &(w, h))| {
             let height = h * column / w.max(1.);
+            let drawn = [self.rendered.get(&i), self.tiles.get(&i)]
+                .into_iter()
+                .flatten()
+                .map(|raster| (raster.image.clone(), raster.area))
+                .collect();
             let mut page = div()
                 .relative()
                 .w(px(column))
                 .h(px(height))
                 .flex_none()
-                .bg(rgb(0xffffff));
-            if let Some(raster) = self.rendered.get(&i) {
-                page = page.child(placed(raster, column, height));
-            }
-            if let Some(tile) = self.tiles.get(&i) {
-                page = page.child(placed(tile, column, height));
-            }
+                .child(sheet(drawn));
             if let Some((page_ix, (_, areas))) = &selected
                 && *page_ix == i
             {
@@ -750,17 +758,19 @@ impl Render for PdfPane {
         )
         .absolute();
         let height = f32::from(self.viewport.height);
+        let radius = radius(window);
         let (dock, bar) = match self.overview.shown(self.geometry(1.).scrollable()) {
             Shown::Docked => {
                 let g = self.geometry(f64::from(height));
                 let content = self.rail(g, window, cx);
-                let panel = overview::panel(&self.overview, g, RAIL, content, theme, cx);
-                let dock = overview::dock(RAIL, theme.backdrop, None, Some(panel)).on_scroll_wheel(
-                    cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
+                let panel = overview::panel(&self.overview, g, RAIL, content, theme, radius, cx);
+                let dock = overview::dock(RAIL, theme.backdrop, None, Some(panel), radius);
+                let dock = dock.on_scroll_wheel(cx.listener(
+                    |this, event: &ScrollWheelEvent, window, cx| {
                         this.pages.wheel(event, window);
                         cx.notify();
-                    }),
-                );
+                    },
+                ));
                 (Some(dock), None)
             }
             Shown::Bar => {
@@ -777,6 +787,7 @@ impl Render for PdfPane {
             .flex()
             .flex_row()
             .bg(theme.backdrop)
+            .rounded(radius)
             .child(
                 div()
                     .flex_1()

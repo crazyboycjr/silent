@@ -28,6 +28,7 @@ use crate::overview::{
     self, Docking, Geometry, Mode, Overview, Overviewed, Shown as OverviewShown,
 };
 use crate::theme::{Theme, progress};
+use crate::view::{clear_of_corners, paint_inside, radius};
 
 const FONT_SIZE: f32 = 12.5;
 const LINE_HEIGHT: f32 = 20.;
@@ -1078,10 +1079,8 @@ impl LinesPane {
                     for &(from, to, color) in ink {
                         let x = bounds.left() + px(MINI_PAD + f32::from(from) * pitch.column);
                         let width = px(f32::from(to - from) * pitch.column);
-                        window.paint_quad(fill(
-                            Bounds::new(point(x, y), size(width, height)),
-                            color.opacity(0.8),
-                        ));
+                        let run = Bounds::new(point(x, y), size(width, height));
+                        paint_inside(fill(run, color.opacity(0.8)), window);
                     }
                 }
             },
@@ -1456,7 +1455,8 @@ impl Render for LinesPane {
                     point(bounds.left(), y_of(row)),
                     size(bounds.size.width, line_height),
                 );
-                window.paint_quad(fill(band, progress().opacity(0.3 * left.max(0.).sqrt())));
+                let lit = progress().opacity(0.3 * left.max(0.).sqrt());
+                paint_inside(fill(band, lit), window);
                 window.request_animation_frame();
             }
             window.with_content_mask(Some(ContentMask { bounds: text_area }), |window| {
@@ -1475,25 +1475,35 @@ impl Render for LinesPane {
                             to += advance.get() * 0.6;
                         }
                         if to > from {
-                            window.paint_quad(fill(
-                                Bounds::from_corners(
-                                    point(origin.x + from, origin.y),
-                                    point(origin.x + to, origin.y + line_height),
-                                ),
-                                theme.selection,
-                            ));
+                            let selected = Bounds::from_corners(
+                                point(origin.x + from, origin.y),
+                                point(origin.x + to, origin.y + line_height),
+                            );
+                            paint_inside(fill(selected, theme.selection), window);
                         }
                     }
-                    let _ =
-                        row.shaped
-                            .paint(origin, line_height, TextAlign::Left, None, window, cx);
+                    let text = Bounds::new(origin, size(row.shaped.width(), line_height));
+                    clear_of_corners(text, window, |window| {
+                        let _ = row.shaped.paint(
+                            origin,
+                            line_height,
+                            TextAlign::Left,
+                            None,
+                            window,
+                            cx,
+                        );
+                    });
                 }
             });
             for (i, row) in drawn.iter().enumerate() {
                 if let Some(number) = &row.number {
                     let x = bounds.left() + gutter - px(14. * m.zoom) - number.width();
                     let origin = point(x, y_of(first + i));
-                    let _ = number.paint(origin, line_height, TextAlign::Left, None, window, cx);
+                    let text = Bounds::new(origin, size(number.width(), line_height));
+                    clear_of_corners(text, window, |window| {
+                        let _ =
+                            number.paint(origin, line_height, TextAlign::Left, None, window, cx);
+                    });
                 }
             }
             // Listened to on every frame: a quick click can be released
@@ -1515,6 +1525,7 @@ impl Render for LinesPane {
         let scrollable = self.geometry(1.).scrollable();
         let track = f32::from(self.height);
         let width = self.pitch.width();
+        let radius = radius(window);
         let shown = self.overview.shown(scrollable);
         let overview = match shown {
             OverviewShown::Overlay | OverviewShown::Docked => {
@@ -1526,6 +1537,7 @@ impl Render for LinesPane {
                     width,
                     content,
                     theme,
+                    radius,
                     cx,
                 ))
             }
@@ -1543,6 +1555,7 @@ impl Render for LinesPane {
                     theme.surface,
                     Some(theme.rule),
                     overview,
+                    radius,
                 )),
             )
         } else {
@@ -1554,6 +1567,7 @@ impl Render for LinesPane {
             .flex()
             .flex_row()
             .bg(theme.surface)
+            .rounded(radius)
             .on_scroll_wheel(
                 cx.listener(|this, event: &ScrollWheelEvent, _, cx| this.scroll(event, cx)),
             )

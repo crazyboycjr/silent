@@ -16,6 +16,7 @@ use silent::vim::Motion;
 
 use crate::content::Sheet;
 use crate::theme::{Theme, progress};
+use crate::view::{clear_of_corners, paint_inside, radius};
 
 const ROW: f32 = 24.;
 /// The sheet tabs' height.
@@ -348,6 +349,7 @@ impl Render for SheetPane {
         };
         let rule = theme.muted.opacity(0.22);
         let header = theme.muted.opacity(0.1);
+        let radius = radius(window);
 
         let paint = move |bounds: Bounds<Pixels>, _: (), window: &mut Window, cx: &mut App| {
             let system = window.text_system().clone();
@@ -377,27 +379,21 @@ impl Render for SheetPane {
                 }
                 x += *w;
             }
-            window.paint_quad(fill(
-                Bounds::from_corners(bounds.origin, point(bounds.right(), cells.top())),
-                header,
-            ));
-            window.paint_quad(fill(
-                Bounds::from_corners(
-                    point(bounds.left(), cells.top()),
-                    point(cells.left(), bounds.bottom()),
-                ),
-                header,
-            ));
+            let across = Bounds::from_corners(bounds.origin, point(bounds.right(), cells.top()));
+            paint_inside(fill(across, header), window);
+            let down = Bounds::from_corners(
+                point(bounds.left(), cells.top()),
+                point(cells.left(), bounds.bottom()),
+            );
+            paint_inside(fill(down, header), window);
             window.with_content_mask(Some(ContentMask { bounds: cells }), |window| {
                 for r in first..(first + rows).min(grid.cells.len()) {
                     let y = y_of(r);
-                    window.paint_quad(fill(
-                        Bounds::new(
-                            point(cells.left(), y + row_height - px(1.)),
-                            size(cells.size.width, px(1.)),
-                        ),
-                        rule,
-                    ));
+                    let below = Bounds::new(
+                        point(cells.left(), y + row_height - px(1.)),
+                        size(cells.size.width, px(1.)),
+                    );
+                    paint_inside(fill(below, rule), window);
                     for &(c, x, w) in &columns {
                         let Some(cell) = grid.cells[r].get(c) else {
                             continue;
@@ -417,26 +413,26 @@ impl Render for SheetPane {
                                 bounds: cell_bounds,
                             }),
                             |window| {
-                                let _ = shaped.paint(
-                                    point(tx, y + (row_height - line_height) / 2.),
-                                    line_height,
-                                    TextAlign::Left,
-                                    None,
-                                    window,
-                                    cx,
-                                );
+                                clear_of_corners(cell_bounds, window, |window| {
+                                    let _ = shaped.paint(
+                                        point(tx, y + (row_height - line_height) / 2.),
+                                        line_height,
+                                        TextAlign::Left,
+                                        None,
+                                        window,
+                                        cx,
+                                    );
+                                });
                             },
                         );
                     }
                 }
                 for &(_, x, w) in &columns {
-                    window.paint_quad(fill(
-                        Bounds::new(
-                            point(x + w - px(1.), cells.top()),
-                            size(px(1.), cells.size.height),
-                        ),
-                        rule,
-                    ));
+                    let after = Bounds::new(
+                        point(x + w - px(1.), cells.top()),
+                        size(px(1.), cells.size.height),
+                    );
+                    paint_inside(fill(after, rule), window);
                 }
                 if let Some((r, c)) = cursor
                     && let Some(&(_, x, w)) = columns.iter().find(|(column, ..)| *column == c)
@@ -445,14 +441,15 @@ impl Render for SheetPane {
                         point(x - px(1.), y_of(r) - px(1.)),
                         size(w + px(1.), row_height + px(1.)),
                     );
-                    window.paint_quad(quad(
+                    let frame = quad(
                         cell,
                         px(0.),
                         progress().opacity(0.1),
                         px(2.),
                         progress(),
                         BorderStyle::Solid,
-                    ));
+                    );
+                    paint_inside(frame, window);
                 }
             });
             // Column letters and row numbers stay put while the cells scroll.
@@ -464,7 +461,7 @@ impl Render for SheetPane {
                 for &(c, x, w) in &columns {
                     if cursor.is_some_and(|(_, column)| column == c) {
                         let under = Bounds::new(point(x, bounds.top()), size(w, row_height));
-                        window.paint_quad(fill(under, progress().opacity(0.2)));
+                        paint_inside(fill(under, progress().opacity(0.2)), window);
                     }
                     let name = sheet::column_name(grid.origin.1 + c as u32);
                     let shaped = shape(&name, &quiet);
@@ -472,7 +469,11 @@ impl Render for SheetPane {
                         x + (w - shaped.width()) / 2.,
                         bounds.top() + (row_height - line_height) / 2.,
                     );
-                    let _ = shaped.paint(origin, line_height, TextAlign::Left, None, window, cx);
+                    let text = Bounds::new(origin, size(shaped.width(), line_height));
+                    clear_of_corners(text, window, |window| {
+                        let _ =
+                            shaped.paint(origin, line_height, TextAlign::Left, None, window, cx);
+                    });
                 }
             });
             let numbers = Bounds::from_corners(
@@ -486,7 +487,7 @@ impl Render for SheetPane {
                             point(bounds.left(), y_of(r)),
                             size(cells.left() - bounds.left(), row_height),
                         );
-                        window.paint_quad(fill(under, progress().opacity(0.2)));
+                        paint_inside(fill(under, progress().opacity(0.2)), window);
                     }
                     let label = (grid.origin.0 as usize + r + 1).to_string();
                     let shaped = shape(&label, &quiet);
@@ -494,7 +495,11 @@ impl Render for SheetPane {
                         cells.left() - px(pad) - shaped.width(),
                         y_of(r) + (row_height - line_height) / 2.,
                     );
-                    let _ = shaped.paint(origin, line_height, TextAlign::Left, None, window, cx);
+                    let text = Bounds::new(origin, size(shaped.width(), line_height));
+                    clear_of_corners(text, window, |window| {
+                        let _ =
+                            shaped.paint(origin, line_height, TextAlign::Left, None, window, cx);
+                    });
                 }
             });
         };
@@ -508,6 +513,7 @@ impl Render for SheetPane {
                 .px(px(8.))
                 .h(px(TABS))
                 .items_center()
+                .rounded_b(radius)
                 .bg(header)
                 .border_t_1()
                 .border_color(rule)
@@ -535,6 +541,7 @@ impl Render for SheetPane {
             .size_full()
             .flex()
             .flex_col()
+            .rounded(radius)
             .bg(theme.surface)
             .font_family("Noto Sans")
             .child(

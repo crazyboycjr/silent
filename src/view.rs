@@ -45,6 +45,8 @@ use crate::zoom::Zoom;
 
 /// Corner radius when a compositor draws the transparent corners.
 pub const RADIUS: f32 = 11.0;
+/// Whether a compositor draws them, as silent found when it started.
+static ROUNDED: AtomicBool = AtomicBool::new(false);
 const STRIP_FADE: Duration = Duration::from_millis(180);
 /// How long the strip stays once the pointer rests; a playbar goes sooner.
 const STRIP_LINGER: Duration = Duration::from_millis(1500);
@@ -76,7 +78,6 @@ pub struct Preview {
     focus: FocusHandle,
     /// Holds the focus while the content is engaged.
     content: FocusHandle,
-    rounded: bool,
     input: async_channel::Sender<Input>,
     /// Whether the first frame of the content is marked, or has none to
     /// mark: the blank a withdrawn window holds is never on the screen.
@@ -278,6 +279,7 @@ impl Preview {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        ROUNDED.store(rounded, Ordering::Relaxed);
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let appearance = cx.observe_window_appearance(window, |_, _, cx| cx.notify());
@@ -301,7 +303,6 @@ impl Preview {
             hide: None,
             focus,
             content: cx.focus_handle(),
-            rounded,
             input,
             traced,
             ground: None,
@@ -2005,13 +2006,12 @@ impl Preview {
                 )
             })
             .child(
-                img(ImageSource::Render(image))
-                    .absolute()
-                    .left(rect.left())
-                    .top(rect.top())
-                    .w(rect.size.width)
-                    .h(rect.size.height)
-                    .rounded(radius),
+                canvas(
+                    |_, _, _| {},
+                    move |_, _, window, _| paint_picture(&image, rect, radius, window),
+                )
+                .absolute()
+                .size_full(),
             )
             .children(follow)
             .into_any_element()
@@ -2140,11 +2140,7 @@ impl Render for Preview {
             window.appearance(),
             WindowAppearance::Dark | WindowAppearance::VibrantDark
         ));
-        let radius = if self.rounded && !window.is_fullscreen() {
-            px(RADIUS)
-        } else {
-            px(0.)
-        };
+        let radius = radius(window);
         // Rendered text is sized in rems, as a page in a browser; silent's
         // own words are in pixels.
         let rem = match self.pane {
@@ -2199,7 +2195,6 @@ impl Render for Preview {
         let content = div()
             .id("content")
             .size_full()
-            .rounded(radius)
             .overflow_hidden()
             .when(self.pane.kind().engages(), |content| {
                 content.track_focus(&self.content)
@@ -2388,4 +2383,260 @@ fn help_overlay(
             }),
         )
         .child(help::card(shown, theme, room, window))
+}
+
+/// The window's corner radius: round while a compositor draws the corners
+/// clear, square when fullscreen.
+pub fn radius(window: &Window) -> Pixels {
+    if ROUNDED.load(Ordering::Relaxed) && !window.is_fullscreen() {
+        px(RADIUS)
+    } else {
+        px(0.)
+    }
+}
+
+/// Paints a square `quad` as far as it is in view, inside the window's
+/// round corners, its border only on the sides in view.
+pub fn paint_inside(quad: PaintQuad, window: &mut Window) {
+    let (shown, corners) = inside(quad.bounds, px(0.), window);
+    if shown.is_empty() {
+        return;
+    }
+    let border = |cut: bool, width: Pixels| if cut { px(0.) } else { width };
+    let widths = quad.border_widths;
+    let border_widths = Edges {
+        top: border(shown.top() > quad.bounds.top(), widths.top),
+        right: border(shown.right() < quad.bounds.right(), widths.right),
+        bottom: border(shown.bottom() < quad.bounds.bottom(), widths.bottom),
+        left: border(shown.left() > quad.bounds.left(), widths.left),
+    };
+    window.paint_quad(PaintQuad {
+        bounds: shown,
+        corner_radii: corners,
+        border_widths,
+        ..quad
+    });
+}
+
+/// `color` filling its parent, as far as it is in view, inside the window's
+/// round corners.
+pub fn filled(color: Hsla) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| paint_inside(fill(bounds, color), window),
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+}
+
+/// Paints `image` where `place` puts it, as far as it is in view: inside
+/// the window's round corners, its own corners `own` round.
+pub fn paint_picture(
+    image: &Arc<RenderImage>,
+    place: Bounds<Pixels>,
+    own: Pixels,
+    window: &mut Window,
+) {
+    let (shown, corners) = inside(place, own, window);
+    // Whole, for the content mask to cut, unless a corner rounds it: as it
+    // was drawn before, and out of view, so that the atlas has it before it
+    // scrolls into view.
+    let (bounds, corners) = if shown.is_empty() || corners == Corners::default() {
+        (place, Corners::default())
+    } else {
+        (shown, corners)
+    };
+    let _ = window.paint_image(bounds, place, corners, image.clone(), 0, false);
+}
+
+/// Paints with `paint` what lies over `bounds` and cannot be rounded, as
+/// text cannot, clear of the window's round corners: what reaches into them
+/// is painted again for each row of device pixels there, each as far as
+/// the corner leaves room.
+pub fn clear_of_corners(
+    bounds: Bounds<Pixels>,
+    window: &mut Window,
+    mut paint: impl FnMut(&mut Window),
+) {
+    let r = f32::from(radius(window));
+    let bounds = bounds.intersect(&window.content_mask().bounds);
+    let area = window.viewport_size();
+    let (w, h) = (f32::from(area.width), f32::from(area.height));
+    let sides = f32::from(bounds.left()) < r || f32::from(bounds.right()) > w - r;
+    let ends = f32::from(bounds.top()) < r || f32::from(bounds.bottom()) > h - r;
+    if bounds.is_empty() || !(sides && ends) {
+        return paint(window);
+    }
+    // In device pixels: gpui widens a mask to whole ones, so each mask lies
+    // a hair inside the pixels it is for, and every pixel is painted once.
+    let scale = window.scale_factor();
+    let (wide, tall, rows) = ((w * scale).round(), (h * scale).round(), (r * scale).ceil());
+    let mut paint_in = |side: f32, top: f32, bottom: f32, window: &mut Window| {
+        let hair = 0.01;
+        let (left, right) = ((side + hair) / scale, (wide - side - hair) / scale);
+        let mask = Bounds::from_corners(
+            point(px(left), px((top + hair) / scale)),
+            point(px(right), px((bottom - hair) / scale)),
+        );
+        if mask.intersects(&bounds) {
+            window.with_content_mask(Some(ContentMask { bounds: mask }), |window| paint(window));
+        }
+    };
+    paint_in(0., rows, tall - rows, window);
+    for row in 0..rows as u32 {
+        let (row, d) = (row as f32, row as f32 / scale);
+        let side = ((r - (r * r - (r - d) * (r - d)).sqrt()) * scale).ceil();
+        paint_in(side, row, row + 1., window);
+        paint_in(side, tall - row - 1., tall - row, window);
+    }
+}
+
+fn inside(
+    bounds: Bounds<Pixels>,
+    own: Pixels,
+    window: &Window,
+) -> (Bounds<Pixels>, Corners<Pixels>) {
+    let shown = bounds.intersect(&window.content_mask().bounds);
+    within(shown, bounds, window.viewport_size(), radius(window), own)
+}
+
+/// `shown`, the part of `bounds` in view in a window `area` large with
+/// corners `radius` round, kept inside those corners: rounded as they are
+/// where it meets them, less as it stands further in, and where it is too
+/// thin to be that round, drawn in along its length until it fits. Its own
+/// corners in view are at least `own` round.
+fn within(
+    shown: Bounds<Pixels>,
+    bounds: Bounds<Pixels>,
+    area: Size<Pixels>,
+    radius: Pixels,
+    own: Pixels,
+) -> (Bounds<Pixels>, Corners<Pixels>) {
+    let r = f32::from(radius);
+    let half = f32::from(shown.size.width.min(shown.size.height)) / 2.;
+    let wide = shown.size.width >= shown.size.height;
+    let (left, top) = (f32::from(shown.left()), f32::from(shown.top()));
+    let right = f32::from(area.width - shown.right());
+    let bottom = f32::from(area.height - shown.bottom());
+    // A corner `x` and `y` in from the window's edges: its radius, and how
+    // far in from the window's edge along its length it has to start.
+    let corner = |x: f32, y: f32| {
+        let round = r - x.max(y);
+        if round <= half {
+            return (round.max(0.), 0.);
+        }
+        // As round as it can be, its centre on the circle the window's
+        // corner leaves room for.
+        let room = r - half;
+        let across = if wide { y } else { x }.min(room);
+        (half, room - (room * room - (room - across).powi(2)).sqrt())
+    };
+    let (tl, tr) = (corner(left, top), corner(right, top));
+    let (br, bl) = (corner(right, bottom), corner(left, bottom));
+    let (mut start, mut end) = (shown.origin, shown.bottom_right());
+    if wide {
+        start.x = px(left.max(tl.1).max(bl.1));
+        end.x = area.width - px(right.max(tr.1).max(br.1));
+    } else {
+        start.y = px(top.max(tl.1).max(tr.1));
+        end.y = area.height - px(bottom.max(bl.1).max(br.1));
+    }
+    let (own_left, own_top) = (shown.left() == bounds.left(), shown.top() == bounds.top());
+    let (own_right, own_bottom) = (
+        shown.right() == bounds.right(),
+        shown.bottom() == bounds.bottom(),
+    );
+    let round = |(radius, _): (f32, f32), uncut: bool| {
+        if uncut {
+            px(radius).max(own)
+        } else {
+            px(radius)
+        }
+    };
+    let corners = Corners {
+        top_left: round(tl, own_left && own_top),
+        top_right: round(tr, own_right && own_top),
+        bottom_right: round(br, own_right && own_bottom),
+        bottom_left: round(bl, own_left && own_bottom),
+    };
+    (Bounds::from_corners(start, end.max(&start)), corners)
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui_kit::{Bounds, Corners, Pixels, point, px, size};
+
+    use super::within;
+
+    const AREA: (f32, f32) = (400., 300.);
+
+    fn rect(x0: f32, y0: f32, x1: f32, y1: f32) -> Bounds<Pixels> {
+        Bounds::from_corners(point(px(x0), px(y0)), point(px(x1), px(y1)))
+    }
+
+    fn keep(shown: Bounds<Pixels>, own: f32) -> (Bounds<Pixels>, Corners<Pixels>) {
+        within(shown, shown, size(px(AREA.0), px(AREA.1)), px(11.), px(own))
+    }
+
+    fn radii(c: Corners<Pixels>) -> [f32; 4] {
+        [c.top_left, c.top_right, c.bottom_right, c.bottom_left].map(f32::from)
+    }
+
+    #[test]
+    fn a_band_along_an_edge_is_as_round_as_the_window_there() {
+        let (shown, corners) = keep(rect(0., 0., 400., 24.), 0.);
+        assert_eq!(shown, rect(0., 0., 400., 24.));
+        assert_eq!(radii(corners), [11., 11., 0., 0.]);
+        // A little in from the top: rounder corners would leave a gap.
+        assert_eq!(radii(keep(rect(0., 5., 400., 30.), 0.).1), [6., 6., 0., 0.]);
+        // Away from the corners, square.
+        assert_eq!(radii(keep(rect(0., 40., 400., 60.), 0.).1), [0.; 4]);
+        assert_eq!(radii(keep(rect(30., 0., 370., 24.), 0.).1), [0.; 4]);
+    }
+
+    #[test]
+    fn a_line_too_thin_to_round_stops_short_of_the_corners() {
+        // A hairline 2 px above the bottom edge, across the window.
+        let (shown, corners) = keep(rect(0., 297., 400., 298.), 0.);
+        let (start, end) = (f32::from(shown.left()), f32::from(shown.right()));
+        assert!((start - 4.34).abs() < 0.01 && (end - (400. - 4.34)).abs() < 0.01);
+        assert_eq!(radii(corners), [0., 0., 0.5, 0.5]);
+        // Its rounded end touches the window's corner from inside.
+        let centre: (f32, f32) = (start + 0.5, 297.5);
+        let reach = ((11. - centre.0).powi(2) + (289. - centre.1).powi(2)).sqrt() + 0.5;
+        assert!((reach - 11.).abs() < 0.01);
+        // Down the right edge, it starts below the corner.
+        let (shown, _) = keep(rect(395., 0., 396., 300.), 0.);
+        assert!(f32::from(shown.top()) > 1. && f32::from(shown.bottom()) < 299.);
+    }
+
+    #[test]
+    fn a_picture_keeps_its_own_round_corners_and_is_cut_round() {
+        // Inside the window, its own; filling it, the window's.
+        assert_eq!(radii(keep(rect(50., 40., 350., 260.), 11.).1), [11.; 4]);
+        assert_eq!(radii(keep(rect(0., 0., 400., 300.), 11.).1), [11.; 4]);
+        // Zoomed past the window's sides: cut square where the view cuts it
+        // away from the corners.
+        let picture = rect(-100., 40., 500., 260.);
+        let shown = rect(0., 40., 400., 260.);
+        let size = size(px(AREA.0), px(AREA.1));
+        let (_, corners) = within(shown, picture, size, px(11.), px(11.));
+        assert_eq!(radii(corners), [0.; 4]);
+        // Past every side, the window's corners.
+        let picture = rect(-100., -100., 500., 400.);
+        let (_, corners) = within(rect(0., 0., 400., 300.), picture, size, px(11.), px(11.));
+        assert_eq!(radii(corners), [11.; 4]);
+    }
+
+    #[test]
+    fn square_windows_leave_everything_square() {
+        let size = size(px(AREA.0), px(AREA.1));
+        for shown in [rect(0., 0., 400., 24.), rect(0., 299., 400., 300.)] {
+            let (kept, corners) = within(shown, shown, size, px(0.), px(0.));
+            assert_eq!(kept, shown);
+            assert_eq!(radii(corners), [0.; 4]);
+        }
+    }
 }

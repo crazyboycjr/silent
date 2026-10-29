@@ -21,6 +21,7 @@ use crate::content::{Paper, decode_still};
 use crate::overview::{self, Docking, Geometry, Mode, Overview, Overviewed, Shown};
 use crate::paged::{RAIL, THUMB};
 use crate::theme::{Theme, accent, progress};
+use crate::view::{filled, radius};
 use crate::zoom::{self, Held};
 
 /// The page, warm white as paper is.
@@ -524,25 +525,28 @@ impl Render for DocPane {
                 progress().opacity(0.3 * left.max(0.).sqrt())
             });
             div()
+                .relative()
                 .px(px(margin))
-                .when_some(lit, |row, lit| row.bg(lit))
+                .children(lit.map(filled))
                 .child(block)
                 .into_any_element()
         })
         .size_full();
         let height = f32::from(window.viewport_size().height);
+        let radius = radius(window);
         let (dock, bar) = match self.overview.shown(self.geometry(1.).scrollable()) {
             Shown::Docked => {
                 let g = self.geometry(f64::from(height));
                 let content = sketch(self.mini.clone(), self.doc.page.0, g, theme);
-                let panel = overview::panel(&self.overview, g, RAIL, content, theme, cx);
-                let dock = overview::dock(RAIL, theme.backdrop, None, Some(panel)).on_scroll_wheel(
-                    cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
+                let panel = overview::panel(&self.overview, g, RAIL, content, theme, radius, cx);
+                let dock = overview::dock(RAIL, theme.backdrop, None, Some(panel), radius);
+                let dock = dock.on_scroll_wheel(cx.listener(
+                    |this, event: &ScrollWheelEvent, window, cx| {
                         let delta = event.delta.pixel_delta(window.line_height());
                         this.list.scroll_by(-delta.y);
                         cx.notify();
-                    }),
-                );
+                    },
+                ));
                 (Some(dock), None)
             }
             Shown::Bar => {
@@ -559,12 +563,15 @@ impl Render for DocPane {
             .flex()
             .flex_row()
             .bg(theme.backdrop)
+            .rounded(radius)
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .h_full()
                     .relative()
+                    .rounded_l(radius)
+                    .when(dock.is_none(), |paper| paper.rounded_r(radius))
                     .bg(rgb(PAPER))
                     .pt(px(margin.min(48.)))
                     .on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, cx| {

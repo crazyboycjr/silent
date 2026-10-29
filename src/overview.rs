@@ -435,22 +435,28 @@ fn frame<V: Overviewed>(
 }
 
 /// The minimap, the rail or the miniature: filling its dock, or `width`
-/// wide over the view's right edge. `content` draws what the track shows:
-/// the overview from the geometry's shift down.
+/// wide over the view's right edge, under the window's corners `radius`
+/// round. `content` draws what the track shows: the overview from the
+/// geometry's shift down.
 pub fn panel<V: Overviewed>(
     overview: &Overview,
     g: Geometry,
     width: f32,
     content: AnyElement,
     theme: Theme,
+    radius: Pixels,
     cx: &mut Context<V>,
 ) -> AnyElement {
+    let (top, height) = (g.thumb_top() as f32, g.thumb_height() as f32);
+    let below = g.track as f32 - top - height;
     let thumb = div()
         .absolute()
         .left_0()
         .right_0()
-        .top(px(g.thumb_top() as f32))
-        .h(px(g.thumb_height() as f32))
+        .top(px(top))
+        .h(px(height))
+        .rounded_tr((radius - px(top)).max(px(0.)))
+        .rounded_br((radius - px(below)).max(px(0.)))
         .bg(progress().opacity(if overview.grip.is_some() { 0.24 } else { 0.14 }))
         .border_y_1()
         .border_color(progress().opacity(0.7));
@@ -462,6 +468,7 @@ pub fn panel<V: Overviewed>(
         .when(!overview.docked, |panel| {
             panel
                 .w(px(width))
+                .rounded_r(radius)
                 .bg(theme.surface.opacity(0.9))
                 .border_l_1()
                 .border_color(theme.muted.opacity(0.25))
@@ -504,12 +511,14 @@ pub fn scrollbar<V: Overviewed>(
 }
 
 /// The dock beside a view, `width` wide, on `ground`, with what its
-/// overview shows; `rule` sets it off from the view.
+/// overview shows, under the window's corners `radius` round; `rule` sets
+/// it off from the view.
 pub fn dock(
     width: f32,
     ground: Hsla,
     rule: Option<Hsla>,
     shown: Option<AnyElement>,
+    radius: Pixels,
 ) -> Stateful<Div> {
     div()
         .id("dock")
@@ -517,6 +526,7 @@ pub fn dock(
         .relative()
         .w(px(width))
         .h_full()
+        .rounded_r(radius)
         .bg(ground)
         .when_some(rule, |dock, rule| dock.border_l_1().border_color(rule))
         .children(shown)

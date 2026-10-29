@@ -518,13 +518,22 @@ impl Player for VideoPane {
 }
 
 impl Render for VideoPane {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let frame = self.frame.clone().map(|image| {
-            img(ImageSource::Render(image))
-                .size_full()
-                .object_fit(ObjectFit::Contain)
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    let place = ObjectFit::Contain.get_bounds(bounds, image.size(0));
+                    crate::view::paint_picture(&image, place, px(0.), window);
+                },
+            )
+            .size_full()
         });
-        div().size_full().bg(rgb(0x000000)).children(frame)
+        div()
+            .size_full()
+            .bg(rgb(0x000000))
+            .rounded(crate::view::radius(window))
+            .children(frame)
     }
 }
 
@@ -793,6 +802,7 @@ impl Render for AudioPane {
             .px(px(36.))
             .pb(px(strip::TRACK))
             .bg(theme.surface)
+            .rounded(crate::view::radius(window))
             .text_size(px(13.5))
             .child(div().flex_none().child(cover))
             .child(

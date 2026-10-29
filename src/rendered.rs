@@ -227,6 +227,7 @@ impl Render for RenderedPane {
         div()
             .size_full()
             .bg(theme.surface)
+            .rounded(crate::view::radius(window))
             .text_color(theme.text)
             .child(
                 TextView::new(&self.state)

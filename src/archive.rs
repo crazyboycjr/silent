@@ -262,6 +262,7 @@ impl Render for ArchivePane {
             .flex()
             .flex_col()
             .bg(theme.surface)
+            .rounded(crate::view::radius(window))
             .text_color(theme.text)
             .text_size(px(13.5))
             .on_mouse_down(

@@ -25,6 +25,7 @@ use crate::overview::{self, Docking, Geometry, Mode, Overview, Overviewed, Shown
 use crate::paged::{GAP, Pages, RAIL, THUMB};
 use crate::pdf::thumb_frame;
 use crate::theme::Theme;
+use crate::view::{filled, paint_inside, paint_picture, radius};
 
 /// Slides kept read on each side of those in view.
 const MARGIN: usize = 1;
@@ -376,13 +377,18 @@ fn item(item: &Item, picture: Option<&Arc<RenderImage>>, scale: f32) -> Option<A
         .w(px(r.w * scale))
         .h(px(r.h * scale));
     Some(match &item.kind {
-        Kind::Picture(_) => frame
-            .child(
-                img(ImageSource::Render(picture?.clone()))
-                    .size_full()
-                    .object_fit(ObjectFit::Fill),
-            )
-            .into_any_element(),
+        Kind::Picture(_) => {
+            let picture = picture?.clone();
+            frame
+                .child(
+                    canvas(
+                        |_, _, _| {},
+                        move |bounds, _, window, _| paint_picture(&picture, bounds, px(0.), window),
+                    )
+                    .size_full(),
+                )
+                .into_any_element()
+        }
         Kind::Shape {
             fill,
             line,
@@ -390,14 +396,15 @@ fn item(item: &Item, picture: Option<&Arc<RenderImage>>, scale: f32) -> Option<A
             text: body,
         } => {
             let mut shape = frame;
-            if let Some(fill) = fill {
-                shape = shape.bg(rgb(*fill));
-            }
-            if let Some(line) = line {
-                shape = shape.border_1().border_color(rgb(*line));
-            }
             if *ellipse {
-                shape = shape.rounded_full();
+                shape = shape
+                    .rounded_full()
+                    .when_some(*fill, |shape, fill| shape.bg(rgb(fill)))
+                    .when_some(*line, |shape, line| {
+                        shape.border_1().border_color(rgb(line))
+                    });
+            } else if fill.is_some() || line.is_some() {
+                shape = shape.child(rectangle(*fill, *line));
             }
             shape
                 .children(body.as_ref().map(|t| text(t, scale)))
@@ -432,18 +439,45 @@ fn item(item: &Item, picture: Option<&Arc<RenderImage>>, scale: f32) -> Option<A
     })
 }
 
+/// A rectangle's fill and line, as far as it is in view, inside the
+/// window's round corners: one at a slide's corner meets them.
+fn rectangle(fill: Option<u32>, line: Option<u32>) -> impl IntoElement {
+    let colour = |c: Option<u32>| c.map_or(transparent_black(), |c| rgb(c).into());
+    let (ground, edge) = (colour(fill), colour(line));
+    let width = px(if line.is_some() { 1. } else { 0. });
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let shape = quad(bounds, px(0.), ground, width, edge, BorderStyle::Solid);
+            paint_inside(shape, window);
+        },
+    )
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
+}
+
 /// A slide filling its frame, `scale` pixels to the point.
 fn slide_view(shown: &Slide, scale: f32) -> Div {
     let page = div().absolute().size_full().overflow_hidden();
     let page = match (&shown.slide.background, &shown.background) {
-        (_, Some(image)) => page.child(
-            img(ImageSource::Render(image.clone()))
+        (_, Some(image)) => {
+            let image = image.clone();
+            page.child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, _| {
+                        let place = ObjectFit::Cover.get_bounds(bounds, image.size(0));
+                        paint_picture(&image, place, px(0.), window);
+                    },
+                )
                 .absolute()
-                .size_full()
-                .object_fit(ObjectFit::Cover),
-        ),
-        (Fill::Color(c), None) => page.bg(rgb(*c)),
-        _ => page.bg(rgb(0xffffff)),
+                .size_full(),
+            )
+        }
+        (Fill::Color(c), None) => page.child(filled(rgb(*c).into())),
+        _ => page.child(filled(rgb(0xffffff).into())),
     };
     page.children(
         shown
@@ -503,26 +537,27 @@ impl Render for SlidesPane {
                     .relative()
                     .w(px(column))
                     .h(px(h * column / w.max(1.)))
-                    .flex_none()
-                    .bg(rgb(0xffffff));
+                    .flex_none();
                 match self.shown.get(&i) {
                     Some((_, shown)) => page.child(slide_view(shown, scale)),
-                    None => page,
+                    None => page.child(filled(rgb(0xffffff).into())),
                 }
             })
             .collect();
         let height = f32::from(self.viewport.height);
+        let radius = radius(window);
         let (dock, bar) = match self.overview.shown(self.geometry(1.).scrollable()) {
             Shown::Docked => {
                 let g = self.geometry(f64::from(height));
                 let content = self.rail(g, window, cx);
-                let panel = overview::panel(&self.overview, g, RAIL, content, theme, cx);
-                let dock = overview::dock(RAIL, theme.backdrop, None, Some(panel)).on_scroll_wheel(
-                    cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
+                let panel = overview::panel(&self.overview, g, RAIL, content, theme, radius, cx);
+                let dock = overview::dock(RAIL, theme.backdrop, None, Some(panel), radius);
+                let dock = dock.on_scroll_wheel(cx.listener(
+                    |this, event: &ScrollWheelEvent, window, cx| {
                         this.pages.wheel(event, window);
                         cx.notify();
-                    }),
-                );
+                    },
+                ));
                 (Some(dock), None)
             }
             Shown::Bar => {
@@ -539,6 +574,7 @@ impl Render for SlidesPane {
             .flex()
             .flex_row()
             .bg(theme.backdrop)
+            .rounded(radius)
             .child(
                 div()
                     .flex_1()

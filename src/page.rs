@@ -20,6 +20,7 @@ use silent::vim::Motion;
 
 use crate::overview::{self, Geometry, Mode, Overview, Overviewed, Shown};
 use crate::theme::Theme;
+use crate::view::{paint_picture, radius};
 use crate::web::{self, Click, Doc, Page, STRIP};
 
 /// What a line of the keys scrolls, in logical pixels, as in the text view.
@@ -496,32 +497,37 @@ impl Render for PagePane {
         let scale = self.scale as f32;
         let top = self.device(self.top) as f32;
         let width = px(self.size.0 as f32 / scale);
-        let pictures: Vec<AnyElement> = match &self.window {
-            Some((_, image)) => vec![
-                img(ImageSource::Render(image.clone()))
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .w(width)
-                    .h(px(self.size.1 as f32 / scale))
-                    .object_fit(ObjectFit::Fill)
-                    .into_any_element(),
-            ],
+        // Each picture, and where it lies from the pane's top left.
+        let pictures: Vec<(Arc<RenderImage>, Bounds<Pixels>)> = match &self.window {
+            Some((_, image)) => {
+                let height = px(self.size.1 as f32 / scale);
+                vec![(
+                    image.clone(),
+                    Bounds::new(point(px(0.), px(0.)), size(width, height)),
+                )]
+            }
             None => self
                 .strips
                 .iter()
                 .map(|(&i, image)| {
-                    img(ImageSource::Render(image.clone()))
-                        .absolute()
-                        .top(px((i as f32 * STRIP as f32 - top) / scale))
-                        .left_0()
-                        .w(width)
-                        .h(px(STRIP as f32 / scale))
-                        .object_fit(ObjectFit::Fill)
-                        .into_any_element()
+                    let y = px((i as f32 * STRIP as f32 - top) / scale);
+                    let place =
+                        Bounds::new(point(px(0.), y), size(width, px(STRIP as f32 / scale)));
+                    (image.clone(), place)
                 })
                 .collect(),
         };
+        let pictures = canvas(
+            |_, _, _| {},
+            move |pane, _, window, _| {
+                for (image, place) in &pictures {
+                    let place = Bounds::new(pane.origin + place.origin, place.size);
+                    paint_picture(image, place, px(0.), window);
+                }
+            },
+        )
+        .absolute()
+        .size_full();
         let area = self.area.clone();
         let view = cx.entity().downgrade();
         // Listened to on every frame: a quick click can be released before
@@ -556,6 +562,7 @@ impl Render for PagePane {
             .relative()
             .overflow_hidden()
             .bg(theme.surface)
+            .rounded(radius(window))
             .cursor(if self.pointing {
                 CursorStyle::PointingHand
             } else {
@@ -568,7 +575,7 @@ impl Render for PagePane {
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, _, cx| this.press(event, cx)),
             )
-            .children(pictures)
+            .child(pictures)
             .child(follow)
             .children(bar)
     }
