@@ -10,7 +10,9 @@ You need Rust 1.95 or newer and the libraries silent links: on Arch Linux,
 `glycin`, `libarchive`, `gstreamer` with `gst-plugins-base` and
 `gst-plugins-good`, `vulkan-icd-loader`, `libxcb`, `libxkbcommon`,
 `libxkbcommon-x11`, `fontconfig`, `glib2` and `libseccomp`, and at run time
-`bubblewrap` for glycin's sandboxed loaders.
+`bubblewrap` for glycin's sandboxed loaders, a Vulkan driver, and the
+fonts silent draws in, Noto Sans and JetBrains Mono (`noto-fonts` and
+`ttf-jetbrains-mono`).
 
 ```sh
 cargo build --release
@@ -54,8 +56,7 @@ should come from a release build.
 `cargo test --release` runs the unit tests of the library and the binary,
 about 190 of them: geometry, wrapping, vim's counts, the info line's
 colours, the Office readers, the hexdump, what is remembered, and the keys
-on the `?` card among them. The Arch package runs the library's at build
-time.
+on the `?` card among them. The Arch package runs them all as it builds.
 
 ## The test harness
 
@@ -143,5 +144,8 @@ changes over.
 ## Packaging
 
 `packaging/arch/PKGBUILD` builds the working tree it sits in, runs the
-tests, and installs `/usr/bin/silent` with Nautilus's D-Bus service; it
-provides and conflicts with `sushi`. From that directory, `makepkg -si`.
+tests, and installs `/usr/bin/silent`, the D-Bus services of Nautilus and
+Nemo, the icons and the README. It provides `sushi` and conflicts with
+`sushi` and `nemo-preview`, whose services it replaces. From that
+directory, `makepkg -si`. The AUR's PKGBUILD builds a tagged release with
+the same dependencies and steps, so a change to one belongs in the other.

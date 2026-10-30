@@ -2,39 +2,58 @@
 pkgname=silent
 pkgver=1.0.0
 pkgrel=1
-pkgdesc='A borderless, fast file previewer for Nautilus (replaces sushi)'
+pkgdesc='A borderless, fast file previewer for Nautilus on X11 (replaces sushi)'
 arch=('x86_64')
+url='https://github.com/crazyboycjr/silent'
 license=('Apache-2.0')
-depends=('glycin' 'bubblewrap' 'vulkan-icd-loader' 'fontconfig' 'glib2'
-         'libxcb' 'libxkbcommon' 'libxkbcommon-x11' 'libseccomp' 'gcc-libs' 'glibc'
-         'gstreamer' 'gst-plugins-base' 'gst-plugins-good' 'libarchive')
+depends=('glibc' 'libgcc' 'glib2' 'fontconfig' 'libseccomp' 'libarchive'
+         'libxcb' 'libxkbcommon' 'libxkbcommon-x11'
+         'vulkan-icd-loader' 'vulkan-driver'
+         'gstreamer' 'gst-plugins-base-libs' 'gst-plugins-base' 'gst-plugins-good'
+         'glycin' 'bubblewrap' 'hicolor-icon-theme'
+         'noto-fonts' 'ttf-jetbrains-mono')
 optdepends=('gst-libav: more video and audio formats'
-            'gst-plugins-bad: more video formats and hardware decoding')
-makedepends=('cargo')
+            'gst-plugins-bad: more video formats and hardware decoding'
+            'libheif: AVIF and HEIC pictures'
+            'noto-fonts-cjk: Chinese, Japanese and Korean text'
+            'noto-fonts-emoji: colour emoji'
+            'ttf-carlito: Office documents set in Calibri or Aptos'
+            'ttf-caladea: Office documents set in Cambria'
+            'ttf-liberation: Office documents set in Arial, Times or Courier'
+            'xdg-utils: opening the links of Markdown and HTML pages')
+makedepends=('cargo' 'python')
 provides=('sushi')
-conflicts=('sushi')
+conflicts=('sushi' 'nemo-preview')
 options=('!lto' '!debug')
 
 prepare() {
   cd "$startdir/../.."
-  cargo fetch --locked
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 }
 
 build() {
   cd "$startdir/../.."
+  export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR="$srcdir/target"
-  cargo build --release --locked
+  cargo build --frozen --release
 }
 
 check() {
   cd "$startdir/../.."
+  export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR="$srcdir/target"
-  cargo test --release --locked --lib
+  cargo test --frozen --release
 }
 
 package() {
   cd "$startdir/../.."
-  install -Dm755 "$srcdir/target/release/silent" "$pkgdir/usr/bin/silent"
-  install -Dm644 data/org.gnome.NautilusPreviewer.service \
-    "$pkgdir/usr/share/dbus-1/services/org.gnome.NautilusPreviewer.service"
+  install -Dm755 "$srcdir/target/release/silent" -t "$pkgdir/usr/bin/"
+  install -Dm644 data/org.gnome.NautilusPreviewer.service data/org.nemo.Preview.service \
+    -t "$pkgdir/usr/share/dbus-1/services/"
+  install -Dm644 README.md -t "$pkgdir/usr/share/doc/$pkgname/"
+  local icon
+  for icon in assets/icon/linux/hicolor/*/apps/silent.*; do
+    install -Dm644 "$icon" "$pkgdir/usr/share/icons/${icon#assets/icon/linux/}"
+  done
 }
