@@ -47,6 +47,8 @@ use crate::zoom::Zoom;
 pub const RADIUS: f32 = 11.0;
 /// Whether a compositor draws them, as silent found when it started.
 static ROUNDED: AtomicBool = AtomicBool::new(false);
+/// Whether paper fills the window, whose corners then stay square.
+static PAPER: AtomicBool = AtomicBool::new(false);
 const STRIP_FADE: Duration = Duration::from_millis(180);
 /// How long the strip stays once the pointer rests; a playbar goes sooner.
 const STRIP_LINGER: Duration = Duration::from_millis(1500);
@@ -210,6 +212,12 @@ impl Pane {
 
     fn media(&self) -> bool {
         matches!(self, Pane::Video(_) | Pane::Audio(_))
+    }
+
+    /// Pages to read, which fill the window to its edges as paper does and
+    /// keep its corners square.
+    fn paper(&self) -> bool {
+        matches!(self, Pane::Pdf(_) | Pane::Doc(_))
     }
 
     fn docking(&self, cx: &App) -> Option<Docking> {
@@ -2124,6 +2132,9 @@ impl Render for Preview {
             window.appearance(),
             WindowAppearance::Dark | WindowAppearance::VibrantDark
         ));
+        // Before the pane renders: the first frame of paper is square, and
+        // the first frame after it round.
+        PAPER.store(self.pane.paper(), Ordering::Relaxed);
         let radius = radius(window);
         // Rendered text is sized in rems, as a page in a browser; silent's
         // own words are in pixels.
@@ -2370,9 +2381,10 @@ fn help_overlay(
 }
 
 /// The window's corner radius: round while a compositor draws the corners
-/// clear, square when fullscreen.
+/// clear, square when fullscreen or over paper.
 pub fn radius(window: &Window) -> Pixels {
-    if ROUNDED.load(Ordering::Relaxed) && !window.is_fullscreen() {
+    let square = PAPER.load(Ordering::Relaxed) || window.is_fullscreen();
+    if ROUNDED.load(Ordering::Relaxed) && !square {
         px(RADIUS)
     } else {
         px(0.)
