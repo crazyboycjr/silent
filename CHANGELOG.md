@@ -11,7 +11,9 @@ content before the window maps, with no title bar, frame or buttons. It has
 rounded corners under a compositor, follows the desktop's light or dark
 preference in warm tones, and keeps up with the pointer when it is resized.
 Its fades and other motion are drawn at the monitor's full rate, also while
-a terminal's file manager keeps the keyboard.
+a terminal's file manager keeps the keyboard. The rate is that of the
+monitor the window lies over most, and follows it as monitors sleep, wake
+or change modes.
 
 **Speed.** silent starts when Nautilus does and stays while it runs, with
 its window and GPU device made ahead of the first Space, so a preview opens

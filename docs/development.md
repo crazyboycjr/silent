@@ -87,7 +87,9 @@ start-up on stderr, with the wall clock: the bus, the fonts, the X11 window,
 the GPU's instance, device, swapchain and pipelines, the first frame and its
 present. `SILENT_TRACE=frames` adds every frame's ConfigureNotify, swapchain
 and present, as resizing the window shows them, with the lines shaped, the
-glyphs rasterized and the time the renderer took.
+glyphs rasterized and the time the renderer took; and whenever it changes,
+the refresh rate the window's frames are paced at, and what it comes from,
+such as the mode of the monitor the window lies over most.
 
 ## The benchmark
 

@@ -61,6 +61,27 @@ code, `silent:` comments mark them.
   frames are paced by a timer at the monitor's refresh rate, not by the
   present, so mailbox draws no more frames than FIFO.
 
+- **Each window keeps to its own monitor's refresh rate**
+  (`x11/refresh.rs`, `x11/client.rs`). gpui paced a window's frames at the
+  rate of the first lit CRTC in RandR's list, read when the window was
+  first shown and kept as long as it lasted, or at 60 Hz with no CRTC lit
+  then. silent's window is made ahead and kept while Nautilus runs, so a
+  wrong rate stuck for hours: 60 Hz on a 240 Hz monitor when the window was
+  first shown while that monitor slept (NVIDIA then lists it as
+  disconnected, with no modes), or the rate of whichever CRTC came first.
+
+  Now a window takes the current mode of the CRTC it lies over most, the
+  faster of mirrored ones. Its first showing reads that at once; a later
+  showing starts at the rate the window had and reads it again after the
+  first frame, which so waits for no round trip. RandR's events for the
+  screen, a CRTC or an output have each shown window read it again at its
+  next frame, and a move or a resize once the window has rested for a
+  tenth of a second, since a round trip during a drag would wait behind
+  each of its moves. While no lit CRTC lies under the window, it keeps the
+  rate it had from one; failing that it takes the fastest lit CRTC's, then
+  the fastest mode RandR lists, then 60 Hz. `SILENT_TRACE=frames` prints
+  each window's rate, and what it comes from, whenever that changes.
+
 - **HTML paragraphs with code each have an id of their own**
   (`gpui-base`, `src/text/node.rs`): the text view's HTML parser records
   no source spans, so every paragraph laid out as an inline flow, which is

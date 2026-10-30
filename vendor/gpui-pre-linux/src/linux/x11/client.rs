@@ -45,7 +45,9 @@ use super::{
     XimHandler, button_or_scroll_from_event_detail, check_reply,
     clipboard::{self, Clipboard},
     get_reply, get_valuator_axis_index, handle_connection_error, modifiers_from_state,
-    pressed_button_from_mask, xcb_flush,
+    pressed_button_from_mask,
+    refresh::{self, Refresh},
+    xcb_flush,
 };
 
 use crate::linux::{
@@ -79,9 +81,15 @@ pub(crate) const XINPUT_ALL_DEVICE_GROUPS: xinput::DeviceId = 1;
 
 const GPUI_X11_SCALE_FACTOR_ENV: &str = "GPUI_X11_SCALE_FACTOR";
 
+/// silent: how long after its last move or resize a window's refresh rate is read again.
+const RATE_AFTER_MOVE: Duration = Duration::from_millis(100);
+
 pub(crate) struct WindowRef {
     window: X11WindowStatePtr,
     refresh_state: Option<RefreshState>,
+    /// silent: when the shown window's refresh rate is to be read again; see
+    /// `update_refresh_rate_when_due`.
+    refresh_due: Option<Instant>,
     last_visibility: Visibility,
     is_mapped: bool,
 }
@@ -113,10 +121,10 @@ impl Deref for WindowRef {
 
 enum RefreshState {
     Hidden {
-        refresh_rate: Duration,
+        refresh: Refresh,
     },
     PeriodicRefresh {
-        refresh_rate: Duration,
+        refresh: Refresh,
         event_loop_token: RegistrationToken,
     },
 }
@@ -456,6 +464,27 @@ impl X11Connection {
                 &xkb::SelectEventsAux::new(),
             ),
         )?;
+
+        // silent: RandR tells of monitors that change, sleep or wake, for each window's frames
+        // to keep to its monitor's refresh rate.
+        if get_reply(
+            || "RandR QueryVersion failed",
+            xcb_connection.randr_query_version(1, 2),
+        )
+        .log_err()
+        .is_some()
+        {
+            check_reply(
+                || "Failed to select RandR events",
+                xcb_connection.randr_select_input(
+                    xcb_connection.setup().roots[x_root_index].root,
+                    randr::NotifyMask::SCREEN_CHANGE
+                        | randr::NotifyMask::CRTC_CHANGE
+                        | randr::NotifyMask::OUTPUT_CHANGE,
+                ),
+            )
+            .log_err();
+        }
 
         let xkb_context = new_xkb_context()?;
         let xkb_device_id = xkbc::x11::get_core_keyboard_device_id(&xcb_connection);
@@ -940,6 +969,14 @@ impl X11Client {
                 }
                 handle_visibility_changed(state, event.window);
             }
+            // silent: RandR told of a change, such as a monitor that slept, woke or changed its
+            // mode: each window shown takes its monitor's rate again at its next frame.
+            Event::RandrScreenChangeNotify(_) | Event::RandrNotify(_) => {
+                let now = Instant::now();
+                for window_ref in self.0.borrow_mut().windows.values_mut() {
+                    window_ref.refresh_due = Some(now);
+                }
+            }
             Event::ClientMessage(event) => {
                 let window = self.get_window(event.window)?;
                 let [atom, arg1, arg2, arg3, arg4] = event.data.as_data32();
@@ -1093,6 +1130,10 @@ impl X11Client {
                     .set_bounds(bounds)
                     .context("X11: Failed to set window bounds")
                     .log_err();
+                // silent: moved or resized, the window may lie over another monitor.
+                if let Some(window_ref) = self.0.borrow_mut().windows.get_mut(&event.window) {
+                    window_ref.refresh_due = Some(Instant::now() + RATE_AFTER_MOVE);
+                }
             }
             Event::PropertyNotify(event) => {
                 let window = self.get_window(event.window)?;
@@ -1787,6 +1828,7 @@ impl X11Client {
         let window_ref = WindowRef {
             window: window.0.clone(),
             refresh_state: None,
+            refresh_due: None,
             last_visibility: Visibility::UNOBSCURED,
             is_mapped: false,
         };
@@ -2022,69 +2064,79 @@ impl X11ClientState {
             (
                 false,
                 Some(RefreshState::PeriodicRefresh {
-                    refresh_rate,
+                    refresh,
                     event_loop_token,
                 }),
             ) => {
                 self.loop_handle.remove(event_loop_token);
-                window_ref.refresh_state = Some(RefreshState::Hidden { refresh_rate });
+                window_ref.refresh_state = Some(RefreshState::Hidden { refresh });
             }
-            (true, Some(RefreshState::Hidden { refresh_rate })) => {
-                let event_loop_token = self.start_refresh_loop(x_window, refresh_rate);
+            // silent: shown again, the window may lie over another monitor, or its monitor's
+            // mode may have changed. It starts at the rate it had, and reads it again after the
+            // first frame, which so waits for no round trip.
+            (true, Some(RefreshState::Hidden { refresh })) => {
+                window_ref.refresh_due = Some(Instant::now());
+                let event_loop_token = self.start_refresh_loop(x_window, refresh.period);
                 let Some(window_ref) = self.windows.get_mut(&x_window) else {
                     return;
                 };
                 window_ref.refresh_state = Some(RefreshState::PeriodicRefresh {
-                    refresh_rate,
+                    refresh,
                     event_loop_token,
                 });
             }
             (true, None) => {
-                let Some(screen_resources) = get_reply(
-                    || "Failed to get screen resources",
-                    self.xcb_connection
-                        .randr_get_screen_resources_current(x_window),
-                )
-                .log_err() else {
-                    return;
-                };
-
-                // Ideally this would be re-queried when the window changes screens, but there
-                // doesn't seem to be an efficient / straightforward way to do this. Should also be
-                // updated when screen configurations change.
-                let mode_info = screen_resources.crtcs.iter().find_map(|crtc| {
-                    let crtc_info = self
-                        .xcb_connection
-                        .randr_get_crtc_info(*crtc, x11rb::CURRENT_TIME)
-                        .ok()?
-                        .reply()
-                        .ok()?;
-
-                    screen_resources
-                        .modes
-                        .iter()
-                        .find(|m| m.id == crtc_info.mode)
-                });
-                let refresh_rate = match mode_info {
-                    Some(mode_info) => mode_refresh_rate(mode_info),
-                    None => {
-                        log::error!(
-                            "Failed to get screen mode info from xrandr, \
-                            defaulting to 60hz refresh rate."
-                        );
-                        Duration::from_micros(1_000_000 / 60)
-                    }
-                };
-
-                let event_loop_token = self.start_refresh_loop(x_window, refresh_rate);
+                window_ref.refresh_due = None;
+                let root = self.xcb_connection.setup().roots[self.x_root_index].root;
+                let refresh = refresh::window_refresh(&*self.xcb_connection, root, x_window, None);
+                let event_loop_token = self.start_refresh_loop(x_window, refresh.period);
                 let Some(window_ref) = self.windows.get_mut(&x_window) else {
                     return;
                 };
                 window_ref.refresh_state = Some(RefreshState::PeriodicRefresh {
-                    refresh_rate,
+                    refresh,
                     event_loop_token,
                 });
             }
+        }
+    }
+
+    /// silent: a shown window's refresh rate is read again once due, at its next frame: after
+    /// the first frame of each showing, whenever RandR tells of a change, and once a move or a
+    /// resize has rested, since asking the server while the window is dragged would wait
+    /// behind each of its moves.
+    fn update_refresh_rate_when_due(&mut self, x_window: xproto::Window) {
+        let Some(window_ref) = self.windows.get_mut(&x_window) else {
+            return;
+        };
+        if !window_ref
+            .refresh_due
+            .is_some_and(|due| due <= Instant::now())
+        {
+            return;
+        }
+        window_ref.refresh_due = None;
+        let Some(RefreshState::PeriodicRefresh {
+            refresh: before,
+            mut event_loop_token,
+        }) = window_ref.refresh_state
+        else {
+            return;
+        };
+        let root = self.xcb_connection.setup().roots[self.x_root_index].root;
+        let refresh = refresh::window_refresh(&*self.xcb_connection, root, x_window, Some(before));
+        if refresh == before {
+            return;
+        }
+        if refresh.period != before.period {
+            self.loop_handle.remove(event_loop_token);
+            event_loop_token = self.start_refresh_loop(x_window, refresh.period);
+        }
+        if let Some(window_ref) = self.windows.get_mut(&x_window) {
+            window_ref.refresh_state = Some(RefreshState::PeriodicRefresh {
+                refresh,
+                event_loop_token,
+            });
         }
     }
 
@@ -2117,6 +2169,9 @@ impl X11ClientState {
                         xcb_connection
                     };
                     client.process_x11_events(&xcb_connection).log_err();
+                    // silent: this may give the window a new timer, at a new rate, which takes
+                    // over from this one.
+                    client.0.borrow_mut().update_refresh_rate_when_due(x_window);
 
                     // Take into account that some frames have been skipped
                     let now = Instant::now();
@@ -2259,19 +2314,6 @@ impl X11ClientState {
         .log_err();
         self.xcb_connection.flush().log_err();
     }
-}
-
-// Adapted from:
-// https://docs.rs/winit/0.29.11/src/winit/platform_impl/linux/x11/monitor.rs.html#103-111
-pub fn mode_refresh_rate(mode: &randr::ModeInfo) -> Duration {
-    if mode.dot_clock == 0 || mode.htotal == 0 || mode.vtotal == 0 {
-        return Duration::from_millis(16);
-    }
-
-    let millihertz = mode.dot_clock as u64 * 1_000 / (mode.htotal as u64 * mode.vtotal as u64);
-    let micros = 1_000_000_000 / millihertz;
-    log::info!("Refreshing every {}ms", micros / 1_000);
-    Duration::from_micros(micros)
 }
 
 /// Applies a mapped/obscured change to the refresh loop and reports the
