@@ -22,7 +22,7 @@ pub const NAME: &str = "org.gnome.NautilusPreviewer";
 pub const PATH: &str = "/org/gnome/NautilusPreviewer";
 /// silent's own interface, on the same object: calling it through the
 /// previewer's name starts silent the way Nautilus's calls do.
-pub const CLIENT: &str = "host.cjr.Silent1";
+pub const CLIENT: &str = "xyz.crazyboycjr.silent1";
 /// Nemo's previewer, nemo-preview's name, which silent answers as well.
 pub const NEMO: &str = "org.nemo.Preview";
 pub const NEMO_PATH: &str = "/org/nemo/Preview";
@@ -204,7 +204,7 @@ struct Client {
     owners: Arc<Mutex<HashSet<u32>>>,
 }
 
-#[zbus::interface(name = "host.cjr.Silent1")]
+#[zbus::interface(name = "xyz.crazyboycjr.silent1")]
 impl Client {
     /// `ask` is show, toggle, follow, close or warm; `uri` the file, empty
     /// for close and warm; `owner` the process the preview is for, which
