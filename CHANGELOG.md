@@ -8,7 +8,8 @@ It runs on X11 only.
 
 **The window.** A preview opens centred, at a size worked out from the
 content before the window maps, with no title bar, frame or buttons. It has
-rounded corners under a compositor, follows the desktop's light or dark
+rounded corners under a compositor, except over paper: a PDF or a document
+keeps square corners, as a page has. It follows the desktop's light or dark
 preference in warm tones, and keeps up with the pointer when it is resized.
 Its fades and other motion are drawn at the monitor's full rate, also while
 a terminal's file manager keeps the keyboard. The rate is that of the

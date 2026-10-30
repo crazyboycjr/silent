@@ -21,16 +21,25 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="site/media/readme-space-dark.webp">
-  <img src="site/media/readme-space.webp" width="100%" alt="Nautilus with a folder of photos, documents and code; Space opens a photo, then a PDF, then slides, each at once in a borderless window, and Space again closes each">
+  <img src="site/media/readme-space.webp" width="100%" alt="Nautilus with a folder of papers, photos, books and code; Space opens a paper, then a photo, then a book, then an archive, each at once in a borderless window, and Space again closes each">
 </picture>
 
 ## No border
 
-There is no title bar, no frame and no buttons: the window is the file, a photo edge to edge or a PDF with its pages and a rail of thumbnails.
+There is no title bar, no frame and no buttons: the window is the file, a photo edge to edge with gently rounded corners, or a Word document as a column of paper, with the square corners paper has.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="site/media/no-border-pair-dark.webp">
-  <img src="site/media/no-border-pair.webp" width="100%" alt="Two previews side by side: a photo of a red-roofed house among autumn maples, edge to edge, and a PDF field guide with its page thumbnails at the right">
+  <img src="site/media/no-border-pair.webp" width="100%" alt="Two previews side by side: a photo of a red-roofed house among autumn maples, edge to edge with round corners, and a Word trip report in a square window, a minimap of its pages at the right">
+</picture>
+
+## Paper
+
+A paper or a book in PDF opens at its first page, in a window shaped by it, square as paper. The pages follow in a scroll, drawn as they come into view, with their thumbnails docked at the right; the wheel scrolls, a page number and <kbd>G</kbd> goes straight to that page, and <kbd>Ctrl</kbd> with the wheel zooms where the pointer is.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="site/media/readme-paper-dark.webp">
+  <img src="site/media/readme-paper.webp" width="100%" alt="Two PDFs in silent, each in a square window with its page thumbnails at the right: the first page of a two-column networking paper, and Arthur Rackham's colour plate of the Mad Tea-Party in a typeset Alice's Adventures in Wonderland">
 </picture>
 
 ## Minimal
@@ -59,7 +68,7 @@ Code comes highlighted with a minimap, archives open as a tree you can preview i
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="site/media/readme-formats-dark.webp">
-  <img src="site/media/readme-formats.webp" width="100%" alt="Seven previews: a Rust source file, highlighted, with its minimap docked at the right; then a zip archive as a tree with the size of every entry, gzipped JSON laid out, a spreadsheet, a Word document with a photo, a slide with a bar chart and its thumbnails, and four Tang poems saved in GBK">
+  <img src="site/media/readme-formats.webp" width="100%" alt="Seven previews: a Rust source file, highlighted, with its minimap docked at the right; then a zip archive as a tree with the size of every entry, gzipped JSON laid out, a spreadsheet, a Word report with its title and a table, a slide with a bar chart and its thumbnails, and four Tang poems saved in GBK">
 </picture>
 
 ## Keys
@@ -113,4 +122,4 @@ silent is written in Rust on [GPUI](https://www.gpui.rs), the toolkit of the Zed
 
 ## License
 
-silent is licensed under the Apache License, Version 2.0; see [LICENSE](LICENSE). The photographs and the video in its screenshots are in the public domain (CC0), from Wikimedia Commons.
+silent is licensed under the Apache License, Version 2.0; see [LICENSE](LICENSE). The photographs and the video in its screenshots are in the public domain (CC0), from Wikimedia Commons. The paper is [SpliDT: Partitioned Decision Trees for Scalable Stateful Inference at Line Rate](https://arxiv.org/abs/2509.00397) by Murayyiam Parvez, Annus Zulfiqar, Roman Beltiukov, Shir Landau Feibish, Walter Willinger, Arpit Gupta and Muhammad Shahbaz, under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The book is Lewis Carroll's *Alice's Adventures in Wonderland* with Arthur Rackham's illustrations of 1907, both in the public domain, set for these screenshots from a public-domain transcription and scans on Wikimedia Commons.
