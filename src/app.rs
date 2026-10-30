@@ -622,6 +622,9 @@ impl Controller {
             },
             app_id: Some("silent".into()),
             show: visible && !quiet,
+            // A preview is watched while a terminal's file manager keeps the
+            // keyboard, and GPUI would draw its motion 30 times a second then.
+            inactive_frame_interval: None,
             ..Default::default()
         };
         let (screen, rounded, input) = (self.screen, self.rounded, self.input.clone());
