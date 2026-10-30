@@ -1483,7 +1483,12 @@ impl X11Client {
                 state.mouse_focused_window = Some(event.event);
                 state.restore_cursor_after_hide();
             }
-            Event::XinputLeave(event) if event.mode == xinput::NotifyMode::NORMAL => {
+            // silent: the pointer going on into the child a window's frames go into stays
+            // in the window.
+            Event::XinputLeave(event)
+                if event.mode == xinput::NotifyMode::NORMAL
+                    && event.detail != xinput::NotifyDetail::INFERIOR =>
+            {
                 let mut state = self.0.borrow_mut();
 
                 // Set last scroll values to `None` so that a large delta isn't created if scrolling is done outside the window (the valuator is global)

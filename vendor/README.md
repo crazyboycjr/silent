@@ -46,7 +46,8 @@ code, `silent:` comments mark them.
   the window clips it, so that its swapchain stays good; once the size has
   rested for a tenth of a second over two frames and the server has the
   size last seen, the child is the window's size again. The child's
-  exposures are the window's. While the size keeps
+  exposures are the window's, and the pointer going on into the child
+  stays in the window. While the size keeps
   changing, frames are presented at once rather than at the vertical
   blank, and the window keeps its last frame at its top left (north-west
   bit gravity) until the next is drawn.
