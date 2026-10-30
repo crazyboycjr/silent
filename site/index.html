@@ -451,7 +451,14 @@
       <div class="code"><pre><code>git clone https://github.com/crazyboycjr/silent
 cd silent/packaging/arch
 makepkg -si</code></pre></div>
-      <p>The package replaces sushi and installs the D-Bus service Nautilus calls, so your next Space starts silent, with no restart.</p>
+      <p>The package replaces sushi and installs the D-Bus services Nautilus and Nemo call, so your next Space starts silent, with no restart. It will be on the AUR as <code>silent</code> too.</p>
+    </div>
+    <div class="card install-item">
+      <header><h3>Nix</h3><button class="copy" type="button">Copy</button></header>
+      <div class="code"><pre><code>git clone https://github.com/crazyboycjr/silent
+cd silent
+nix build</code></pre></div>
+      <p>silent is then in <code>result/</code>, and <code>nix profile install github:crazyboycjr/silent</code> installs it without a clone. Outside NixOS it reaches your Vulkan driver through <a href="https://github.com/nix-community/nixGL">nixGL</a>, as <a href="https://github.com/crazyboycjr/silent/blob/main/docs/development.md#nix">the development guide</a> shows.</p>
     </div>
     <div class="card install-item">
       <header><h3>Other distributions</h3><button class="copy" type="button">Copy</button></header>
@@ -467,7 +474,8 @@ cargo build --release</code></pre></div>
       <li>a Vulkan driver;</li>
       <li>glycin's image loaders, with bubblewrap;</li>
       <li>GStreamer, for video and sound;</li>
-      <li>libarchive.</li>
+      <li>libarchive;</li>
+      <li>the fonts Noto Sans and JetBrains Mono.</li>
     </ul>
     <p>A tiling window manager should float silent's windows, whose class is <code>silent</code>. In xmonad: <code>className =? "silent" --&gt; hasBorder False &lt;+&gt; doCenterFloat</code>, with the layout wrapped in <code>smartBorders</code>, or <code>lessBorders</code> with a policy.</p>
   </div>

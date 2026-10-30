@@ -75,7 +75,7 @@ Press <kbd>?</kbd> and a card lists the keys for the file in front of you, silen
 
 silent runs on **X11 only**; it does not run on Wayland yet. It needs a Vulkan driver, glycin's image loaders with bubblewrap, GStreamer for video and sound, libarchive, and the fonts Noto Sans and JetBrains Mono.
 
-On Arch Linux, from this repository:
+On Arch Linux, from this repository, until silent is on the AUR:
 
 ```sh
 git clone https://github.com/crazyboycjr/silent
@@ -83,7 +83,17 @@ cd silent/packaging/arch
 makepkg -si
 ```
 
-The package installs `/usr/bin/silent` and the D-Bus services Nautilus and Nemo call, `org.gnome.NautilusPreviewer` and `org.nemo.Preview`, in place of sushi's and nemo-preview's; the next Space starts silent, with no restart. On other distributions, build it with `cargo build --release` and point that service at the binary, as [docs/development.md](docs/development.md) shows.
+The package installs `/usr/bin/silent` and the D-Bus services Nautilus and Nemo call, `org.gnome.NautilusPreviewer` and `org.nemo.Preview`, in place of sushi's and nemo-preview's; the next Space starts silent, with no restart.
+
+With Nix, `nix build` in a clone leaves silent in `result/`, and this installs it, with the same services:
+
+```sh
+nix profile install github:crazyboycjr/silent
+```
+
+A Nix-built silent reaches the GPU's Vulkan driver by itself only on NixOS, where the package goes in `services.dbus.packages` for Nautilus to start it, and its fonts in `fonts.packages`; on other distributions it needs [nixGL](https://github.com/nix-community/nixGL), as [docs/development.md](docs/development.md#nix) explains.
+
+Without a package, build it with `cargo build --release` and point Nautilus's service at the binary, as [docs/development.md](docs/development.md) shows.
 
 A tiling window manager should float silent's windows, whose class is `silent`. In xmonad, with the layout wrapped in `smartBorders`, or `lessBorders` with a policy, from `XMonad.Layout.NoBorders`:
 

@@ -6,13 +6,16 @@ wgpu on X11.
 
 ## Building
 
-You need Rust 1.95 or newer and the libraries silent links: on Arch Linux,
-`glycin`, `libarchive`, `gstreamer` with `gst-plugins-base` and
-`gst-plugins-good`, `vulkan-icd-loader`, `libxcb`, `libxkbcommon`,
-`libxkbcommon-x11`, `fontconfig`, `glib2` and `libseccomp`, and at run time
-`bubblewrap` for glycin's sandboxed loaders, a Vulkan driver, and the
-fonts silent draws in, Noto Sans and JetBrains Mono (`noto-fonts` and
-`ttf-jetbrains-mono`).
+You need Rust 1.95 or newer, Python, which stylo's build script runs, and
+the libraries silent links: on Arch Linux, `glycin`, `libarchive`,
+`gstreamer` with `gst-plugins-base` and `gst-plugins-good`,
+`vulkan-icd-loader`, `libxcb`, `libxkbcommon`, `libxkbcommon-x11`,
+`fontconfig`, `glib2` and `libseccomp`, and at run time `bubblewrap` for
+glycin's sandboxed loaders, a Vulkan driver, and the fonts silent draws
+in, Noto Sans and JetBrains Mono (`noto-fonts` and `ttf-jetbrains-mono`).
+With Nix, `nix develop` opens a shell with Rust, the libraries and mold;
+the fonts and the Vulkan driver come from the system, as [Nix](#nix)
+says.
 
 ```sh
 cargo build --release
@@ -56,7 +59,8 @@ should come from a release build.
 `cargo test --release` runs the unit tests of the library and the binary,
 about 190 of them: geometry, wrapping, vim's counts, the info line's
 colours, the Office readers, the hexdump, what is remembered, and the keys
-on the `?` card among them. The Arch package runs them all as it builds.
+on the `?` card among them. The Arch and Nix packages run them all as they
+build.
 
 ## The test harness
 
@@ -149,3 +153,31 @@ Nemo, the icons and the README. It provides `sushi` and conflicts with
 `sushi` and `nemo-preview`, whose services it replaces. From that
 directory, `makepkg -si`. The AUR's PKGBUILD builds a tagged release with
 the same dependencies and steps, so a change to one belongs in the other.
+
+## Nix
+
+`flake.nix` builds silent from `Cargo.lock` with the nixpkgs `flake.lock`
+pins, runs the tests, and installs the D-Bus services, their `Exec` lines
+pointing into the store, and the icons. It wraps the binary with what
+silent loads as it runs: GStreamer's base, good and libav plugins, glycin's
+loaders, run in bubblewrap from the store, and the Vulkan loader.
+
+```sh
+nix build                    # silent in result/
+nix develop                  # Rust, the libraries and mold
+nix profile install github:crazyboycjr/silent
+```
+
+On NixOS, the session bus starts silent once the package is in
+`services.dbus.packages`, with `services.gnome.sushi.enable = false`, and
+its fonts come from `fonts.packages`: `noto-fonts` and `jetbrains-mono`.
+On other distributions, Nix's Vulkan loader cannot load the system's
+driver, whose libraries are outside the store, so silent cannot open its
+window: start it through [nixGL](https://github.com/nix-community/nixGL),
+or build it against the system's libraries as above. On a display of its
+own, as in the test harness, Mesa's lavapipe from nixpkgs draws on the CPU:
+
+```sh
+mesa=$(nix build --inputs-from . nixpkgs#mesa --no-link --print-out-paths)
+VK_DRIVER_FILES=$mesa/share/vulkan/icd.d/lvp_icd.x86_64.json ./result/bin/silent FILE
+```

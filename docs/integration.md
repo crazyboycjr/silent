@@ -65,8 +65,8 @@ names another. Tested with yazi 26.9.1.
 
 Nemo calls nemo-preview as `org.nemo.Preview` (ShowFile with the file, the
 window as a number and whether to close a preview of the same file, and
-Close), and silent answers that interface too. The Arch package installs
-the service that starts silent for that name,
+Close), and silent answers that interface too. The Arch and Nix packages
+install the service that starts silent for that name,
 [data/org.nemo.Preview.service](../data/org.nemo.Preview.service), in
 place of nemo-preview's, which owns the same name. With a build of your
 own, put that file in `~/.local/share/dbus-1/services/`, with silent's
