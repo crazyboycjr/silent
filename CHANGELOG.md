@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0
+## 1.0.0 (2026-10-29)
 
 The first stable release. silent takes over Nautilus's Space-to-preview from
 GNOME's sushi on X11, and serves Nemo, yazi and terminal file managers too.
