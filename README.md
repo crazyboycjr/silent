@@ -35,7 +35,7 @@ There is no title bar, no frame and no buttons: the window is the file, a photo 
 
 ## Paper
 
-A paper or a book in PDF opens at its first page, in a window shaped by it, square as paper. The pages follow in a scroll, drawn as they come into view, with their thumbnails docked at the right; the wheel scrolls, a page number and <kbd>G</kbd> goes straight to that page, and <kbd>Ctrl</kbd> with the wheel zooms where the pointer is.
+A paper or a book in PDF opens at its first page, in a window shaped by it, square as paper. The pages follow in a scroll, drawn as they come into view, with their thumbnails docked at the right; the wheel scrolls, <kbd>j</kbd> and <kbd>k</kbd> turn to the next and previous page, a page number and <kbd>G</kbd> goes straight to that page, and <kbd>Ctrl</kbd> with the wheel zooms where the pointer is.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="site/media/readme-paper-dark.webp">
