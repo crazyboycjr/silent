@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/silent-header-dark.png">
-    <img src="docs/silent-header-light.png" width="560" alt="silent: a quiet, fast file previewer. Press Space; the file is there.">
+    <img src="docs/silent-header-light.png" width="420" alt="silent: a quiet, fast file previewer. Press Space; the file is there.">
   </picture>
 </p>
 
