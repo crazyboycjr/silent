@@ -2703,13 +2703,39 @@ enum DpiMode {
     NotSet,
 }
 
+/// silent: the scale gpui gives the windows it opens on `screen_index`, for
+/// silent to place them before gpui starts. It asks the server on
+/// `connection` exactly as gpui does on its own.
+pub fn x11_scale_factor(connection: &impl Connection, screen_index: usize) -> f32 {
+    let resource_database = x11rb::resource_manager::new_from_default(connection)
+        .unwrap_or_else(|_| Database::new_from_data(&[]));
+    get_scale_factor(connection, &resource_database, screen_index)
+}
+
 fn get_scale_factor(
-    connection: &XCBConnection,
+    connection: &impl Connection,
     resource_database: &Database,
     screen_index: usize,
 ) -> f32 {
-    let env_dpi = std::env::var(GPUI_X11_SCALE_FACTOR_ENV)
-        .ok()
+    choose_scale_factor(
+        std::env::var(GPUI_X11_SCALE_FACTOR_ENV).ok(),
+        || {
+            resource_database
+                .get_value::<f32>("Xft.dpi", "Xft.dpi")
+                .ok()
+                .flatten()
+        },
+        || get_randr_scale_factor(connection, screen_index),
+    )
+}
+
+/// silent: `get_scale_factor`'s order, apart from the server, for tests.
+fn choose_scale_factor(
+    env_var: Option<String>,
+    xft_dpi: impl FnOnce() -> Option<f32>,
+    randr_scale: impl FnOnce() -> Option<f32>,
+) -> f32 {
+    let env_dpi = env_var
         .map(|var| {
             if var.to_lowercase() == "randr" {
                 DpiMode::Randr
@@ -2743,7 +2769,7 @@ fn get_scale_factor(
             return scale;
         }
         DpiMode::Randr => {
-            if let Some(scale) = get_randr_scale_factor(connection, screen_index) {
+            if let Some(scale) = randr_scale() {
                 log::info!(
                     "Using RandR scale factor from {}=randr: {}",
                     GPUI_X11_SCALE_FACTOR_ENV,
@@ -2759,17 +2785,13 @@ fn get_scale_factor(
 
     // TODO: Use scale factor from XSettings here
 
-    if let Some(dpi) = resource_database
-        .get_value::<f32>("Xft.dpi", "Xft.dpi")
-        .ok()
-        .flatten()
-    {
+    if let Some(dpi) = xft_dpi() {
         let scale = dpi / 96.0; // base dpi
         log::info!("Using scale factor from Xft.dpi: {}", scale);
         return scale;
     }
 
-    if let Some(scale) = get_randr_scale_factor(connection, screen_index) {
+    if let Some(scale) = randr_scale() {
         log::info!("Using RandR scale factor: {}", scale);
         return scale;
     }
@@ -2778,7 +2800,7 @@ fn get_scale_factor(
     1.0
 }
 
-fn get_randr_scale_factor(connection: &XCBConnection, screen_index: usize) -> Option<f32> {
+fn get_randr_scale_factor(connection: &impl Connection, screen_index: usize) -> Option<f32> {
     let root = connection.setup().roots.get(screen_index)?.root;
 
     let version_cookie = connection.randr_query_version(1, 6).ok()?;
@@ -2814,7 +2836,7 @@ fn get_randr_scale_factor(connection: &XCBConnection, screen_index: usize) -> Op
     fallback_scale
 }
 
-fn legacy_get_randr_scale_factor(connection: &XCBConnection, root: u32) -> Option<f32> {
+fn legacy_get_randr_scale_factor(connection: &impl Connection, root: u32) -> Option<f32> {
     let primary_cookie = connection.randr_get_output_primary(root).ok()?;
     let primary_reply = primary_cookie.reply().ok()?;
     let primary_output = primary_reply.output;
@@ -2985,6 +3007,32 @@ fn xkb_state_for_key_event(xkb: &xkbc::State, event_state: xproto::KeyButMask) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // silent: the scale comes from the variable, else Xft.dpi, else RandR, else 1.
+    #[test]
+    fn scale_factor_fallback_order() {
+        let none = || None;
+        let env = |var: &str| Some(var.to_string());
+        assert_eq!(
+            choose_scale_factor(env("1.5"), || Some(192.0), || Some(3.0)),
+            1.5
+        );
+        assert_eq!(
+            choose_scale_factor(env("randr"), || Some(192.0), || Some(3.0)),
+            3.0
+        );
+        assert_eq!(choose_scale_factor(env("randr"), || Some(192.0), none), 1.0);
+        assert_eq!(
+            choose_scale_factor(env(""), || Some(192.0), || Some(3.0)),
+            2.0
+        );
+        assert_eq!(
+            choose_scale_factor(None, || Some(163.0), || Some(3.0)),
+            163.0 / 96.0
+        );
+        assert_eq!(choose_scale_factor(None, none, || Some(1.25)), 1.25);
+        assert_eq!(choose_scale_factor(None, none, none), 1.0);
+    }
 
     fn test_keymap(layouts: &str) -> xkbc::Keymap {
         test_keymap_with_variant(layouts, "")

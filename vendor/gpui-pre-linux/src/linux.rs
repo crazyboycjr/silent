@@ -25,6 +25,8 @@ pub(crate) use text_system::*;
 pub(crate) use wayland::*;
 #[cfg(feature = "x11")]
 pub(crate) use x11::*;
+#[cfg(feature = "x11")]
+pub use x11::x11_scale_factor;
 
 use std::rc::Rc;
 

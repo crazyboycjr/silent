@@ -52,6 +52,8 @@ gpui-kit = { version = "0.8", default-features = false, features = [
     "tree-sitter-yaml",
 ] }
 gpui-kit-assets = "=0.8.0"
+# For the scale gpui gives its windows, which silent places.
+gpui_linux = { package = "gpui-pre-linux", version = "=0.3.9", default-features = false, features = ["x11"] }
 gpui-pdf = "0.6.1"
 gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.9" }
 gpui-video-player = { version = "0.1.3", default-features = false, features = ["gpui-pre"] }
@@ -76,7 +78,7 @@ taffy = { version = "0.15", default-features = false }
 tree-sitter = "0.26"
 unicode-width = "0.2"
 url = "2"
-x11rb = { version = "0.14", features = ["randr"] }
+x11rb = { version = "0.13", features = ["randr"] }
 yuv = "0.8"
 zbus = { version = "5.15", default-features = false, features = ["async-io", "blocking-api"] }
 zip = { version = "9", default-features = false, features = ["deflate"] }

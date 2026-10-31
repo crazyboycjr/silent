@@ -27,7 +27,7 @@ impl Rect {
     }
 }
 
-/// The monitor a preview opens on, and the desktop's scale (`Xft.dpi` / 96).
+/// The monitor a preview opens on, and the scale gpui gives its windows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Screen {
     pub monitor: Rect,

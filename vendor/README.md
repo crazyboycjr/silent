@@ -28,6 +28,11 @@ code, `silent:` comments mark them.
 - **The swapchain follows a new size at the next frame**
   (`wgpu_renderer.rs`), not at each ConfigureNotify, so that sizes which
   come and go in between cost no swapchain, which costs NVIDIA 3–75 ms.
+- **The scale, for silent to ask** (`gpui_linux.rs`, `x11/client.rs`):
+  `x11_scale_factor` finds the scale on any x11rb connection as gpui does
+  for its own windows (`GPUI_X11_SCALE_FACTOR`, else `Xft.dpi` from the
+  server's resources or `~/.Xresources`, else RandR, else 1), so that the
+  windows silent places are as large as gpui makes them.
 - **A window opened hidden, and shown again** (`x11/window.rs`,
   `x11/client.rs`): a window opened with `show: false` is not mapped, for
   silent to map it when it has something to show; when it is unmapped, the

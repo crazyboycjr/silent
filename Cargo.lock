@@ -3191,7 +3191,7 @@ dependencies = [
  "wayland-protocols",
  "wayland-protocols-plasma",
  "wayland-protocols-wlr",
- "x11rb 0.13.2",
+ "x11rb",
  "xkbcommon",
  "zed-scap",
  "zed-xim",
@@ -7561,6 +7561,7 @@ dependencies = [
  "gpui-kit",
  "gpui-kit-assets",
  "gpui-pdf",
+ "gpui-pre-linux",
  "gpui-pre-wgpu",
  "gpui-video-player",
  "gstreamer",
@@ -7584,7 +7585,7 @@ dependencies = [
  "tree-sitter",
  "unicode-width",
  "url",
- "x11rb 0.14.0",
+ "x11rb",
  "yuv",
  "zbus",
  "zip",
@@ -10393,19 +10394,8 @@ dependencies = [
  "gethostname",
  "libc",
  "rustix",
- "x11rb-protocol 0.13.2",
+ "x11rb-protocol",
  "xcursor",
-]
-
-[[package]]
-name = "x11rb"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a8885a854a8bfdf87a301e53e41b17c5f8f33639903131338b997b1eb614f44"
-dependencies = [
- "gethostname",
- "rustix",
- "x11rb-protocol 0.14.0",
 ]
 
 [[package]]
@@ -10413,12 +10403,6 @@ name = "x11rb-protocol"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
-
-[[package]]
-name = "x11rb-protocol"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "acf4d1bc32aa46eec18caa634ec3cf4c05bfa151f12b93b510b15190f69a1ca8"
 
 [[package]]
 name = "xcb"
@@ -10736,7 +10720,7 @@ dependencies = [
  "ahash",
  "hashbrown 0.14.5",
  "log",
- "x11rb 0.13.2",
+ "x11rb",
  "xim-ctext",
  "xim-parser",
 ]
