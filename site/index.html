@@ -465,23 +465,19 @@
 <section class="feature wrap" id="install">
   <div class="section-head">
     <p class="kicker">Install</p>
-    <h2>From source, in three commands</h2>
+    <h2>One command on Arch, one with Nix</h2>
     <p>silent runs on X11 only for now; it does not run on Wayland.</p>
   </div>
   <div class="install-grid">
     <div class="card install-item">
       <header><h3>Arch Linux</h3><button class="copy" type="button">Copy</button></header>
-      <div class="code"><pre><code>git clone https://github.com/crazyboycjr/silent
-cd silent/packaging/arch
-makepkg -si</code></pre></div>
-      <p>The package replaces sushi and installs the D-Bus services Nautilus and Nemo call, so your next Space starts silent, with no restart. It will be on the AUR as <code>silent</code> too.</p>
+      <div class="code"><pre><code>paru -S silent</code></pre></div>
+      <p>The package replaces sushi and installs the D-Bus services Nautilus and Nemo call, so your next Space starts silent, with no restart. To build what is on <code>main</code> instead, run <code>makepkg -si</code> in a clone's <code>packaging/arch</code>.</p>
     </div>
     <div class="card install-item">
       <header><h3>Nix</h3><button class="copy" type="button">Copy</button></header>
-      <div class="code"><pre><code>git clone https://github.com/crazyboycjr/silent
-cd silent
-nix build</code></pre></div>
-      <p>silent is then in <code>result/</code>, and <code>nix profile install github:crazyboycjr/silent</code> installs it without a clone. Outside NixOS it reaches your Vulkan driver through <a href="https://github.com/nix-community/nixGL">nixGL</a>, as <a href="https://github.com/crazyboycjr/silent/blob/main/docs/development.md#nix">the development guide</a> shows.</p>
+      <div class="code"><pre><code>nix profile install github:crazyboycjr/silent</code></pre></div>
+      <p>It installs silent with the same D-Bus services; <code>nix build</code> in a clone leaves it in <code>result/</code>. Outside NixOS it reaches your Vulkan driver through <a href="https://github.com/nix-community/nixGL">nixGL</a>, as <a href="https://github.com/crazyboycjr/silent/blob/main/docs/development.md#nix">the development guide</a> shows.</p>
     </div>
     <div class="card install-item">
       <header><h3>Other distributions</h3><button class="copy" type="button">Copy</button></header>

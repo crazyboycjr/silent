@@ -151,7 +151,7 @@ changes over.
 tests, and installs `/usr/bin/silent`, the D-Bus services of Nautilus and
 Nemo, the icons and the README. It provides `sushi` and conflicts with
 `sushi` and `nemo-preview`, whose services it replaces. From that
-directory, `makepkg -si`. The AUR's PKGBUILD builds a tagged release with
+directory, `makepkg -si`. The AUR's PKGBUILD (`paru -S silent`) builds a tagged release with
 the same dependencies and steps, so a change to one belongs in the other.
 
 ## Nix

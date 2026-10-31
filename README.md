@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/silent-header-dark.png">
-    <img src="docs/silent-header-light.png" width="880" alt="silent: a quiet, fast file previewer. Press Space; the file is there.">
+    <img src="docs/silent-header-light.png" width="751" alt="silent: a quiet, fast file previewer. Press Space; the file is there.">
   </picture>
 </p>
 
@@ -84,7 +84,13 @@ Press <kbd>?</kbd> and a card lists the keys for the file in front of you, silen
 
 silent runs on **X11 only**; it does not run on Wayland yet. It needs a Vulkan driver, glycin's image loaders with bubblewrap, GStreamer for video and sound, libarchive, and the fonts Noto Sans and JetBrains Mono.
 
-On Arch Linux, from this repository, until silent is on the AUR:
+On Arch Linux, from the AUR:
+
+```sh
+paru -S silent
+```
+
+Or from this repository, which builds what is on `main`:
 
 ```sh
 git clone https://github.com/crazyboycjr/silent
